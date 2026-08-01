@@ -44,6 +44,8 @@ const api = {
   updateAnfrage: (id, d) => sb(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) }),
   getEinstellungen: () => sb("abw_einstellungen"),
   setEinstellung: (k, v) => sb("abw_einstellungen", { method: "POST", headers: { "Prefer": "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ schluessel: k, wert: v }) }),
+  addPerson: (d) => sb("abw_team", { method: "POST", body: JSON.stringify(d) }),
+  deletePerson: (id) => sb(`abw_team?id=eq.${id}`, { method: "DELETE", prefer: "" }),
 };
 
 // ─── ÖSTERREICH FEIERTAGE ─────────────────────────────────────────────────────
@@ -775,6 +777,105 @@ function PersonKarte({person, onUpdate}) {
   </div>;
 }
 
+function OwnerPinKarte({person, onUpdate}) {
+  const [pin, setPin] = useState("");
+  const [anspruch, setAnspruch] = useState(String(person.urlaub_anspruch||25));
+  const [verbraucht, setVerbraucht] = useState(String(person.urlaub_verbraucht||0));
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (pin && pin.length!==4) { alert("PIN muss 4 Ziffern haben."); return; }
+    setSaving(true);
+    try {
+      const d = { urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0 };
+      if (pin.length===4) d.pin = pin;
+      await api.updatePerson(person.id, d);
+      onUpdate(d);
+      setPin("");
+      setSaved(true); setTimeout(()=>setSaved(false),2000);
+    }
+    catch(e) { alert("Fehler: "+e.message); }
+    setSaving(false);
+  }
+
+  const offen = (parseInt(anspruch)||0) - (parseInt(verbraucht)||0);
+
+  return <div className="flex flex-col gap-3">
+    <div className="flex gap-3">
+      <div className="flex-1">
+        <p className="text-xs text-stone-400 mb-1">Jahresanspruch</p>
+        <input type="number" min="0" value={anspruch} onChange={e=>{setAnspruch(e.target.value);setSaved(false);}}
+          className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600"/>
+      </div>
+      <div className="flex-1">
+        <p className="text-xs text-stone-400 mb-1">Verbraucht</p>
+        <input type="number" min="0" value={verbraucht} onChange={e=>{setVerbraucht(e.target.value);setSaved(false);}}
+          className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600"/>
+      </div>
+      <div className="flex-1">
+        <p className="text-xs text-stone-400 mb-1">Offen</p>
+        <div className="border border-stone-100 bg-stone-50 rounded-xl px-3 py-2 text-sm font-bold text-emerald-600">{offen >= 0 ? offen : 0}</div>
+      </div>
+    </div>
+    <div className="flex gap-2">
+      <input type="password" maxLength={4} value={pin} placeholder="Neuer PIN (leer = unverändert)"
+        onChange={e=>setPin(e.target.value.replace(/[^0-9]/g,""))}
+        className="flex-1 border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600"/>
+      <button onClick={save} disabled={saving}
+        className={`rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${saved?"bg-emerald-100 text-emerald-700":"bg-stone-900 text-white hover:bg-stone-800"}`}>
+        {saved?"✓":saving?"…":"Speichern"}
+      </button>
+    </div>
+  </div>;
+}
+
+function NeueMitarbeiterinKarte({onAdd}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [pin, setPin] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (!name.trim()) { alert("Name eingeben."); return; }
+    if (pin.length!==4) { alert("PIN muss 4 Ziffern haben."); return; }
+    setSaving(true);
+    try {
+      const id = name.trim().toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");
+      await onAdd({ id, name: name.trim(), role: "employee", pin, urlaub_anspruch: 25, urlaub_verbraucht: 0 });
+      setName(""); setPin(""); setOpen(false);
+    } catch(e) { alert("Fehler: "+e.message); }
+    setSaving(false);
+  }
+
+  if (!open) return (
+    <button onClick={()=>setOpen(true)}
+      className="w-full border-2 border-dashed border-stone-200 rounded-2xl py-4 text-sm font-medium text-stone-500 hover:border-stone-400 hover:text-stone-700 transition-colors">
+      + Neue Mitarbeiterin hinzufügen
+    </button>
+  );
+
+  return <div className="bg-white border border-stone-200 rounded-2xl px-4 py-4 flex flex-col gap-3">
+    <p className="font-semibold text-stone-800 text-sm">Neue Mitarbeiterin</p>
+    <div>
+      <p className="text-xs text-stone-400 mb-1">Name</p>
+      <input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="z.B. Sophie"
+        className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-900 focus:outline-none focus:border-stone-600"/>
+    </div>
+    <div>
+      <p className="text-xs text-stone-400 mb-1">PIN (4 Ziffern)</p>
+      <input type="password" maxLength={4} value={pin} onChange={e=>setPin(e.target.value.replace(/[^0-9]/g,""))} placeholder="••••"
+        className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600"/>
+    </div>
+    <div className="flex gap-2">
+      <button onClick={()=>{setOpen(false);setName("");setPin("");}} className="flex-1 border border-stone-200 rounded-xl py-2.5 text-sm font-medium text-stone-500 hover:bg-stone-50">Abbrechen</button>
+      <button onClick={save} disabled={saving} className="flex-1 bg-stone-900 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-stone-800 disabled:opacity-50">
+        {saving?"Wird gespeichert…":"Hinzufügen"}
+      </button>
+    </div>
+  </div>;
+}
+
 function Einstellungen({team, setTeam, schliesztage, setSchliesztage, warnschwelle, setWarnschwelle, sperrzeiten, setSperrzeiten}) {
   const [tab, setTab] = useState("personen");
   const [neuTag, setNeuTag] = useState("");
@@ -836,10 +937,43 @@ function Einstellungen({team, setTeam, schliesztage, setSchliesztage, warnschwel
     </div>
 
     {tab==="personen"&&<div className="flex flex-col gap-3">
-      <p className="text-xs text-stone-400 px-1">PIN, Eintrittsdatum und Urlaubstage anpassen.</p>
-      {team.filter(p=>p.role==="employee").map(p=>(
-        <PersonKarte key={p.id} person={p} onUpdate={u=>setTeam(prev=>prev.map(x=>x.id===p.id?{...x,...u}:x))}/>
+      <p className="text-xs text-stone-400 px-1">PIN, Eintrittsdatum und Urlaubstage anpassen. Mitarbeitende hinzufügen oder entfernen.</p>
+
+      {/* Inhaberin eigener PIN */}
+      {team.filter(p=>p.role==="owner").map(p=>(
+        <div key={p.id} className="bg-white border border-stone-200 rounded-2xl px-4 py-4 flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
+            <div><p className="font-semibold text-stone-800">{p.name}</p>
+            <p className="text-xs text-stone-400">Inhaberin</p></div>
+          </div>
+          <OwnerPinKarte person={p} onUpdate={u=>setTeam(prev=>prev.map(x=>x.id===p.id?{...x,...u}:x))}/>
+        </div>
       ))}
+
+      <div className="flex items-center gap-2 pt-2">
+        <div className="flex-1 h-px bg-stone-200"/>
+        <p className="text-xs text-stone-400 uppercase tracking-widest">Mitarbeitende</p>
+        <div className="flex-1 h-px bg-stone-200"/>
+      </div>
+
+      {team.filter(p=>p.role==="employee").map(p=>(
+        <div key={p.id} className="relative">
+          <PersonKarte person={p} onUpdate={u=>setTeam(prev=>prev.map(x=>x.id===p.id?{...x,...u}:x))}/>
+          <button onClick={async()=>{
+            if (!confirm(`${p.name} wirklich löschen? Alle Anfragen dieser Person bleiben erhalten.`)) return;
+            try { await api.deletePerson(p.id); setTeam(prev=>prev.filter(x=>x.id!==p.id)); }
+            catch(e) { alert("Fehler: "+e.message); }
+          }} className="absolute top-4 right-4 text-xs text-rose-400 hover:text-rose-600 font-medium">Löschen</button>
+        </div>
+      ))}
+
+      <NeueMitarbeiterinKarte onAdd={async(d)=>{
+        try {
+          const r = await api.addPerson(d);
+          setTeam(prev=>[...prev, r[0]]);
+        } catch(e) { alert("Fehler: "+e.message); }
+      }}/>
     </div>}
 
     {tab==="schliesztage"&&<div className="flex flex-col gap-4">
