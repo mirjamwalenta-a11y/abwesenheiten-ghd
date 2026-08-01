@@ -50,6 +50,7 @@
       addAnfrage: (data) => db("abw_anfragen", { method: "POST", body: JSON.stringify(data) }),
       updateAnfrage: (id, data) => db(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(data) }),
       getEinstellungen: () => db("abw_einstellungen"),
+      getSperrzeiten: () => db("abw_einstellungen?schluessel=eq.sperrzeiten"),
       setEinstellung: (key, val) => db("abw_einstellungen", {
         method: "POST",
         prefer: "resolution=merge-duplicates,return=representation",
@@ -134,11 +135,17 @@
     }
 
     const FEIERTAGE_2025 = berechneFeiertage(2025).map(f => f.datum);
-    const ANFRAGE_TYPEN = [
-      { id: "urlaub", label: "Urlaub", icon: "🌴", color: "bg-emerald-100 text-emerald-800 border-emerald-200" },
-      { id: "wunsch", label: "Freier Wunsch", icon: "✨", color: "bg-sky-100 text-sky-800 border-sky-200" },
-      { id: "arzt",   label: "Arzttermin & sonstige Abwesenheit", icon: "🏥", color: "bg-violet-100 text-violet-800 border-violet-200" },
+    const ANFRAGE_TYPEN_MITARBEITER = [
+      { id: "urlaub",   label: "Urlaub",              icon: "🌴", color: "bg-emerald-100 text-emerald-800 border-emerald-200" },
     ];
+    const ANFRAGE_TYPEN_INHABERIN = [
+      { id: "urlaub",   label: "Urlaub",              icon: "🌴", color: "bg-emerald-100 text-emerald-800 border-emerald-200" },
+      { id: "sonstige", label: "Sonstige Abwesenheit", icon: "📋", color: "bg-violet-100 text-violet-800 border-violet-200" },
+    ];
+    function getAnfrageTypen(isOwner) {
+      return isOwner ? ANFRAGE_TYPEN_INHABERIN : ANFRAGE_TYPEN_MITARBEITER;
+    }
+    const ANFRAGE_TYPEN = ANFRAGE_TYPEN_INHABERIN; // Fallback für getTypConfig
     const STATUS_CONFIG = {
       ausstehend: { label: "Ausstehend", text: "text-amber-700",   bg: "bg-amber-50",   border: "border-l-amber-400" },
       genehmigt:  { label: "Genehmigt",  text: "text-emerald-700", bg: "bg-emerald-50", border: "border-l-emerald-500" },
@@ -168,11 +175,18 @@
         return day !== 0 && !istFeiertag(d) && !schliesztage.includes(d);
       });
     }
-    function istSperre(datum) {
+    function istFixeSperre(datum) {
       const d = parseDatum(datum), m = d.getMonth()+1, day = d.getDate();
       return m === 12 && day >= 1 && day <= 24;
     }
-    function getTypConfig(id) { return ANFRAGE_TYPEN.find(t => t.id === id); }
+    function istSperre(datum, sperrzeiten) {
+      if (istFixeSperre(datum)) return true;
+      if (!sperrzeiten) return false;
+      return sperrzeiten.some(s => datum >= s.von && datum <= s.bis);
+    }
+    function getTypConfig(id) {
+      return ANFRAGE_TYPEN_INHABERIN.find(t => t.id === id);
+    }
     function formatZeitraum(von, bis) {
       return von === bis ? formatDatum(von) : `${formatDatum(von)} – ${formatDatum(bis)}`;
     }
@@ -396,12 +410,46 @@
       );
     }
 
-    function Einstellungen({ team, setTeam, schliesztage, setSchliesztage, warnschwelle, setWarnschwelle }) {
+    function Einstellungen({ team, setTeam, schliesztage, setSchliesztage, warnschwelle, setWarnschwelle, setWunschLabel, sperrzeiten, setSperrzeiten }) {
       const [tab, setTab] = useState("schliesztage");
       const [neuerTag, setNeuerTag] = useState("");
       const [tagFehler, setTagFehler] = useState("");
       const [schwelleInput, setSchwelleInput] = useState(String(warnschwelle));
       const [schwelleSaved, setSchwelleSaved] = useState(false);
+      const [wunschInput, setWunschInput] = useState(wunschLabel);
+      const [wunschSaved, setWunschSaved] = useState(false);
+      const [sperrVon, setSperrVon] = useState("");
+      const [sperrBis, setSperrBis] = useState("");
+      const [sperrName, setSperrName] = useState("");
+      const [sperrFehler, setSperrFehler] = useState("");
+
+      async function handleWunschSave() {
+        if (!wunschInput.trim()) return;
+        try {
+          await api.setEinstellung("wunsch_label", wunschInput.trim());
+          setWunschLabel(wunschInput.trim());
+          setWunschSaved(true); setTimeout(() => setWunschSaved(false), 2000);
+        } catch(e) { alert("Fehler: " + e.message); }
+      }
+
+      async function handleSperrHinzu() {
+        setSperrFehler("");
+        if (!sperrVon || !sperrBis) { setSperrFehler("Bitte Von und Bis ausfüllen."); return; }
+        if (sperrVon > sperrBis) { setSperrFehler("Von muss vor Bis liegen."); return; }
+        const neu = [...sperrzeiten, { von: sperrVon, bis: sperrBis, bezeichnung: sperrName || "Urlaubssperre" }];
+        try {
+          await api.setEinstellung("sperrzeiten", JSON.stringify(neu));
+          setSperrzeiten(neu); setSperrVon(""); setSperrBis(""); setSperrName("");
+        } catch(e) { alert("Fehler: " + e.message); }
+      }
+
+      async function handleSperrLoeschen(idx) {
+        const neu = sperrzeiten.filter((_, i) => i !== idx);
+        try {
+          await api.setEinstellung("sperrzeiten", JSON.stringify(neu));
+          setSperrzeiten(neu);
+        } catch(e) { alert("Fehler: " + e.message); }
+      }
 
       async function handleHinzu() {
         setTagFehler("");
@@ -438,10 +486,10 @@
             <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Inhaberin</p>
             <h2 className="text-2xl font-bold text-stone-900">Einstellungen</h2>
           </div>
-          <div className="flex bg-stone-100 rounded-xl p-1 gap-1">
-            {[{id:"schliesztage",label:"Schließtage"},{id:"warnschwelle",label:"Resturlaub"},{id:"personen",label:"Personen"}].map(t => (
+          <div className="flex bg-stone-100 rounded-xl p-1 gap-1 flex-wrap">
+            {[{id:"schliesztage",label:"Schließtage"},{id:"sperrzeiten",label:"Sperrzeiten"},{id:"warnschwelle",label:"Resturlaub"},{id:"personen",label:"Personen"}].map(t => (
               <button key={t.id} onClick={() => setTab(t.id)}
-                className={`flex-1 py-2 text-xs font-medium rounded-lg transition-all ${tab === t.id ? "bg-white text-stone-900 shadow-sm" : "text-stone-500"}`}>
+                className={`flex-1 py-2 text-xs font-medium rounded-lg transition-all min-w-[60px] ${tab === t.id ? "bg-white text-stone-900 shadow-sm" : "text-stone-500"}`}>
                 {t.label}
               </button>
             ))}
@@ -504,6 +552,48 @@
               </div>
               <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
                 <p className="text-xs text-amber-700">Aktuell: Warnung ab <span className="font-bold">{warnschwelle} Tagen</span> Resturlaub offen.</p>
+              </div>
+            </div>
+          )}
+
+          {tab === "sperrzeiten" && (
+            <div className="flex flex-col gap-4">
+              <div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-3">
+                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Neue Urlaubssperre</p>
+                <input type="text" placeholder="Bezeichnung (z.B. Sommersperre)" value={sperrName}
+                  onChange={e => setSperrName(e.target.value)}
+                  className="border border-stone-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-stone-600" />
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <p className="text-xs text-stone-400 mb-1">Von</p>
+                    <input type="date" value={sperrVon} onChange={e => { setSperrVon(e.target.value); setSperrFehler(""); }}
+                      className="w-full border border-stone-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-stone-600" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-xs text-stone-400 mb-1">Bis</p>
+                    <input type="date" value={sperrBis} onChange={e => { setSperrBis(e.target.value); setSperrFehler(""); }}
+                      className="w-full border border-stone-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-stone-600" />
+                  </div>
+                </div>
+                {sperrFehler && <p className="text-xs text-rose-500">{sperrFehler}</p>}
+                <button onClick={handleSperrHinzu} className="bg-stone-900 text-white rounded-xl py-2.5 text-sm font-semibold">+ Sperre hinzufügen</button>
+              </div>
+              <div className="bg-stone-100 rounded-xl px-4 py-2.5">
+                <p className="text-xs text-stone-400">Urlaubssperre 1.12.–24.12. ist immer aktiv.</p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">Aktive Sperrzeiten</p>
+                {sperrzeiten.length === 0 ? <p className="text-stone-400 text-sm px-1">Keine eingetragen.</p> :
+                  sperrzeiten.map((s, i) => (
+                    <div key={i} className="bg-white border border-stone-200 rounded-xl px-4 py-3 flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-stone-800">{s.bezeichnung}</p>
+                        <p className="text-xs text-stone-400">{formatDatum(s.von)} – {formatDatum(s.bis)}</p>
+                      </div>
+                      <button onClick={() => handleSperrLoeschen(i)} className="text-rose-400 hover:text-rose-600 px-2">✕</button>
+                    </div>
+                  ))
+                }
               </div>
             </div>
           )}
@@ -637,14 +727,14 @@
     }
 
     // ─── ANFRAGE FLOW ─────────────────────────────────────────────────────────
-    function AnfrageFlow({ screen, setScreen, anfrage, setAnfrage, genehmigteUrlaube, schliesztage, onSubmit, onAbbrechen }) {
+    function AnfrageFlow({ screen, setScreen, anfrage, setAnfrage, genehmigteUrlaube, schliesztage, sperrzeiten, isOwner, team, currentUser, onSubmit, onAbbrechen }) {
       const [selectedStart, setSelectedStart] = useState(null);
       const [calMonat, setCalMonat] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() });
       const [saving, setSaving] = useState(false);
 
       function getBlockInfo(datum) {
         if (anfrage.typ !== "urlaub") return null;
-        if (istSperre(datum)) return "sperre";
+        if (istSperre(datum, sperrzeiten)) return "sperre";
         if (istFeiertag(datum)) return "feiertag";
         if (schliesztage.includes(datum)) return "schliesztag";
         for (const u of genehmigteUrlaube) {
@@ -668,7 +758,7 @@
       const blockHinweis = useMemo(() => {
         if (anfrage.typ !== "urlaub" || !anfrage.von) return null;
         const tage = tageImBereich(anfrage.von, anfrage.bis);
-        if (tage.some(d => istSperre(d))) return "sperre";
+        if (tage.some(d => istSperre(d, sperrzeiten))) return "sperre";
         if (tage.some(d => genehmigteUrlaube.some(u => tageImBereich(u.von, u.bis).includes(d)))) return "belegt";
         return null;
       }, [anfrage, genehmigteUrlaube]);
@@ -692,12 +782,36 @@
               <h2 className="text-xl font-bold text-stone-900">Art der Abwesenheit</h2>
             </div>
           </div>
+          {isOwner && (
+            <div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-2">
+              <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-1">Für wen?</p>
+              <div className="flex flex-wrap gap-2">
+                {team.filter(p => p.role === "employee").map(p => (
+                  <button key={p.id}
+                    onClick={() => setAnfrage(a => ({ ...a, fuerPerson: p.id }))}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-medium transition-all ${anfrage.fuerPerson === p.id ? "bg-stone-900 text-white border-stone-900" : "bg-white text-stone-700 border-stone-200 hover:border-stone-400"}`}>
+                    <span className="w-6 h-6 rounded-full bg-stone-200 text-stone-700 text-xs font-bold flex items-center justify-center flex-shrink-0" style={{background: anfrage.fuerPerson === p.id ? "rgba(255,255,255,0.2)" : ""}}>{p.name[0]}</span>
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex flex-col gap-3">
-            {ANFRAGE_TYPEN.map(typ => (
-              <button key={typ.id} onClick={() => { setAnfrage(a => ({ ...a, typ: typ.id })); setScreen("datum"); }}
-                className="bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 hover:border-stone-400 hover:shadow-sm transition-all text-left">
+            {getAnfrageTypen(isOwner).map(typ => (
+              <button key={typ.id}
+                onClick={() => {
+                  const personId = isOwner ? (anfrage.fuerPerson || team.filter(p=>p.role==="employee")[0]?.id) : currentUser.id;
+                  setAnfrage(a => ({ ...a, typ: typ.id, fuerPerson: personId }));
+                  setScreen("datum");
+                }}
+                disabled={isOwner && !anfrage.fuerPerson && typ.id === "sonstige"}
+                className={`bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 hover:border-stone-400 hover:shadow-sm transition-all text-left ${isOwner && !anfrage.fuerPerson && typ.id === "sonstige" ? "opacity-40 cursor-not-allowed" : ""}`}>
                 <span className="text-2xl">{typ.icon}</span>
-                <span className="font-semibold text-stone-800">{typ.label}</span>
+                <div className="flex-1">
+                  <span className="font-semibold text-stone-800">{typ.label}</span>
+                  {typ.id === "sonstige" && isOwner && !anfrage.fuerPerson && <p className="text-xs text-stone-400">Erst Person auswählen</p>}
+                </div>
                 <span className="ml-auto text-stone-300 text-lg">›</span>
               </button>
             ))}
@@ -789,6 +903,12 @@
                 <span className="text-3xl">{typc?.icon}</span>
                 <p className="font-semibold text-stone-800 text-lg">{typc?.label}</p>
               </div>
+              {isOwner && anfrage.fuerPerson && (
+                <div className="flex justify-between">
+                  <p className="text-sm text-stone-400">Für</p>
+                  <p className="text-sm font-semibold text-stone-800">{team.find(p=>p.id===anfrage.fuerPerson)?.name}</p>
+                </div>
+              )}
               <div className="flex justify-between"><p className="text-sm text-stone-400">Von</p><p className="text-sm font-semibold text-stone-800">{formatDatum(anfrage.von)}</p></div>
               <div className="flex justify-between"><p className="text-sm text-stone-400">Bis</p><p className="text-sm font-semibold text-stone-800">{formatDatum(anfrage.bis)}</p></div>
               {anfrage.typ === "urlaub" && (
@@ -817,7 +937,7 @@
       const daysInMonth = new Date(year, month+1, 0).getDate();
       const offset = firstDay === 0 ? 6 : firstDay - 1;
       const days = Array.from({ length: daysInMonth }, (_, i) => ({ datum: datumZuStr(new Date(year, month, i+1)), day: i+1, dow: new Date(year, month, i+1).getDay() }));
-      const FARBEN = { urlaub:"bg-emerald-100 text-emerald-800", wunsch:"bg-sky-100 text-sky-800", arzt:"bg-violet-100 text-violet-800", feiertag:"bg-amber-100 text-amber-700", schliesztag:"bg-rose-100 text-rose-700" };
+      const FARBEN = { urlaub:"bg-emerald-100 text-emerald-800", wunsch:"bg-sky-100 text-sky-800", sonstige:"bg-violet-100 text-violet-800", feiertag:"bg-amber-100 text-amber-700", schliesztag:"bg-rose-100 text-rose-700" };
 
       function getEintraege(datum) {
         if (istFeiertag(datum)) return [{ typ:"feiertag", label:"Feiertag" }];
@@ -859,7 +979,7 @@
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            {[["urlaub","Urlaub"],["wunsch","Freier Wunsch"],["arzt","Sonstige"],["feiertag","Feiertag"],["schliesztag","Schließtag"]].map(([typ, label]) => (
+            {[["urlaub","Urlaub"],["wunsch","Freier Wunsch"],["sonstige","Sonstige"],["feiertag","Feiertag"],["schliesztag","Schließtag"]].map(([typ, label]) => (
               <span key={typ} className={`font-medium px-2 py-1 rounded-full ${FARBEN[typ]}`} style={{fontSize:"10px"}}>{label}</span>
             ))}
           </div>
@@ -1038,6 +1158,8 @@
       const [anfragen, setAnfragen] = useState([]);
       const [schliesztage, setSchliesztage] = useState([]);
       const [warnschwelle, setWarnschwelle] = useState(10);
+      const [wunschLabel, setWunschLabel] = useState("Freier Wunsch");
+      const [sperrzeiten, setSperrzeiten] = useState([]); // [{von, bis, bezeichnung}]
       const [screen, setScreen] = useState("home");
       const [anfrageScreen, setAnfrageScreen] = useState(null);
       const [neueAnfrage, setNeueAnfrage] = useState({ typ: null, von: null, bis: null });
@@ -1059,8 +1181,12 @@
           const sz = einstellungenData?.find(e => e.schluessel === "schliesztage");
           const ws = einstellungenData?.find(e => e.schluessel === "warnschwelle");
           const eroeff = einstellungenData?.find(e => e.schluessel === "eroeffnung_erledigt");
+          const wl = einstellungenData?.find(e => e.schluessel === "wunsch_label");
+          const spz = einstellungenData?.find(e => e.schluessel === "sperrzeiten");
           if (sz) setSchliesztage(JSON.parse(sz.wert));
           if (ws) setWarnschwelle(parseInt(ws.wert, 10));
+          if (wl) setWunschLabel(wl.wert);
+          if (spz) setSperrzeiten(JSON.parse(spz.wert));
           if (!eroeff) setErsterStart(true);
           setLadeStatus("bereit");
         } catch(e) {
@@ -1081,8 +1207,9 @@
         setScreen("home");
       }
 
-      async function handleAnfrageStellen(typ, von, bis) {
-        const neu = await api.addAnfrage({ person_id: currentUser.id, typ, von, bis, status: "ausstehend", erstellt: heute() });
+      async function handleAnfrageStellen(typ, von, bis, fuerPerson) {
+        const personId = fuerPerson || currentUser.id;
+        const neu = await api.addAnfrage({ person_id: personId, typ, von, bis, status: "ausstehend", erstellt: heute() });
         setAnfragen(prev => [...prev, neu[0]]);
         setAnfrageScreen(null);
         setNeueAnfrage({ typ: null, von: null, bis: null });
@@ -1163,7 +1290,7 @@
               {screen === "meine-anfragen" && <MeineAnfragen anfragen={eigeneAnfragen} onNeueAnfrage={() => setAnfrageScreen("typ")} />}
               {screen === "anfragen" && isOwner && <AnfragenUebersicht anfragen={anfragen} tab={archivTab} setTab={setArchivTab} onEntscheid={handleEntscheid} schliesztage={schliesztage} team={team} />}
               {screen === "urlaubsstaende" && isOwner && <Urlaubsstaende team={team} warnschwelle={warnschwelle} />}
-              {screen === "einstellungen" && isOwner && <Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} />}
+              {screen === "einstellungen" && isOwner && <Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} setWunschLabel={setWunschLabel} sperrzeiten={sperrzeiten} setSperrzeiten={setSperrzeiten} />}
             </main>
 
             <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white border-t border-stone-200 flex z-10">
