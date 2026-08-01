@@ -58,11 +58,82 @@
     };
 
     // ─── KONSTANTEN ──────────────────────────────────────────────────────────
-    const FEIERTAGE_2025 = [
-      "2025-01-01","2025-01-06","2025-04-21","2025-05-01","2025-05-29",
-      "2025-06-09","2025-06-19","2025-08-15","2025-10-26","2025-11-01",
-      "2025-12-08","2025-12-25","2025-12-26",
-    ];
+    // Österreichische Feiertage automatisch berechnen
+    function berechneOsterSonntag(jahr) {
+      // Gaußsche Osterformel
+      const a = jahr % 19;
+      const b = Math.floor(jahr / 100);
+      const c = jahr % 100;
+      const d = Math.floor(b / 4);
+      const e = b % 4;
+      const f = Math.floor((b + 8) / 25);
+      const g = Math.floor((b - f + 1) / 3);
+      const h = (19 * a + b - d - g + 15) % 30;
+      const i = Math.floor(c / 4);
+      const k = c % 4;
+      const l = (32 + 2 * e + 2 * i - h - k) % 7;
+      const m = Math.floor((a + 11 * h + 22 * l) / 451);
+      const monat = Math.floor((h + l - 7 * m + 114) / 31);
+      const tag = ((h + l - 7 * m + 114) % 31) + 1;
+      return new Date(jahr, monat - 1, tag);
+    }
+
+    function berechneFeiertage(jahr) {
+      const ostern = berechneOsterSonntag(jahr);
+      function addTage(datum, tage) {
+        const d = new Date(datum);
+        d.setDate(d.getDate() + tage);
+        return datumZuStr(new Date(d.setDate(d.getDate())));
+      }
+      function addT(tage) {
+        const d = new Date(ostern);
+        d.setDate(d.getDate() + tage);
+        return datumZuStr(d);
+      }
+      function fix(m, t) {
+        return `${jahr}-${String(m).padStart(2,"0")}-${String(t).padStart(2,"0")}`;
+      }
+      return [
+        { datum: fix(1,1),        name: "Neujahr" },
+        { datum: fix(1,6),        name: "Heilige Drei Könige" },
+        { datum: addT(1),         name: "Ostermontag" },
+        { datum: fix(5,1),        name: "Staatsfeiertag" },
+        { datum: addT(39),        name: "Christi Himmelfahrt" },
+        { datum: addT(50),        name: "Pfingstmontag" },
+        { datum: addT(60),        name: "Fronleichnam" },
+        { datum: fix(8,15),       name: "Mariä Himmelfahrt" },
+        { datum: fix(10,26),      name: "Nationalfeiertag" },
+        { datum: fix(11,1),       name: "Allerheiligen" },
+        { datum: fix(12,8),       name: "Mariä Empfängnis" },
+        { datum: fix(12,25),      name: "Weihnachten" },
+        { datum: fix(12,26),      name: "Stephanitag" },
+      ].sort((a,b) => a.datum.localeCompare(b.datum));
+    }
+
+    const _aktuellesJahr = new Date().getFullYear();
+    const FEIERTAGE_CACHE = {};
+    [_aktuellesJahr - 1, _aktuellesJahr, _aktuellesJahr + 1].forEach(j => {
+      FEIERTAGE_CACHE[j] = berechneFeiertage(j);
+    });
+
+    function istFeiertag(datum) {
+      const jahr = parseInt(datum.substring(0,4));
+      if (!FEIERTAGE_CACHE[jahr]) FEIERTAGE_CACHE[jahr] = berechneFeiertage(jahr);
+      return FEIERTAGE_CACHE[jahr].some(f => f.datum === datum);
+    }
+
+    function getFeiertagName(datum) {
+      const jahr = parseInt(datum.substring(0,4));
+      if (!FEIERTAGE_CACHE[jahr]) FEIERTAGE_CACHE[jahr] = berechneFeiertage(jahr);
+      return FEIERTAGE_CACHE[jahr].find(f => f.datum === datum)?.name || "Feiertag";
+    }
+
+    function getFeiertageListe(jahr) {
+      if (!FEIERTAGE_CACHE[jahr]) FEIERTAGE_CACHE[jahr] = berechneFeiertage(jahr);
+      return FEIERTAGE_CACHE[jahr];
+    }
+
+    const FEIERTAGE_2025 = berechneFeiertage(2025).map(f => f.datum);
     const ANFRAGE_TYPEN = [
       { id: "urlaub", label: "Urlaub", icon: "🌴", color: "bg-emerald-100 text-emerald-800 border-emerald-200" },
       { id: "wunsch", label: "Freier Wunsch", icon: "✨", color: "bg-sky-100 text-sky-800 border-sky-200" },
@@ -94,7 +165,7 @@
     function arbeitstage(von, bis, schliesztage) {
       return tageImBereich(von, bis).filter(d => {
         const day = parseDatum(d).getDay();
-        return day !== 0 && !FEIERTAGE_2025.includes(d) && !schliesztage.includes(d);
+        return day !== 0 && !istFeiertag(d) && !schliesztage.includes(d);
       });
     }
     function istSperre(datum) {
@@ -336,7 +407,7 @@
         setTagFehler("");
         if (!neuerTag) return;
         if (schliesztage.includes(neuerTag)) { setTagFehler("Bereits eingetragen."); return; }
-        if (FEIERTAGE_2025.includes(neuerTag)) { setTagFehler("Ist ein gesetzlicher Feiertag."); return; }
+        if (istFeiertag(neuerTag)) { setTagFehler("Ist ein gesetzlicher Feiertag."); return; }
         const neu = [...schliesztage, neuerTag].sort();
         try {
           await api.setEinstellung("schliesztage", JSON.stringify(neu));
@@ -402,12 +473,14 @@
                 }
               </div>
               <div className="flex flex-col gap-2">
-                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">Gesetzliche Feiertage 2025</p>
-                {FEIERTAGE_2025.map(d => (
-                  <div key={d} className="bg-stone-50 border border-stone-100 rounded-xl px-4 py-2.5">
-                    <p className="text-sm text-stone-500">{formatDatum(d)}</p>
+                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">Gesetzliche Feiertage Österreich</p>
+                {getFeiertageListe(new Date().getFullYear()).map(f => (
+                  <div key={f.datum} className="bg-stone-50 border border-stone-100 rounded-xl px-4 py-2.5 flex items-center justify-between">
+                    <p className="text-sm font-medium text-stone-700">{f.name}</p>
+                    <p className="text-xs text-stone-400">{formatDatum(f.datum)}</p>
                   </div>
                 ))}
+              <p className="text-xs text-stone-300 px-1 mt-1">Automatisch berechnet für {new Date().getFullYear()}</p>
               </div>
             </div>
           )}
@@ -572,7 +645,7 @@
       function getBlockInfo(datum) {
         if (anfrage.typ !== "urlaub") return null;
         if (istSperre(datum)) return "sperre";
-        if (FEIERTAGE_2025.includes(datum)) return "feiertag";
+        if (istFeiertag(datum)) return "feiertag";
         if (schliesztage.includes(datum)) return "schliesztag";
         for (const u of genehmigteUrlaube) {
           if (tageImBereich(u.von, u.bis).includes(datum)) return "belegt";
@@ -747,7 +820,7 @@
       const FARBEN = { urlaub:"bg-emerald-100 text-emerald-800", wunsch:"bg-sky-100 text-sky-800", arzt:"bg-violet-100 text-violet-800", feiertag:"bg-amber-100 text-amber-700", schliesztag:"bg-rose-100 text-rose-700" };
 
       function getEintraege(datum) {
-        if (FEIERTAGE_2025.includes(datum)) return [{ typ:"feiertag", label:"Feiertag" }];
+        if (istFeiertag(datum)) return [{ typ:"feiertag", label:"Feiertag" }];
         if (schliesztage.includes(datum)) return [{ typ:"schliesztag", label:"Schließtag" }];
         return genehmigt.filter(a => tageImBereich(a.von, a.bis).includes(datum))
           .map(a => ({ typ: a.typ, label: team.find(p => p.id === a.person_id)?.name || a.person_id }));
