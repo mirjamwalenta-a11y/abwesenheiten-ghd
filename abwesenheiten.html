@@ -924,8 +924,8 @@
       const [ersterStart, setErsterStart] = useState(false);
 
       // Daten laden
-      async function ladeDaten() {
-        setLadeStatus("laden");
+      async function ladeDaten(silent = false) {
+        if (!silent) setLadeStatus("laden");
         try {
           const [teamData, anfragenData, einstellungenData] = await Promise.all([
             api.getTeam(),
@@ -943,11 +943,16 @@
           setLadeStatus("bereit");
         } catch(e) {
           console.error(e);
-          setLadeStatus("fehler");
+          if (!silent) setLadeStatus("fehler");
         }
       }
 
-      useEffect(() => { ladeDaten(); }, []);
+      useEffect(() => {
+        ladeDaten();
+        // Auto-Refresh alle 30 Sekunden (silent = kein Lade-Screen)
+        const interval = setInterval(() => ladeDaten(true), 30000);
+        return () => clearInterval(interval);
+      }, []);
 
       async function handleLogin(person) {
         setCurrentUser(person);
