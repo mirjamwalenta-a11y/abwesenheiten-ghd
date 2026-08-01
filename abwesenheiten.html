@@ -1,12 +1,11 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
   <title>Abwesenheiten · Great Hair Day</title>
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="apple-mobile-web-app-title" content="Abwesenheiten" />
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-title" content="Abwesenheiten"/>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -19,1313 +18,1055 @@
   </style>
 </head>
 <body>
-  <div id="root"></div>
-  <script type="text/babel">
-    const { useState, useMemo, useEffect, useCallback } = React;
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
 
-    // ─── SUPABASE CONFIG ─────────────────────────────────────────────────────
-    const SUPABASE_URL = "https://wrxlaltgtgkdomklgrlj.supabase.co";
-    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndyeGxhbHRndGdrZG9ta2xncmxqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNDYwMzYsImV4cCI6MjA5OTgyMjAzNn0.Bw8ch-EJb_cLYTwxHdpjUJWgoCjje3Jc32pB0yiBS8g";
+// ─── SUPABASE ─────────────────────────────────────────────────────────────────
+const SB_URL = "https://wrxlaltgtgkdomklgrlj.supabase.co";
+const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndyeGxhbHRndGdrZG9ta2xncmxqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNDYwMzYsImV4cCI6MjA5OTgyMjAzNn0.Bw8ch-EJb_cLYTwxHdpjUJWgoCjje3Jc32pB0yiBS8g";
 
-    async function db(path, options = {}) {
-      const { headers: extraHeaders, prefer, ...restOptions } = options;
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-        headers: {
-          "apikey": SUPABASE_KEY,
-          "Authorization": `Bearer ${SUPABASE_KEY}`,
-          "Content-Type": "application/json",
-          "Prefer": prefer || "return=representation",
-        },
-        ...restOptions
-      });
-      if (!res.ok) { const e = await res.text(); throw new Error(e); }
-      const text = await res.text();
-      return text ? JSON.parse(text) : null;
+async function sb(path, opts = {}) {
+  const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
+    headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}`, "Content-Type": "application/json", "Prefer": opts.prefer || "return=representation", ...opts.headers },
+    ...opts
+  });
+  const t = await r.text();
+  if (!r.ok) throw new Error(t);
+  return t ? JSON.parse(t) : null;
+}
+
+const api = {
+  getTeam: () => sb("abw_team?order=name"),
+  updatePerson: (id, d) => sb(`abw_team?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) }),
+  getAnfragen: () => sb("abw_anfragen?order=erstellt.desc"),
+  addAnfrage: (d) => sb("abw_anfragen", { method: "POST", body: JSON.stringify(d) }),
+  updateAnfrage: (id, d) => sb(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) }),
+  getEinstellungen: () => sb("abw_einstellungen"),
+  setEinstellung: (k, v) => sb("abw_einstellungen", { method: "POST", headers: { "Prefer": "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ schluessel: k, wert: v }) }),
+};
+
+// ─── ÖSTERREICH FEIERTAGE ─────────────────────────────────────────────────────
+function ostern(j) {
+  const a=j%19,b=Math.floor(j/100),c=j%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),
+        g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,
+        l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),
+        mo=Math.floor((h+l-7*m+114)/31),ta=((h+l-7*m+114)%31)+1;
+  return new Date(j, mo-1, ta);
+}
+
+function feiertageJahr(j) {
+  const o = ostern(j);
+  const add = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return x; };
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  const fix = (m,t) => `${j}-${String(m).padStart(2,"0")}-${String(t).padStart(2,"0")}`;
+  return [
+    { datum: fix(1,1),      name: "Neujahr" },
+    { datum: fix(1,6),      name: "Heilige Drei Könige" },
+    { datum: fmt(add(o,1)), name: "Ostermontag" },
+    { datum: fix(5,1),      name: "Staatsfeiertag" },
+    { datum: fmt(add(o,39)),name: "Christi Himmelfahrt" },
+    { datum: fmt(add(o,50)),name: "Pfingstmontag" },
+    { datum: fmt(add(o,60)),name: "Fronleichnam" },
+    { datum: fix(8,15),     name: "Mariä Himmelfahrt" },
+    { datum: fix(10,26),    name: "Nationalfeiertag" },
+    { datum: fix(11,1),     name: "Allerheiligen" },
+    { datum: fix(12,8),     name: "Mariä Empfängnis" },
+    { datum: fix(12,25),    name: "Weihnachten" },
+    { datum: fix(12,26),    name: "Stephanitag" },
+  ].sort((a,b) => a.datum.localeCompare(b.datum));
+}
+
+const FT_CACHE = {};
+function getFeiertage(j) { if (!FT_CACHE[j]) FT_CACHE[j]=feiertageJahr(j); return FT_CACHE[j]; }
+function istFeiertag(d) { const j=parseInt(d); return getFeiertage(j).some(f=>f.datum===d); }
+function feiertagName(d) { const j=parseInt(d); return getFeiertage(j).find(f=>f.datum===d)?.name||"Feiertag"; }
+
+// ─── HILFSFUNKTIONEN ──────────────────────────────────────────────────────────
+const pad = n => String(n).padStart(2,"0");
+function datStr(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function parseD(s) { return new Date(s+"T00:00:00"); }
+function fmtD(s) { return parseD(s).toLocaleDateString("de-AT",{day:"2-digit",month:"2-digit",year:"numeric"}); }
+function fmtM(y,m) { return new Date(y,m,1).toLocaleDateString("de-AT",{month:"long",year:"numeric"}); }
+function fmtZ(v,b) { return v===b ? fmtD(v) : `${fmtD(v)} – ${fmtD(b)}`; }
+function heute() { return datStr(new Date()); }
+
+function tageZw(v,b) {
+  const t=[];
+  for (let d=parseD(v); d<=parseD(b); d.setDate(d.getDate()+1)) t.push(datStr(new Date(d)));
+  return t;
+}
+function arbeitstage(v,b,sz) {
+  return tageZw(v,b).filter(d => parseD(d).getDay()!==0 && !istFeiertag(d) && !sz.includes(d));
+}
+function istSperre(d, fixSperre, sperrzeiten) {
+  const dt=parseD(d), m=dt.getMonth()+1, t=dt.getDate();
+  if (m===12 && t>=1 && t<=24) return true;
+  if (!fixSperre) return false;
+  return sperrzeiten.some(s => d>=s.von && d<=s.bis);
+}
+
+function naechstesJubilaeum(eintrittsdatum) {
+  if (!eintrittsdatum) return null;
+  const h=new Date(), e=parseD(eintrittsdatum);
+  let n=new Date(h.getFullYear(), e.getMonth(), e.getDate());
+  if (n<=h) n.setFullYear(n.getFullYear()+1);
+  return n;
+}
+
+// ─── TYPEN ────────────────────────────────────────────────────────────────────
+const TYPEN_MA = [
+  { id:"urlaub", label:"Urlaub", icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
+];
+const TYPEN_OW = [
+  { id:"urlaub",   label:"Urlaub",              icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
+  { id:"sonstige", label:"Sonstige Abwesenheit", icon:"📋", color:"bg-violet-100 text-violet-800 border-violet-200" },
+];
+const ALLE_TYPEN = TYPEN_OW;
+function getTyp(id) { return ALLE_TYPEN.find(t=>t.id===id); }
+
+const STATUS = {
+  ausstehend: { label:"Ausstehend", text:"text-amber-700",   bg:"bg-amber-50",   border:"border-l-amber-400" },
+  genehmigt:  { label:"Genehmigt",  text:"text-emerald-700", bg:"bg-emerald-50", border:"border-l-emerald-500" },
+  abgelehnt:  { label:"Abgelehnt",  text:"text-rose-700",    bg:"bg-rose-50",    border:"border-l-rose-400" },
+};
+
+// ─── SHELL ────────────────────────────────────────────────────────────────────
+function Shell({children}) {
+  return <div className="min-h-screen bg-stone-100 flex justify-center">
+    <div className="w-full max-w-md bg-stone-50 min-h-screen shadow-xl relative">{children}</div>
+  </div>;
+}
+
+function Lade({text}) {
+  return <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+    <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-800 rounded-full animate-spin"/>
+    <p className="text-sm text-stone-400">{text||"Wird geladen…"}</p>
+  </div>;
+}
+
+// ─── LOGIN ────────────────────────────────────────────────────────────────────
+function Login({team, onLogin}) {
+  const [sel, setSel] = useState(null);
+  const [pin, setPin] = useState("");
+  const [err, setErr] = useState(false);
+
+  function tapPin(v) {
+    if (v==="del") { setPin(p=>p.slice(0,-1)); setErr(false); return; }
+    const n = pin+v; if (n.length>4) return;
+    setPin(n); setErr(false);
+    if (n.length===4) {
+      if (sel.pin===n) { setTimeout(()=>onLogin(sel),150); }
+      else { setTimeout(()=>{ setPin(""); setErr(true); },400); }
     }
+  }
 
-    const api = {
-      getTeam: () => db("abw_team?order=name"),
-      updatePerson: (id, data) => db(`abw_team?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-      getAnfragen: () => db("abw_anfragen?order=erstellt.desc"),
-      addAnfrage: (data) => db("abw_anfragen", { method: "POST", body: JSON.stringify(data) }),
-      updateAnfrage: (id, data) => db(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-      getEinstellungen: () => db("abw_einstellungen"),
-      getSperrzeiten: () => db("abw_einstellungen?schluessel=eq.sperrzeiten"),
-      setEinstellung: (key, val) => db("abw_einstellungen", {
-        method: "POST",
-        prefer: "resolution=merge-duplicates,return=representation",
-        body: JSON.stringify({ schluessel: key, wert: val })
-      }),
-    };
-
-    // ─── KONSTANTEN ──────────────────────────────────────────────────────────
-    // Österreichische Feiertage automatisch berechnen
-    function berechneOsterSonntag(jahr) {
-      // Gaußsche Osterformel
-      const a = jahr % 19;
-      const b = Math.floor(jahr / 100);
-      const c = jahr % 100;
-      const d = Math.floor(b / 4);
-      const e = b % 4;
-      const f = Math.floor((b + 8) / 25);
-      const g = Math.floor((b - f + 1) / 3);
-      const h = (19 * a + b - d - g + 15) % 30;
-      const i = Math.floor(c / 4);
-      const k = c % 4;
-      const l = (32 + 2 * e + 2 * i - h - k) % 7;
-      const m = Math.floor((a + 11 * h + 22 * l) / 451);
-      const monat = Math.floor((h + l - 7 * m + 114) / 31);
-      const tag = ((h + l - 7 * m + 114) % 31) + 1;
-      return new Date(jahr, monat - 1, tag);
-    }
-
-    function berechneFeiertage(jahr) {
-      const ostern = berechneOsterSonntag(jahr);
-      function addTage(datum, tage) {
-        const d = new Date(datum);
-        d.setDate(d.getDate() + tage);
-        return datumZuStr(new Date(d.setDate(d.getDate())));
-      }
-      function addT(tage) {
-        const d = new Date(ostern);
-        d.setDate(d.getDate() + tage);
-        return datumZuStr(d);
-      }
-      function fix(m, t) {
-        return `${jahr}-${String(m).padStart(2,"0")}-${String(t).padStart(2,"0")}`;
-      }
-      return [
-        { datum: fix(1,1),        name: "Neujahr" },
-        { datum: fix(1,6),        name: "Heilige Drei Könige" },
-        { datum: addT(1),         name: "Ostermontag" },
-        { datum: fix(5,1),        name: "Staatsfeiertag" },
-        { datum: addT(39),        name: "Christi Himmelfahrt" },
-        { datum: addT(50),        name: "Pfingstmontag" },
-        { datum: addT(60),        name: "Fronleichnam" },
-        { datum: fix(8,15),       name: "Mariä Himmelfahrt" },
-        { datum: fix(10,26),      name: "Nationalfeiertag" },
-        { datum: fix(11,1),       name: "Allerheiligen" },
-        { datum: fix(12,8),       name: "Mariä Empfängnis" },
-        { datum: fix(12,25),      name: "Weihnachten" },
-        { datum: fix(12,26),      name: "Stephanitag" },
-      ].sort((a,b) => a.datum.localeCompare(b.datum));
-    }
-
-    const _aktuellesJahr = new Date().getFullYear();
-    const FEIERTAGE_CACHE = {};
-    [_aktuellesJahr - 1, _aktuellesJahr, _aktuellesJahr + 1].forEach(j => {
-      FEIERTAGE_CACHE[j] = berechneFeiertage(j);
-    });
-
-    function istFeiertag(datum) {
-      const jahr = parseInt(datum.substring(0,4));
-      if (!FEIERTAGE_CACHE[jahr]) FEIERTAGE_CACHE[jahr] = berechneFeiertage(jahr);
-      return FEIERTAGE_CACHE[jahr].some(f => f.datum === datum);
-    }
-
-    function getFeiertagName(datum) {
-      const jahr = parseInt(datum.substring(0,4));
-      if (!FEIERTAGE_CACHE[jahr]) FEIERTAGE_CACHE[jahr] = berechneFeiertage(jahr);
-      return FEIERTAGE_CACHE[jahr].find(f => f.datum === datum)?.name || "Feiertag";
-    }
-
-    function getFeiertageListe(jahr) {
-      if (!FEIERTAGE_CACHE[jahr]) FEIERTAGE_CACHE[jahr] = berechneFeiertage(jahr);
-      return FEIERTAGE_CACHE[jahr];
-    }
-
-    const FEIERTAGE_2025 = berechneFeiertage(2025).map(f => f.datum);
-    const ANFRAGE_TYPEN_MITARBEITER = [
-      { id: "urlaub",   label: "Urlaub",              icon: "🌴", color: "bg-emerald-100 text-emerald-800 border-emerald-200" },
-    ];
-    const ANFRAGE_TYPEN_INHABERIN = [
-      { id: "urlaub",   label: "Urlaub",              icon: "🌴", color: "bg-emerald-100 text-emerald-800 border-emerald-200" },
-      { id: "sonstige", label: "Sonstige Abwesenheit", icon: "📋", color: "bg-violet-100 text-violet-800 border-violet-200" },
-    ];
-    function getAnfrageTypen(isOwner) {
-      return isOwner ? ANFRAGE_TYPEN_INHABERIN : ANFRAGE_TYPEN_MITARBEITER;
-    }
-    const ANFRAGE_TYPEN = ANFRAGE_TYPEN_INHABERIN; // Fallback für getTypConfig
-    const STATUS_CONFIG = {
-      ausstehend: { label: "Ausstehend", text: "text-amber-700",   bg: "bg-amber-50",   border: "border-l-amber-400" },
-      genehmigt:  { label: "Genehmigt",  text: "text-emerald-700", bg: "bg-emerald-50", border: "border-l-emerald-500" },
-      abgelehnt:  { label: "Abgelehnt",  text: "text-rose-700",    bg: "bg-rose-50",    border: "border-l-rose-400" },
-    };
-
-    // ─── HILFSFUNKTIONEN ─────────────────────────────────────────────────────
-    function parseDatum(str) { return new Date(str + "T00:00:00"); }
-    function formatDatum(str) {
-      return parseDatum(str).toLocaleDateString("de-AT", { day: "2-digit", month: "2-digit", year: "numeric" });
-    }
-    function formatMonat(year, month) {
-      return new Date(year, month, 1).toLocaleDateString("de-AT", { month: "long", year: "numeric" });
-    }
-    function datumZuStr(d) {
-      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-    }
-    function tageImBereich(von, bis) {
-      const tage = [];
-      for (let d = parseDatum(von); d <= parseDatum(bis); d.setDate(d.getDate()+1))
-        tage.push(datumZuStr(new Date(d)));
-      return tage;
-    }
-    function arbeitstage(von, bis, schliesztage) {
-      return tageImBereich(von, bis).filter(d => {
-        const day = parseDatum(d).getDay();
-        return day !== 0 && !istFeiertag(d) && !schliesztage.includes(d);
-      });
-    }
-    function istFixeSperre(datum) {
-      const d = parseDatum(datum), m = d.getMonth()+1, day = d.getDate();
-      return m === 12 && day >= 1 && day <= 24;
-    }
-    function istSperre(datum, sperrzeiten) {
-      if (istFixeSperre(datum)) return true;
-      if (!sperrzeiten) return false;
-      return sperrzeiten.some(s => datum >= s.von && datum <= s.bis);
-    }
-    function getTypConfig(id) {
-      return ANFRAGE_TYPEN_INHABERIN.find(t => t.id === id);
-    }
-    function formatZeitraum(von, bis) {
-      return von === bis ? formatDatum(von) : `${formatDatum(von)} – ${formatDatum(bis)}`;
-    }
-    function heute() { return datumZuStr(new Date()); }
-
-    // ─── APP SHELL ────────────────────────────────────────────────────────────
-    function AppShell({ children }) {
-      return (
-        <div className="min-h-screen bg-stone-100 flex justify-center">
-          <div className="w-full max-w-md bg-stone-50 min-h-screen relative shadow-xl">{children}</div>
-        </div>
-      );
-    }
-
-    // ─── LADE-SCREEN ─────────────────────────────────────────────────────────
-    function LadeScreen({ text }) {
-      return (
-        <div className="min-h-screen flex flex-col items-center justify-center gap-4">
-          <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-800 rounded-full animate-spin" />
-          <p className="text-sm text-stone-400">{text || "Wird geladen…"}</p>
-        </div>
-      );
-    }
-
-    // ─── LOGIN ────────────────────────────────────────────────────────────────
-    function LoginScreen({ team, onLogin }) {
-      const [selected, setSelected] = useState(null);
-      const [pin, setPin] = useState("");
-      const [fehler, setFehler] = useState(false);
-
-      function handlePinTaste(val) {
-        if (val === "del") { setPin(p => p.slice(0,-1)); setFehler(false); return; }
-        const neu = pin + val;
-        if (neu.length > 4) return;
-        setPin(neu); setFehler(false);
-        if (neu.length === 4) {
-          if (selected.pin === neu) { setTimeout(() => onLogin(selected), 150); }
-          else { setTimeout(() => { setPin(""); setFehler(true); }, 400); }
-        }
-      }
-
-      if (!selected) return (
-        <div className="min-h-screen bg-stone-50 flex justify-center">
-          <div className="w-full max-w-md flex flex-col justify-center px-6 py-12">
-            <div className="mb-10">
-              <p className="text-xs text-stone-400 uppercase tracking-widest font-medium mb-1">Great Hair Day</p>
-              <h1 className="text-2xl font-bold text-stone-900">Abwesenheiten</h1>
-              <p className="text-stone-500 text-sm mt-1">Wer bist du?</p>
-            </div>
-            <div className="flex flex-col gap-3">
-              {team.map(person => (
-                <button key={person.id} onClick={() => { setSelected(person); setPin(""); setFehler(false); }}
-                  className="flex items-center gap-4 bg-white border border-stone-200 rounded-xl px-4 py-3.5 text-left hover:border-stone-400 hover:shadow-sm transition-all">
-                  <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center flex-shrink-0">{person.name[0]}</span>
-                  <div>
-                    <p className="font-semibold text-stone-900 text-sm">{person.name}</p>
-                    <p className="text-xs text-stone-400">{person.role === "owner" ? "Inhaberin" : "Mitarbeiter:in"}</p>
-                  </div>
-                  <span className="ml-auto text-stone-300 text-lg">›</span>
-                </button>
-              ))}
-            </div>
-            <p className="text-center text-xs text-stone-300 mt-8">Great Hair Day Wien</p>
-          </div>
-        </div>
-      );
-
-      return (
-        <div className="min-h-screen bg-stone-50 flex justify-center">
-          <div className="w-full max-w-md flex flex-col justify-center px-6 py-12">
-            <button onClick={() => setSelected(null)} className="text-stone-400 text-sm mb-8 self-start">‹ Zurück</button>
-            <div className="flex flex-col items-center mb-10">
-              <span className="w-16 h-16 rounded-full bg-stone-900 text-white text-2xl font-bold flex items-center justify-center mb-4">{selected.name[0]}</span>
-              <p className="text-xl font-bold text-stone-900">{selected.name}</p>
-              <p className="text-stone-400 text-sm mt-1">PIN eingeben</p>
-            </div>
-            <div className="flex justify-center gap-4 mb-8">
-              {[0,1,2,3].map(i => (
-                <div key={i} className={`w-4 h-4 rounded-full border-2 transition-all ${fehler ? "border-rose-400 bg-rose-400" : i < pin.length ? "border-stone-900 bg-stone-900" : "border-stone-300"}`} />
-              ))}
-            </div>
-            {fehler && <p className="text-center text-rose-500 text-sm mb-4">Falscher PIN.</p>}
-            <div className="grid grid-cols-3 gap-3 max-w-xs mx-auto w-full">
-              {["1","2","3","4","5","6","7","8","9","","0","del"].map((key, i) => (
-                key === "" ? <div key={i} /> :
-                <button key={i} onClick={() => handlePinTaste(key)}
-                  className={`h-14 rounded-2xl text-xl font-semibold transition-all active:scale-95 ${key === "del" ? "text-stone-500 hover:bg-stone-100" : "bg-white border border-stone-200 text-stone-900 hover:border-stone-400 hover:shadow-sm"}`}>
-                  {key === "del" ? "⌫" : key}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    // ─── ERÖFFNUNGSBUCHUNG ────────────────────────────────────────────────────
-    function EroeffnungsbuchungScreen({ team, onSave, onSkip }) {
-      const mitarbeitende = team.filter(p => p.role === "employee");
-      const [werte, setWerte] = useState(Object.fromEntries(mitarbeitende.map(p => [p.id, String(p.urlaub_verbraucht)])));
-      const [saving, setSaving] = useState(false);
-
-      async function handleSave() {
-        setSaving(true);
-        try {
-          for (const p of mitarbeitende) {
-            await api.updatePerson(p.id, { urlaub_verbraucht: parseInt(werte[p.id], 10) || 0 });
-          }
-          onSave();
-        } catch(e) { alert("Fehler beim Speichern: " + e.message); setSaving(false); }
-      }
-
-      return (
-        <div className="px-4 py-8 flex flex-col gap-6 min-h-screen bg-stone-50">
-          <div>
-            <p className="text-xs text-stone-400 uppercase tracking-widest font-medium mb-1">Ersteinrichtung</p>
-            <h1 className="text-2xl font-bold text-stone-900">Urlaubsstände eintragen</h1>
-            <p className="text-stone-500 text-sm mt-2">Wie viele Urlaubstage hat jede Person bereits verbraucht? Das passiert nur einmal.</p>
-          </div>
-          <div className="flex flex-col gap-3">
-            {mitarbeitende.map(p => (
-              <div key={p.id} className="bg-white border border-stone-200 rounded-2xl px-4 py-4 flex items-center gap-4">
-                <span className="w-10 h-10 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center flex-shrink-0">{p.name[0]}</span>
-                <div className="flex-1">
-                  <p className="font-semibold text-stone-800 text-sm">{p.name}</p>
-                  <p className="text-xs text-stone-400">Anspruch: {p.urlaub_anspruch} Tage</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input type="number" min="0" max={p.urlaub_anspruch} value={werte[p.id]}
-                    onChange={e => setWerte(w => ({ ...w, [p.id]: e.target.value }))}
-                    className="w-16 text-center border border-stone-300 rounded-xl py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600" />
-                  <span className="text-xs text-stone-400">Tage</span>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="flex flex-col gap-2 pt-2">
-            <button onClick={handleSave} disabled={saving}
-              className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 transition-colors disabled:opacity-50">
-              {saving ? "Wird gespeichert…" : "Speichern und starten"}
-            </button>
-            <button onClick={onSkip} className="w-full text-stone-400 text-sm py-2">Überspringen</button>
-          </div>
-        </div>
-      );
-    }
-
-    // ─── EINSTELLUNGEN ────────────────────────────────────────────────────────
-    // ─── Hilfsfunktionen Eintrittsdatum ─────────────────────────────────────
-    function naechstesUrlaubsdatum(eintrittsdatum) {
-      if (!eintrittsdatum) return null;
-      const heute2 = new Date();
-      const eintritt = new Date(eintrittsdatum + "T00:00:00");
-      let naechstes = new Date(heute2.getFullYear(), eintritt.getMonth(), eintritt.getDate());
-      if (naechstes <= heute2) naechstes.setFullYear(naechstes.getFullYear() + 1);
-      return naechstes;
-    }
-    function tagesBis(datum) {
-      if (!datum) return null;
-      return Math.ceil((datum - new Date()) / (1000 * 60 * 60 * 24));
-    }
-
-    function PersonenKarte({ person, onUpdate }) {
-      const [anspruch, setAnspruch] = useState(String(person.urlaub_anspruch));
-      const [verbraucht, setVerbraucht] = useState(String(person.urlaub_verbraucht));
-      const [eintrittsdatum, setEintrittsdatum] = useState(person.eintrittsdatum || "");
-      const [pinInput, setPinInput] = useState("");
-      const [saved, setSaved] = useState(false);
-      const [saving, setSaving] = useState(false);
-
-      const naechstes = naechstesUrlaubsdatum(eintrittsdatum);
-      const tage = tagesBis(naechstes);
-
-      async function handleSave() {
-        setSaving(true);
-        try {
-          const saveData = { urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0, eintrittsdatum: eintrittsdatum || null };
-          if (pinInput && pinInput.length === 4) saveData.pin = pinInput;
-          await api.updatePerson(person.id, saveData);
-          const updateData = { urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0, eintrittsdatum: eintrittsdatum || null };
-          if (pinInput && pinInput.length === 4) updateData.pin = pinInput;
-          onUpdate(updateData);
-          if (pinInput && pinInput.length === 4) setPinInput("");
-          setSaved(true); setTimeout(() => setSaved(false), 2000);
-        } catch(e) { alert("Fehler: " + e.message); }
-        setSaving(false);
-      }
-
-      return (
-        <div className="bg-white border border-stone-200 rounded-2xl px-4 py-4 flex flex-col gap-3">
-          <div className="flex items-center gap-3">
-            <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{person.name[0]}</span>
-            <p className="font-semibold text-stone-800">{person.name}</p>
-          </div>
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <p className="text-xs text-stone-400 mb-1">Eintrittsdatum</p>
-              <input type="date" value={eintrittsdatum} onChange={e => { setEintrittsdatum(e.target.value); setSaved(false); }}
-                className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-900 focus:outline-none focus:border-stone-600" />
-            </div>
-            <div className="flex-1">
-              <p className="text-xs text-stone-400 mb-1">PIN (4-stellig)</p>
-              <input type="password" maxLength={4} value={pinInput} onChange={e => { setPinInput(e.target.value.replace(/\D/,"")); setSaved(false); }}
-                placeholder="••••"
-                className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600" />
-            </div>
-          </div>
-          {naechstes && (
-            <div className={`rounded-xl px-3 py-2 ${tage <= 30 ? "bg-emerald-50 border border-emerald-200" : "bg-stone-50"}`}>
-              <p className="text-xs text-stone-500">Nächster Urlaubsanspruch: <span className="font-semibold text-stone-800">{naechstes.toLocaleDateString("de-AT")}</span></p>
-              <p className={`text-xs font-semibold mt-0.5 ${tage <= 30 ? "text-emerald-700" : "text-stone-400"}`}>
-                {tage <= 0 ? "Heute fällig!" : `in ${tage} Tagen`}
-              </p>
-            </div>
-          )}
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <p className="text-xs text-stone-400 mb-1">Jahresanspruch</p>
-              <input type="number" min="0" value={anspruch} onChange={e => { setAnspruch(e.target.value); setSaved(false); }}
-                className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600" />
-            </div>
-            <div className="flex-1">
-              <p className="text-xs text-stone-400 mb-1">Verbraucht</p>
-              <input type="number" min="0" value={verbraucht} onChange={e => { setVerbraucht(e.target.value); setSaved(false); }}
-                className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600" />
-            </div>
-            <div className="flex items-end">
-              <button onClick={handleSave} disabled={saving}
-                className={`rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${saved ? "bg-emerald-100 text-emerald-700" : "bg-stone-900 text-white hover:bg-stone-800"}`}>
-                {saved ? "✓" : saving ? "…" : "→"}
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    function Einstellungen({ team, setTeam, schliesztage, setSchliesztage, warnschwelle, setWarnschwelle, setWunschLabel, sperrzeiten, setSperrzeiten }) {
-      const [tab, setTab] = useState("schliesztage");
-      const [neuerTag, setNeuerTag] = useState("");
-      const [tagFehler, setTagFehler] = useState("");
-      const [schwelleInput, setSchwelleInput] = useState(String(warnschwelle));
-      const [schwelleSaved, setSchwelleSaved] = useState(false);
-      const [wunschInput, setWunschInput] = useState(wunschLabel);
-      const [wunschSaved, setWunschSaved] = useState(false);
-      const [sperrVon, setSperrVon] = useState("");
-      const [sperrBis, setSperrBis] = useState("");
-      const [sperrName, setSperrName] = useState("");
-      const [sperrFehler, setSperrFehler] = useState("");
-
-      async function handleWunschSave() {
-        if (!wunschInput.trim()) return;
-        try {
-          await api.setEinstellung("wunsch_label", wunschInput.trim());
-          setWunschLabel(wunschInput.trim());
-          setWunschSaved(true); setTimeout(() => setWunschSaved(false), 2000);
-        } catch(e) { alert("Fehler: " + e.message); }
-      }
-
-      async function handleSperrHinzu() {
-        setSperrFehler("");
-        if (!sperrVon || !sperrBis) { setSperrFehler("Bitte Von und Bis ausfüllen."); return; }
-        if (sperrVon > sperrBis) { setSperrFehler("Von muss vor Bis liegen."); return; }
-        const neu = [...sperrzeiten, { von: sperrVon, bis: sperrBis, bezeichnung: sperrName || "Urlaubssperre" }];
-        try {
-          await api.setEinstellung("sperrzeiten", JSON.stringify(neu));
-          setSperrzeiten(neu); setSperrVon(""); setSperrBis(""); setSperrName("");
-        } catch(e) { alert("Fehler: " + e.message); }
-      }
-
-      async function handleSperrLoeschen(idx) {
-        const neu = sperrzeiten.filter((_, i) => i !== idx);
-        try {
-          await api.setEinstellung("sperrzeiten", JSON.stringify(neu));
-          setSperrzeiten(neu);
-        } catch(e) { alert("Fehler: " + e.message); }
-      }
-
-      async function handleHinzu() {
-        setTagFehler("");
-        if (!neuerTag) return;
-        if (schliesztage.includes(neuerTag)) { setTagFehler("Bereits eingetragen."); return; }
-        if (istFeiertag(neuerTag)) { setTagFehler("Ist ein gesetzlicher Feiertag."); return; }
-        const neu = [...schliesztage, neuerTag].sort();
-        try {
-          await api.setEinstellung("schliesztage", JSON.stringify(neu));
-          setSchliesztage(neu); setNeuerTag("");
-        } catch(e) { alert("Fehler: " + e.message); }
-      }
-
-      async function handleLoeschen(datum) {
-        const neu = schliesztage.filter(d => d !== datum);
-        try {
-          await api.setEinstellung("schliesztage", JSON.stringify(neu));
-          setSchliesztage(neu);
-        } catch(e) { alert("Fehler: " + e.message); }
-      }
-
-      async function handleSchwelleSave() {
-        const n = parseInt(schwelleInput, 10);
-        if (isNaN(n) || n < 0) return;
-        try {
-          await api.setEinstellung("warnschwelle", String(n));
-          setWarnschwelle(n); setSchwelleSaved(true); setTimeout(() => setSchwelleSaved(false), 2000);
-        } catch(e) { alert("Fehler: " + e.message); }
-      }
-
-      return (
-        <div className="px-4 py-6 flex flex-col gap-4">
-          <div>
-            <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Inhaberin</p>
-            <h2 className="text-2xl font-bold text-stone-900">Einstellungen</h2>
-          </div>
-          <div className="flex bg-stone-100 rounded-xl p-1 gap-1 flex-wrap">
-            {[{id:"schliesztage",label:"Schließtage"},{id:"sperrzeiten",label:"Sperrzeiten"},{id:"warnschwelle",label:"Resturlaub"},{id:"personen",label:"Personen"}].map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                className={`flex-1 py-2 text-xs font-medium rounded-lg transition-all min-w-[60px] ${tab === t.id ? "bg-white text-stone-900 shadow-sm" : "text-stone-500"}`}>
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          {tab === "schliesztage" && (
-            <div className="flex flex-col gap-4">
-              <div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-3">
-                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Neuer Schließtag</p>
-                <div className="flex gap-2">
-                  <input type="date" value={neuerTag} onChange={e => { setNeuerTag(e.target.value); setTagFehler(""); }}
-                    className="flex-1 border border-stone-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-stone-600" />
-                  <button onClick={handleHinzu} className="bg-stone-900 text-white rounded-xl px-4 py-2.5 text-sm font-semibold">+</button>
-                </div>
-                {tagFehler && <p className="text-xs text-rose-500">{tagFehler}</p>}
-              </div>
-              <div className="bg-stone-100 rounded-xl px-4 py-2.5">
-                <p className="text-xs text-stone-400">Urlaubssperre 1.12.–24.12. ist fest hinterlegt.</p>
-              </div>
-              <div className="flex flex-col gap-2">
-                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">Eingetragene Schließtage</p>
-                {schliesztage.length === 0 ? <p className="text-stone-400 text-sm px-1">Keine eingetragen.</p> :
-                  schliesztage.map(d => (
-                    <div key={d} className="bg-white border border-stone-200 rounded-xl px-4 py-3 flex items-center justify-between">
-                      <p className="text-sm font-medium text-stone-800">{formatDatum(d)}</p>
-                      <button onClick={() => handleLoeschen(d)} className="text-rose-400 hover:text-rose-600 px-2">✕</button>
-                    </div>
-                  ))
-                }
-              </div>
-              <div className="flex flex-col gap-2">
-                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">Gesetzliche Feiertage Österreich</p>
-                {getFeiertageListe(new Date().getFullYear()).map(f => (
-                  <div key={f.datum} className="bg-stone-50 border border-stone-100 rounded-xl px-4 py-2.5 flex items-center justify-between">
-                    <p className="text-sm font-medium text-stone-700">{f.name}</p>
-                    <p className="text-xs text-stone-400">{formatDatum(f.datum)}</p>
-                  </div>
-                ))}
-              <p className="text-xs text-stone-300 px-1 mt-1">Automatisch berechnet für {new Date().getFullYear()}</p>
-              </div>
-            </div>
-          )}
-
-          {tab === "warnschwelle" && (
-            <div className="flex flex-col gap-4">
-              <div className="bg-white border border-stone-200 rounded-2xl p-5 flex flex-col gap-4">
-                <div>
-                  <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-1">Resturlaub-Warnschwelle</p>
-                  <p className="text-stone-500 text-sm">Ab wie vielen offenen Urlaubstagen soll eine Warnung erscheinen?</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <input type="number" min="0" value={schwelleInput} onChange={e => { setSchwelleInput(e.target.value); setSchwelleSaved(false); }}
-                    className="w-20 text-center border border-stone-300 rounded-xl py-2.5 text-lg font-bold text-stone-900 focus:outline-none focus:border-stone-600" />
-                  <span className="text-stone-500 text-sm">Tage</span>
-                  <button onClick={handleSchwelleSave}
-                    className={`ml-auto rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors ${schwelleSaved ? "bg-emerald-100 text-emerald-700" : "bg-stone-900 text-white hover:bg-stone-800"}`}>
-                    {schwelleSaved ? "✓ Gespeichert" : "Speichern"}
-                  </button>
-                </div>
-              </div>
-              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-                <p className="text-xs text-amber-700">Aktuell: Warnung ab <span className="font-bold">{warnschwelle} Tagen</span> Resturlaub offen.</p>
-              </div>
-            </div>
-          )}
-
-          {tab === "sperrzeiten" && (
-            <div className="flex flex-col gap-4">
-              <div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-3">
-                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Neue Urlaubssperre</p>
-                <input type="text" placeholder="Bezeichnung (z.B. Sommersperre)" value={sperrName}
-                  onChange={e => setSperrName(e.target.value)}
-                  className="border border-stone-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-stone-600" />
-                <div className="flex gap-2">
-                  <div className="flex-1">
-                    <p className="text-xs text-stone-400 mb-1">Von</p>
-                    <input type="date" value={sperrVon} onChange={e => { setSperrVon(e.target.value); setSperrFehler(""); }}
-                      className="w-full border border-stone-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-stone-600" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-xs text-stone-400 mb-1">Bis</p>
-                    <input type="date" value={sperrBis} onChange={e => { setSperrBis(e.target.value); setSperrFehler(""); }}
-                      className="w-full border border-stone-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-stone-600" />
-                  </div>
-                </div>
-                {sperrFehler && <p className="text-xs text-rose-500">{sperrFehler}</p>}
-                <button onClick={handleSperrHinzu} className="bg-stone-900 text-white rounded-xl py-2.5 text-sm font-semibold">+ Sperre hinzufügen</button>
-              </div>
-              <div className="bg-stone-100 rounded-xl px-4 py-2.5">
-                <p className="text-xs text-stone-400">Urlaubssperre 1.12.–24.12. ist immer aktiv.</p>
-              </div>
-              <div className="flex flex-col gap-2">
-                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">Aktive Sperrzeiten</p>
-                {sperrzeiten.length === 0 ? <p className="text-stone-400 text-sm px-1">Keine eingetragen.</p> :
-                  sperrzeiten.map((s, i) => (
-                    <div key={i} className="bg-white border border-stone-200 rounded-xl px-4 py-3 flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-stone-800">{s.bezeichnung}</p>
-                        <p className="text-xs text-stone-400">{formatDatum(s.von)} – {formatDatum(s.bis)}</p>
-                      </div>
-                      <button onClick={() => handleSperrLoeschen(i)} className="text-rose-400 hover:text-rose-600 px-2">✕</button>
-                    </div>
-                  ))
-                }
-              </div>
-            </div>
-          )}
-
-          {tab === "personen" && (
-            <div className="flex flex-col gap-3">
-              <p className="text-xs text-stone-400 px-1">Urlaubstage und Jahresanspruch anpassen.</p>
-              {team.filter(p => p.role === "employee").map(p => (
-                <PersonenKarte key={p.id} person={p} onUpdate={updates => setTeam(prev => prev.map(x => x.id === p.id ? { ...x, ...updates } : x))} />
-              ))}
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ─── HOME MITARBEITER:IN ──────────────────────────────────────────────────
-    function HomeMitarbeiter({ person, eigeneAnfragen, onNeueAnfrage, onNavigate }) {
-      if (!person) return null;
-      const offen = person.urlaub_anspruch - person.urlaub_verbraucht;
-      const recentAnfragen = [...eigeneAnfragen].sort((a,b) => b.erstellt.localeCompare(a.erstellt)).slice(0,3);
-      return (
-        <div className="px-4 py-6 flex flex-col gap-6">
-          <div>
-            <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Guten Tag</p>
-            <h1 className="text-2xl font-bold text-stone-900">{person.name}</h1>
-          </div>
-          <div className="bg-white rounded-2xl border border-stone-200 p-5">
-            <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-3">Dein Urlaubsstand 2025</p>
-            <div className="flex gap-4">
-              {[{val:person.urlaub_verbraucht,label:"verbraucht",color:"text-stone-900"},{val:offen,label:"offen",color:offen>10?"text-amber-600":"text-emerald-600"},{val:person.urlaub_anspruch,label:"gesamt",color:"text-stone-400"}].map((item,i) => (
-                <div key={i} className="flex-1 text-center">
-                  <p className={`text-3xl font-bold ${item.color}`}>{item.val}</p>
-                  <p className="text-xs text-stone-400 mt-0.5">{item.label}</p>
-                </div>
-              ))}
-            </div>
-            <div className="mt-4 bg-stone-100 rounded-full h-1.5 overflow-hidden">
-              <div className="h-full bg-stone-800 rounded-full" style={{width:`${Math.min((person.urlaub_verbraucht/person.urlaub_anspruch)*100,100)}%`}} />
-            </div>
-          </div>
-          <button onClick={onNeueAnfrage} className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold text-base hover:bg-stone-800 active:bg-stone-950 transition-colors">
-            + Neue Anfrage stellen
+  if (!sel) return (
+    <Shell><div className="flex flex-col justify-center min-h-screen px-6 py-12">
+      <div className="mb-10">
+        <p className="text-xs text-stone-400 uppercase tracking-widest mb-1">Great Hair Day</p>
+        <h1 className="text-2xl font-bold text-stone-900">Abwesenheiten</h1>
+        <p className="text-stone-500 text-sm mt-1">Wer bist du?</p>
+      </div>
+      <div className="flex flex-col gap-3">
+        {team.map(p=>(
+          <button key={p.id} onClick={()=>{setSel(p);setPin("");setErr(false);}}
+            className="flex items-center gap-4 bg-white border border-stone-200 rounded-xl px-4 py-3.5 text-left hover:border-stone-400 hover:shadow-sm transition-all">
+            <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
+            <div><p className="font-semibold text-stone-900 text-sm">{p.name}</p>
+            <p className="text-xs text-stone-400">{p.role==="owner"?"Inhaberin":"Mitarbeiter:in"}</p></div>
+            <span className="ml-auto text-stone-300 text-lg">›</span>
           </button>
-          {recentAnfragen.length > 0 && (
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Letzte Anfragen</p>
-                <button onClick={() => onNavigate("meine-anfragen")} className="text-xs text-stone-500 underline underline-offset-2">Alle anzeigen</button>
-              </div>
-              <div className="flex flex-col gap-2">{recentAnfragen.map(a => <AnfrageKarte key={a.id} anfrage={a} />)}</div>
-            </div>
-          )}
-        </div>
-      );
-    }
+        ))}
+      </div>
+      <p className="text-center text-xs text-stone-300 mt-8">Great Hair Day Wien</p>
+    </div></Shell>
+  );
 
-    // ─── HOME INHABERIN ───────────────────────────────────────────────────────
-    function HomeInhaberin({ anfragen, team, warnschwelle, onNavigate }) {
-      const offeneAnfragen = anfragen.filter(a => a.status === "ausstehend");
-      const warnungen = team.filter(p => p.role === "employee")
-        .map(p => ({...p, offen: p.urlaub_anspruch - p.urlaub_verbraucht}))
-        .filter(p => p.offen > warnschwelle);
-      // Urlaubsanspruch bald fällig (innerhalb 30 Tage)
-      const urlaubFaellig = team.filter(p => p.role === "employee" && p.eintrittsdatum).map(p => {
-        const naechstes = naechstesUrlaubsdatum(p.eintrittsdatum);
-        const tage = tagesBis(naechstes);
-        return { ...p, naechstes, tage };
-      }).filter(p => p.tage !== null && p.tage <= 30);
-      return (
-        <div className="px-4 py-6 flex flex-col gap-6">
-          <div>
-            <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Übersicht</p>
-            <h1 className="text-2xl font-bold text-stone-900">Hallo, Mirjam</h1>
+  return (
+    <Shell><div className="flex flex-col justify-center min-h-screen px-6 py-12">
+      <button onClick={()=>setSel(null)} className="text-stone-400 text-sm mb-8 self-start">‹ Zurück</button>
+      <div className="flex flex-col items-center mb-10">
+        <span className="w-16 h-16 rounded-full bg-stone-900 text-white text-2xl font-bold flex items-center justify-center mb-4">{sel.name[0]}</span>
+        <p className="text-xl font-bold text-stone-900">{sel.name}</p>
+        <p className="text-stone-400 text-sm mt-1">PIN eingeben</p>
+      </div>
+      <div className="flex justify-center gap-4 mb-8">
+        {[0,1,2,3].map(i=>(
+          <div key={i} className={`w-4 h-4 rounded-full border-2 transition-all ${err?"border-rose-400 bg-rose-400":i<pin.length?"border-stone-900 bg-stone-900":"border-stone-300"}`}/>
+        ))}
+      </div>
+      {err && <p className="text-center text-rose-500 text-sm mb-4">Falscher PIN.</p>}
+      <div className="grid grid-cols-3 gap-3 max-w-xs mx-auto w-full">
+        {["1","2","3","4","5","6","7","8","9","","0","del"].map((k,i)=>(
+          k===""?<div key={i}/>:
+          <button key={i} onClick={()=>tapPin(k)}
+            className={`h-14 rounded-2xl text-xl font-semibold transition-all active:scale-95 ${k==="del"?"text-stone-500 hover:bg-stone-100":"bg-white border border-stone-200 text-stone-900 hover:border-stone-400"}`}>
+            {k==="del"?"⌫":k}
+          </button>
+        ))}
+      </div>
+    </div></Shell>
+  );
+}
+
+// ─── ERÖFFNUNGSBUCHUNG ────────────────────────────────────────────────────────
+function Eroeffnung({team, onDone}) {
+  const ma = team.filter(p=>p.role==="employee");
+  const [w, setW] = useState(Object.fromEntries(ma.map(p=>[p.id,String(p.urlaub_verbraucht||0)])));
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    try {
+      for (const p of ma) await api.updatePerson(p.id, {urlaub_verbraucht: parseInt(w[p.id])||0});
+      await api.setEinstellung("eroeffnung_erledigt","true");
+      onDone();
+    } catch(e) { alert("Fehler: "+e.message); setSaving(false); }
+  }
+
+  return <div className="px-4 py-8 flex flex-col gap-6 min-h-screen">
+    <div>
+      <p className="text-xs text-stone-400 uppercase tracking-widest mb-1">Ersteinrichtung</p>
+      <h1 className="text-2xl font-bold text-stone-900">Urlaubsstände eintragen</h1>
+      <p className="text-stone-500 text-sm mt-2">Wie viele Urlaubstage hat jede Person heuer bereits verbraucht?</p>
+    </div>
+    <div className="flex flex-col gap-3">
+      {ma.map(p=>(
+        <div key={p.id} className="bg-white border border-stone-200 rounded-2xl px-4 py-4 flex items-center gap-4">
+          <span className="w-10 h-10 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
+          <div className="flex-1"><p className="font-semibold text-stone-800 text-sm">{p.name}</p>
+          <p className="text-xs text-stone-400">Anspruch: {p.urlaub_anspruch} Tage</p></div>
+          <div className="flex items-center gap-2">
+            <input type="number" min="0" max={p.urlaub_anspruch} value={w[p.id]}
+              onChange={e=>setW(x=>({...x,[p.id]:e.target.value}))}
+              className="w-16 text-center border border-stone-300 rounded-xl py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600"/>
+            <span className="text-xs text-stone-400">Tage</span>
           </div>
-          <div className="bg-white rounded-2xl border border-stone-200 p-5">
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Offene Anfragen</p>
-              {offeneAnfragen.length > 0 && <span className="bg-rose-100 text-rose-700 text-xs font-bold rounded-full px-2.5 py-0.5">{offeneAnfragen.length}</span>}
-            </div>
-            {offeneAnfragen.length === 0 ? <p className="text-stone-400 text-sm">Keine offenen Anfragen.</p> : (
-              <div className="flex flex-col gap-2">
-                {offeneAnfragen.slice(0,3).map(a => (
-                  <div key={a.id} className="flex items-center gap-3">
-                    <span className="w-7 h-7 rounded-full bg-stone-100 text-stone-700 text-xs font-bold flex items-center justify-center flex-shrink-0">
-                      {team.find(p=>p.id===a.person_id)?.name[0]}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-stone-800 truncate">{team.find(p=>p.id===a.person_id)?.name}</p>
-                      <p className="text-xs text-stone-400">{getTypConfig(a.typ)?.label} · {formatZeitraum(a.von, a.bis)}</p>
-                    </div>
-                  </div>
-                ))}
-                {offeneAnfragen.length > 3 && <p className="text-xs text-stone-400 pl-10">+{offeneAnfragen.length-3} weitere</p>}
+        </div>
+      ))}
+    </div>
+    <div className="flex flex-col gap-2 pt-2">
+      <button onClick={save} disabled={saving}
+        className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 transition-colors disabled:opacity-50">
+        {saving?"Wird gespeichert…":"Speichern und starten"}
+      </button>
+      <button onClick={async()=>{await api.setEinstellung("eroeffnung_erledigt","true");onDone();}}
+        className="w-full text-stone-400 text-sm py-2">Überspringen</button>
+    </div>
+  </div>;
+}
+
+// ─── HOME MITARBEITER ─────────────────────────────────────────────────────────
+function HomeMitarbeiter({person, anfragen, onNeu, onNav}) {
+  if (!person) return null;
+  const offen = person.urlaub_anspruch - person.urlaub_verbraucht;
+  const recent = [...anfragen].sort((a,b)=>b.erstellt.localeCompare(a.erstellt)).slice(0,3);
+  return <div className="px-4 py-6 flex flex-col gap-6">
+    <div>
+      <p className="text-xs text-stone-400 uppercase tracking-widest">Guten Tag</p>
+      <h1 className="text-2xl font-bold text-stone-900">{person.name}</h1>
+    </div>
+    <div className="bg-white rounded-2xl border border-stone-200 p-5">
+      <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-3">Urlaubsstand {new Date().getFullYear()}</p>
+      <div className="flex gap-4">
+        {[{v:person.urlaub_verbraucht,l:"verbraucht",c:"text-stone-900"},{v:offen,l:"offen",c:offen>10?"text-amber-600":"text-emerald-600"},{v:person.urlaub_anspruch,l:"gesamt",c:"text-stone-400"}].map((x,i)=>(
+          <div key={i} className="flex-1 text-center">
+            <p className={`text-3xl font-bold ${x.c}`}>{x.v}</p>
+            <p className="text-xs text-stone-400 mt-0.5">{x.l}</p>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 bg-stone-100 rounded-full h-1.5 overflow-hidden">
+        <div className="h-full bg-stone-800 rounded-full" style={{width:`${Math.min((person.urlaub_verbraucht/person.urlaub_anspruch)*100,100)}%`}}/>
+      </div>
+    </div>
+    <button onClick={onNeu} className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 active:bg-stone-950 transition-colors">+ Neue Anfrage stellen</button>
+    {recent.length>0 && <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Letzte Anfragen</p>
+        <button onClick={()=>onNav("meine-anfragen")} className="text-xs text-stone-500 underline">Alle anzeigen</button>
+      </div>
+      <div className="flex flex-col gap-2">{recent.map(a=><AnfrageKarte key={a.id} anfrage={a}/>)}</div>
+    </div>}
+  </div>;
+}
+
+// ─── HOME INHABERIN ───────────────────────────────────────────────────────────
+function HomeInhaberin({anfragen, team, warnschwelle, onNav}) {
+  const offen = anfragen.filter(a=>a.status==="ausstehend");
+  const warnungen = team.filter(p=>p.role==="employee")
+    .map(p=>({...p,rest:p.urlaub_anspruch-p.urlaub_verbraucht}))
+    .filter(p=>p.rest>warnschwelle);
+  const faellig = team.filter(p=>p.role==="employee"&&p.eintrittsdatum).map(p=>{
+    const n=naechstesJubilaeum(p.eintrittsdatum);
+    const tage=n?Math.ceil((n-new Date())/(1000*60*60*24)):null;
+    return {...p,naechstes:n,tage};
+  }).filter(p=>p.tage!==null&&p.tage<=30);
+
+  return <div className="px-4 py-6 flex flex-col gap-6">
+    <div>
+      <p className="text-xs text-stone-400 uppercase tracking-widest">Übersicht</p>
+      <h1 className="text-2xl font-bold text-stone-900">Hallo, {team.find(p=>p.role==="owner")?.name||"Mirjam"}</h1>
+    </div>
+    <div className="bg-white rounded-2xl border border-stone-200 p-5">
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Offene Anfragen</p>
+        {offen.length>0&&<span className="bg-rose-100 text-rose-700 text-xs font-bold rounded-full px-2.5 py-0.5">{offen.length}</span>}
+      </div>
+      {offen.length===0?<p className="text-stone-400 text-sm">Keine offenen Anfragen.</p>:(
+        <div className="flex flex-col gap-2">
+          {offen.slice(0,3).map(a=>(
+            <div key={a.id} className="flex items-center gap-3">
+              <span className="w-7 h-7 rounded-full bg-stone-100 text-stone-700 text-xs font-bold flex items-center justify-center">{team.find(p=>p.id===a.person_id)?.name[0]}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-stone-800 truncate">{team.find(p=>p.id===a.person_id)?.name}</p>
+                <p className="text-xs text-stone-400">{getTyp(a.typ)?.label} · {fmtZ(a.von,a.bis)}</p>
               </div>
-            )}
-            <button onClick={() => onNavigate("anfragen")} className="mt-4 w-full border border-stone-200 rounded-xl py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 transition-colors">
-              Alle Anfragen öffnen →
+            </div>
+          ))}
+          {offen.length>3&&<p className="text-xs text-stone-400 pl-10">+{offen.length-3} weitere</p>}
+        </div>
+      )}
+      <button onClick={()=>onNav("anfragen")} className="mt-4 w-full border border-stone-200 rounded-xl py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 transition-colors">Alle Anfragen →</button>
+    </div>
+    {warnungen.length>0&&<div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+      <p className="text-xs font-medium text-amber-700 uppercase tracking-widest mb-2">Resturlaub</p>
+      {warnungen.map(p=><p key={p.id} className="text-sm text-amber-800"><span className="font-semibold">{p.name}</span> — noch {p.rest} Tage offen</p>)}
+      <button onClick={()=>onNav("urlaubsstaende")} className="mt-2 text-xs text-amber-700 underline">Urlaubsstände →</button>
+    </div>}
+    {faellig.length>0&&<div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4">
+      <p className="text-xs font-medium text-emerald-700 uppercase tracking-widest mb-2">Urlaubsanspruch fällig</p>
+      {faellig.map(p=>(
+        <div key={p.id} className="flex items-center justify-between">
+          <p className="text-sm text-emerald-800"><span className="font-semibold">{p.name}</span> — {p.naechstes.toLocaleDateString("de-AT")}</p>
+          <span className="text-xs font-bold text-emerald-600">{p.tage<=0?"Heute!":"in "+p.tage+"d"}</span>
+        </div>
+      ))}
+      <button onClick={()=>onNav("einstellungen")} className="mt-2 text-xs text-emerald-700 underline">Urlaub gutschreiben →</button>
+    </div>}
+    <div className="grid grid-cols-3 gap-3">
+      {[{l:"Kalender",i:"◫",s:"kalender"},{l:"Anfragen",i:"◎",s:"anfragen"},{l:"Urlaub",i:"▦",s:"urlaubsstaende"}].map(x=>(
+        <button key={x.s} onClick={()=>onNav(x.s)} className="bg-white border border-stone-200 rounded-2xl py-4 flex flex-col items-center gap-1.5 hover:border-stone-400 hover:shadow-sm transition-all">
+          <span className="text-xl">{x.i}</span>
+          <span className="text-xs font-medium text-stone-600">{x.l}</span>
+        </button>
+      ))}
+    </div>
+  </div>;
+}
+
+// ─── ANFRAGE FLOW ─────────────────────────────────────────────────────────────
+function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube, schliesztage, sperrzeiten, isOwner, team, currentUser, onSubmit, onAbbrechen}) {
+  const [calM, setCalM] = useState({y:new Date().getFullYear(), m:new Date().getMonth()});
+  const [saving, setSaving] = useState(false);
+  const [selStart, setSelStart] = useState(null);
+
+  const typen = isOwner ? TYPEN_OW : TYPEN_MA;
+
+  function blockInfo(d) {
+    if (anfrage.typ!=="urlaub") return null;
+    if (istFeiertag(d)) return "feiertag";
+    if (schliesztage.includes(d)) return "schliesztag";
+    if (istSperre(d, true, sperrzeiten)) return "sperre";
+    if (genehmigteUrlaube.some(u=>tageZw(u.von,u.bis).includes(d))) return "belegt";
+    return null;
+  }
+
+  function tapDay(d) {
+    if (blockInfo(d)) return;
+    if (parseD(d).getDay()===0) return;
+    if (!selStart) {
+      setSelStart(d); setAnfrage(a=>({...a,von:d,bis:d}));
+    } else {
+      const v=selStart<d?selStart:d, b=selStart<d?d:selStart;
+      if (anfrage.typ==="urlaub" && tageZw(v,b).some(x=>blockInfo(x))) return;
+      setAnfrage(a=>({...a,von:v,bis:b})); setSelStart(null);
+    }
+  }
+
+  const hinweis = useMemo(()=>{
+    if (anfrage.typ!=="urlaub"||!anfrage.von) return null;
+    const t=tageZw(anfrage.von,anfrage.bis);
+    if (t.some(d=>istSperre(d,true,sperrzeiten))) return "sperre";
+    if (t.some(d=>genehmigteUrlaube.some(u=>tageZw(u.von,u.bis).includes(d)))) return "belegt";
+    return null;
+  },[anfrage,genehmigteUrlaube,sperrzeiten]);
+
+  const anzahl = anfrage.von&&anfrage.bis
+    ? (anfrage.typ==="urlaub"?arbeitstage(anfrage.von,anfrage.bis,schliesztage).length
+      :tageZw(anfrage.von,anfrage.bis).filter(d=>parseD(d).getDay()!==0).length)
+    : 0;
+
+  async function submit() {
+    setSaving(true);
+    try {
+      const pid = isOwner ? (anfrage.fuerPerson||currentUser.id) : currentUser.id;
+      await onSubmit(anfrage.typ, anfrage.von, anfrage.bis, pid);
+    } catch(e) { alert("Fehler: "+e.message); setSaving(false); }
+  }
+
+  if (screen==="typ") return (
+    <div className="px-4 py-6 flex flex-col gap-6 min-h-screen">
+      <div className="flex items-center gap-3">
+        <button onClick={onAbbrechen} className="text-stone-400 text-xl">‹</button>
+        <div><p className="text-xs text-stone-400 uppercase tracking-widest">Neue Anfrage</p>
+        <h2 className="text-xl font-bold text-stone-900">Art der Abwesenheit</h2></div>
+      </div>
+      {isOwner&&<div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-2">
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-1">Für wen?</p>
+        <div className="flex flex-wrap gap-2">
+          {team.filter(p=>p.role==="employee").map(p=>(
+            <button key={p.id} onClick={()=>setAnfrage(a=>({...a,fuerPerson:p.id}))}
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-medium transition-all ${anfrage.fuerPerson===p.id?"bg-stone-900 text-white border-stone-900":"bg-white text-stone-700 border-stone-200 hover:border-stone-400"}`}>
+              <span className="w-6 h-6 rounded-full bg-stone-200 flex items-center justify-center text-xs font-bold">{p.name[0]}</span>
+              {p.name}
             </button>
-          </div>
-          {warnungen.length > 0 && (
-            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
-              <p className="text-xs font-medium text-amber-700 uppercase tracking-widest mb-2">Resturlaub-Hinweis</p>
-              {warnungen.map(p => <p key={p.id} className="text-sm text-amber-800"><span className="font-semibold">{p.name}</span> hat noch {p.offen} Tage offen</p>)}
-              <button onClick={() => onNavigate("urlaubsstaende")} className="mt-3 text-xs text-amber-700 underline underline-offset-2">Urlaubsstände ansehen →</button>
-            </div>
-          )}
-          {urlaubFaellig.length > 0 && (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4">
-              <p className="text-xs font-medium text-emerald-700 uppercase tracking-widest mb-2">Urlaubsanspruch fällig</p>
-              {urlaubFaellig.map(p => (
-                <div key={p.id} className="flex items-center justify-between">
-                  <p className="text-sm text-emerald-800"><span className="font-semibold">{p.name}</span> — {p.naechstes.toLocaleDateString("de-AT")}</p>
-                  <span className="text-xs font-bold text-emerald-600">{p.tage <= 0 ? "Heute!" : `in ${p.tage}d`}</span>
-                </div>
-              ))}
-              <button onClick={() => onNavigate("einstellungen")} className="mt-3 text-xs text-emerald-700 underline underline-offset-2">Urlaub gutschreiben →</button>
-            </div>
-          )}
-          <div className="grid grid-cols-3 gap-3">
-            {[{label:"Kalender",icon:"◫",screen:"kalender"},{label:"Anfragen",icon:"◎",screen:"anfragen"},{label:"Urlaub",icon:"▦",screen:"urlaubsstaende"}].map(item => (
-              <button key={item.screen} onClick={() => onNavigate(item.screen)}
-                className="bg-white border border-stone-200 rounded-2xl py-4 flex flex-col items-center gap-1.5 hover:border-stone-400 hover:shadow-sm transition-all">
-                <span className="text-xl">{item.icon}</span>
-                <span className="text-xs font-medium text-stone-600">{item.label}</span>
-              </button>
-            ))}
-          </div>
+          ))}
         </div>
-      );
-    }
-
-    // ─── ANFRAGE FLOW ─────────────────────────────────────────────────────────
-    function AnfrageFlow({ screen, setScreen, anfrage, setAnfrage, genehmigteUrlaube, schliesztage, sperrzeiten, isOwner, team, currentUser, onSubmit, onAbbrechen }) {
-      const [selectedStart, setSelectedStart] = useState(null);
-      const [calMonat, setCalMonat] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() });
-      const [saving, setSaving] = useState(false);
-
-      function getBlockInfo(datum) {
-        if (anfrage.typ !== "urlaub") return null;
-        if (istSperre(datum, sperrzeiten)) return "sperre";
-        if (istFeiertag(datum)) return "feiertag";
-        if (schliesztage.includes(datum)) return "schliesztag";
-        for (const u of genehmigteUrlaube) {
-          if (tageImBereich(u.von, u.bis).includes(datum)) return "belegt";
-        }
-        return null;
-      }
-
-      function handleDayTap(datum) {
-        if (getBlockInfo(datum) !== null) return;
-        if (!selectedStart) {
-          setSelectedStart(datum); setAnfrage(a => ({ ...a, von: datum, bis: datum }));
-        } else {
-          const start = selectedStart < datum ? selectedStart : datum;
-          const end   = selectedStart < datum ? datum : selectedStart;
-          if (anfrage.typ === "urlaub" && tageImBereich(start, end).some(d => getBlockInfo(d) !== null)) return;
-          setAnfrage(a => ({ ...a, von: start, bis: end })); setSelectedStart(null);
-        }
-      }
-
-      const blockHinweis = useMemo(() => {
-        if (anfrage.typ !== "urlaub" || !anfrage.von) return null;
-        const tage = tageImBereich(anfrage.von, anfrage.bis);
-        if (tage.some(d => istSperre(d, sperrzeiten))) return "sperre";
-        if (tage.some(d => genehmigteUrlaube.some(u => tageImBereich(u.von, u.bis).includes(d)))) return "belegt";
-        return null;
-      }, [anfrage, genehmigteUrlaube]);
-
-      const anzahlTage = anfrage.von && anfrage.bis
-        ? (anfrage.typ === "urlaub" ? arbeitstage(anfrage.von, anfrage.bis, schliesztage).length
-           : tageImBereich(anfrage.von, anfrage.bis).filter(d => parseDatum(d).getDay() !== 0).length) : 0;
-
-      async function handleSubmit() {
-        setSaving(true);
-        try { await onSubmit(anfrage.typ, anfrage.von, anfrage.bis, anfrage.fuerPerson); }
-        catch(e) { alert("Fehler: " + e.message); setSaving(false); }
-      }
-
-      if (screen === "typ") return (
-        <div className="px-4 py-6 flex flex-col gap-6 min-h-screen">
-          <div className="flex items-center gap-3">
-            <button onClick={onAbbrechen} className="text-stone-400 hover:text-stone-700 text-xl">‹</button>
-            <div>
-              <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Neue Anfrage</p>
-              <h2 className="text-xl font-bold text-stone-900">Art der Abwesenheit</h2>
+      </div>}
+      <div className="flex flex-col gap-3">
+        {typen.map(typ=>(
+          <button key={typ.id}
+            onClick={()=>{ setAnfrage(a=>({...a,typ:typ.id})); setScreen("datum"); }}
+            disabled={isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson}
+            className={`bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 hover:border-stone-400 hover:shadow-sm transition-all text-left ${isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson?"opacity-40 cursor-not-allowed":""}`}>
+            <span className="text-2xl">{typ.icon}</span>
+            <div className="flex-1">
+              <p className="font-semibold text-stone-800">{typ.label}</p>
+              {isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson&&<p className="text-xs text-stone-400">Erst Person auswählen</p>}
             </div>
-          </div>
-          {isOwner && (
-            <div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-2">
-              <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-1">Für wen?</p>
-              <div className="flex flex-wrap gap-2">
-                {team.filter(p => p.role === "employee").map(p => (
-                  <button key={p.id}
-                    onClick={() => setAnfrage(a => ({ ...a, fuerPerson: p.id }))}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-medium transition-all ${anfrage.fuerPerson === p.id ? "bg-stone-900 text-white border-stone-900" : "bg-white text-stone-700 border-stone-200 hover:border-stone-400"}`}>
-                    <span className="w-6 h-6 rounded-full bg-stone-200 text-stone-700 text-xs font-bold flex items-center justify-center flex-shrink-0" style={{background: anfrage.fuerPerson === p.id ? "rgba(255,255,255,0.2)" : ""}}>{p.name[0]}</span>
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          <div className="flex flex-col gap-3">
-            {getAnfrageTypen(isOwner).map(typ => (
-              <button key={typ.id}
-                onClick={() => {
-                  const personId = isOwner ? (anfrage.fuerPerson || team.filter(p=>p.role==="employee")[0]?.id) : currentUser.id;
-                  setAnfrage(a => ({ ...a, typ: typ.id, fuerPerson: personId }));
-                  setScreen("datum");
-                }}
-                disabled={isOwner && !anfrage.fuerPerson && typ.id === "sonstige"}
-                className={`bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 hover:border-stone-400 hover:shadow-sm transition-all text-left ${isOwner && !anfrage.fuerPerson && typ.id === "sonstige" ? "opacity-40 cursor-not-allowed" : ""}`}>
-                <span className="text-2xl">{typ.icon}</span>
-                <div className="flex-1">
-                  <span className="font-semibold text-stone-800">{typ.label}</span>
-                  {typ.id === "sonstige" && isOwner && !anfrage.fuerPerson && <p className="text-xs text-stone-400">Erst Person auswählen</p>}
-                </div>
-                <span className="ml-auto text-stone-300 text-lg">›</span>
-              </button>
-            ))}
-          </div>
+            <span className="text-stone-300 text-lg">›</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  if (screen==="datum") {
+    const {y,m} = calM;
+    const fd=new Date(y,m,1).getDay(), dm=new Date(y,m+1,0).getDate(), off=fd===0?6:fd-1;
+    const days=Array.from({length:dm},(_,i)=>datStr(new Date(y,m,i+1)));
+    const typc=getTyp(anfrage.typ);
+    return (
+      <div className="px-4 py-6 flex flex-col gap-5 min-h-screen">
+        <div className="flex items-center gap-3">
+          <button onClick={()=>setScreen("typ")} className="text-stone-400 text-xl">‹</button>
+          <div><p className="text-xs text-stone-400 uppercase tracking-widest">{typc?.icon} {typc?.label}</p>
+          <h2 className="text-xl font-bold text-stone-900">Zeitraum wählen</h2></div>
         </div>
-      );
-
-      if (screen === "datum") {
-        const { year, month } = calMonat;
-        const firstDay = new Date(year, month, 1).getDay();
-        const daysInMonth = new Date(year, month+1, 0).getDate();
-        const offset = firstDay === 0 ? 6 : firstDay - 1;
-        const days = Array.from({ length: daysInMonth }, (_, i) => datumZuStr(new Date(year, month, i+1)));
-        const typc = getTypConfig(anfrage.typ);
-        return (
-          <div className="px-4 py-6 flex flex-col gap-5 min-h-screen">
-            <div className="flex items-center gap-3">
-              <button onClick={() => setScreen("typ")} className="text-stone-400 hover:text-stone-700 text-xl">‹</button>
-              <div>
-                <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">{typc?.icon} {typc?.label}</p>
-                <h2 className="text-xl font-bold text-stone-900">Zeitraum wählen</h2>
-              </div>
-            </div>
-            {anfrage.typ === "urlaub" && (
-              <div className="bg-stone-100 rounded-xl px-4 py-3">
-                <p className="text-xs text-stone-400">· Urlaubssperre 1.12.–24.12. · Samstag zählt · Feiertage/Schließtage zählen nicht</p>
-              </div>
-            )}
-            <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-stone-100">
-                <button onClick={() => setCalMonat(m => m.month === 0 ? { year: m.year-1, month: 11 } : { ...m, month: m.month-1 })} className="text-stone-400 px-2">‹</button>
-                <p className="text-sm font-semibold text-stone-800">{formatMonat(year, month)}</p>
-                <button onClick={() => setCalMonat(m => m.month === 11 ? { year: m.year+1, month: 0 } : { ...m, month: m.month+1 })} className="text-stone-400 px-2">›</button>
-              </div>
-              <div className="grid grid-cols-7 px-3 py-2">
-                {["Mo","Di","Mi","Do","Fr","Sa","So"].map(d => <div key={d} className="text-center text-xs font-medium text-stone-400 py-1">{d}</div>)}
-                {Array.from({ length: offset }, (_, i) => <div key={`e${i}`} />)}
-                {days.map(datum => {
-                  const blockInfo = getBlockInfo(datum);
-                  const isSunday = parseDatum(datum).getDay() === 0;
-                  const isSelected = anfrage.von && anfrage.bis && datum >= anfrage.von && datum <= anfrage.bis;
-                  let cls = "flex items-center justify-center text-xs h-9 rounded-lg mx-0.5 my-0.5 transition-colors ";
-                  if (isSunday) cls += "text-stone-200 ";
-                  else if (blockInfo === "sperre") cls += "bg-rose-50 text-rose-300 cursor-not-allowed ";
-                  else if (blockInfo === "belegt") cls += "bg-stone-100 text-stone-300 cursor-not-allowed ";
-                  else if (blockInfo === "feiertag" || blockInfo === "schliesztag") cls += "text-stone-300 cursor-not-allowed ";
-                  else if (isSelected) cls += "bg-stone-900 text-white font-semibold cursor-pointer ";
-                  else cls += "text-stone-700 hover:bg-stone-100 cursor-pointer ";
-                  return <button key={datum} onClick={() => !isSunday && handleDayTap(datum)} className={cls} disabled={blockInfo !== null || isSunday}>{parseDatum(datum).getDate()}</button>;
-                })}
-              </div>
-              <div className="px-4 py-2 border-t border-stone-100 flex gap-3 flex-wrap">
-                <span className="flex items-center gap-1 text-xs text-stone-400"><span className="w-3 h-3 rounded-sm bg-stone-900 inline-block"/>Gewählt</span>
-                {anfrage.typ === "urlaub" && <span className="flex items-center gap-1 text-xs text-stone-400"><span className="w-3 h-3 rounded-sm bg-rose-100 inline-block"/>Urlaubssperre</span>}
-              </div>
-            </div>
-            {blockHinweis === "belegt" && <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3"><p className="text-sm text-rose-700 font-medium">In diesem Zeitraum ist bereits Urlaub bestätigt.</p></div>}
-            {blockHinweis === "sperre" && <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3"><p className="text-sm text-rose-700 font-medium">Urlaubssperre aktiv (1.12.–24.12.).</p></div>}
-            {anfrage.von && !blockHinweis && (
-              <div className="bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-stone-400">Gewählt</p>
-                  <p className="text-sm font-semibold text-stone-800">{formatZeitraum(anfrage.von, anfrage.bis)}</p>
-                  {anzahlTage > 0 && <p className="text-xs text-stone-400">{anzahlTage} {anfrage.typ === "urlaub" ? "Urlaubstag" : "Tag"}{anzahlTage !== 1 ? "e" : ""}</p>}
-                </div>
-                <button onClick={() => anfrage.von === anfrage.bis ? handleSubmit() : setScreen("zusammenfassung")}
-                  className="bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold hover:bg-stone-800 transition-colors">
-                  {anfrage.von === anfrage.bis ? "Anfragen" : "Weiter →"}
-                </button>
-              </div>
-            )}
+        {anfrage.typ==="urlaub"&&<div className="bg-stone-100 rounded-xl px-4 py-3">
+          <p className="text-xs text-stone-400">· Urlaubssperre 1.12.–24.12. · Samstag zählt · Feiertage/Schließtage zählen nicht</p>
+        </div>}
+        <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-stone-100">
+            <button onClick={()=>setCalM(x=>x.m===0?{y:x.y-1,m:11}:{...x,m:x.m-1})} className="text-stone-400 px-2">‹</button>
+            <p className="text-sm font-semibold text-stone-800">{fmtM(y,m)}</p>
+            <button onClick={()=>setCalM(x=>x.m===11?{y:x.y+1,m:0}:{...x,m:x.m+1})} className="text-stone-400 px-2">›</button>
           </div>
-        );
-      }
-
-      if (screen === "zusammenfassung") {
-        const typc = getTypConfig(anfrage.typ);
-        return (
-          <div className="px-4 py-6 flex flex-col gap-6 min-h-screen">
-            <div className="flex items-center gap-3">
-              <button onClick={() => setScreen("datum")} className="text-stone-400 hover:text-stone-700 text-xl">‹</button>
-              <div>
-                <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Zusammenfassung</p>
-                <h2 className="text-xl font-bold text-stone-900">Anfrage bestätigen</h2>
-              </div>
-            </div>
-            <div className="bg-white border border-stone-200 rounded-2xl p-5 flex flex-col gap-4">
-              <div className="flex items-center gap-3 pb-4 border-b border-stone-100">
-                <span className="text-3xl">{typc?.icon}</span>
-                <p className="font-semibold text-stone-800 text-lg">{typc?.label}</p>
-              </div>
-              {isOwner && anfrage.fuerPerson && (
-                <div className="flex justify-between">
-                  <p className="text-sm text-stone-400">Für</p>
-                  <p className="text-sm font-semibold text-stone-800">{team.find(p=>p.id===anfrage.fuerPerson)?.name}</p>
-                </div>
-              )}
-              <div className="flex justify-between"><p className="text-sm text-stone-400">Von</p><p className="text-sm font-semibold text-stone-800">{formatDatum(anfrage.von)}</p></div>
-              <div className="flex justify-between"><p className="text-sm text-stone-400">Bis</p><p className="text-sm font-semibold text-stone-800">{formatDatum(anfrage.bis)}</p></div>
-              {anfrage.typ === "urlaub" && (
-                <div className="flex justify-between pt-3 border-t border-stone-100">
-                  <p className="text-sm text-stone-400">Urlaubstage</p>
-                  <p className="text-sm font-bold text-stone-900">{anzahlTage} Tage</p>
-                </div>
-              )}
-            </div>
-            <button onClick={handleSubmit} disabled={saving}
-              className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 transition-colors disabled:opacity-50">
-              {saving ? "Wird gespeichert…" : "Anfrage absenden"}
-            </button>
-            <button onClick={onAbbrechen} className="text-center text-sm text-stone-400 underline underline-offset-2">Abbrechen</button>
-          </div>
-        );
-      }
-      return null;
-    }
-
-    // ─── TEAMKALENDER ─────────────────────────────────────────────────────────
-    function Teamkalender({ anfragen, team, monat, setMonat, schliesztage }) {
-      const { year, month } = monat;
-      const genehmigt = anfragen.filter(a => a.status === "genehmigt");
-      const firstDay = new Date(year, month, 1).getDay();
-      const daysInMonth = new Date(year, month+1, 0).getDate();
-      const offset = firstDay === 0 ? 6 : firstDay - 1;
-      const days = Array.from({ length: daysInMonth }, (_, i) => ({ datum: datumZuStr(new Date(year, month, i+1)), day: i+1, dow: new Date(year, month, i+1).getDay() }));
-      const FARBEN = { urlaub:"bg-emerald-100 text-emerald-800", wunsch:"bg-sky-100 text-sky-800", sonstige:"bg-violet-100 text-violet-800", feiertag:"bg-amber-100 text-amber-700", schliesztag:"bg-rose-100 text-rose-700" };
-
-      function getEintraege(datum) {
-        if (istFeiertag(datum)) return [{ typ:"feiertag", label:"Feiertag" }];
-        if (schliesztage.includes(datum)) return [{ typ:"schliesztag", label:"Schließtag" }];
-        return genehmigt.filter(a => tageImBereich(a.von, a.bis).includes(datum))
-          .map(a => ({ typ: a.typ, label: team.find(p => p.id === a.person_id)?.name || a.person_id }));
-      }
-
-      return (
-        <div className="px-4 py-6 flex flex-col gap-4">
-          <div>
-            <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Team</p>
-            <h2 className="text-2xl font-bold text-stone-900">Kalender</h2>
-          </div>
-          <div className="flex items-center justify-between bg-white border border-stone-200 rounded-xl px-4 py-2.5">
-            <button onClick={() => setMonat(m => m.month === 0 ? { year: m.year-1, month: 11 } : { ...m, month: m.month-1 })} className="text-stone-400 px-2">‹</button>
-            <p className="text-sm font-semibold text-stone-800">{formatMonat(year, month)}</p>
-            <button onClick={() => setMonat(m => m.month === 11 ? { year: m.year+1, month: 0 } : { ...m, month: m.month+1 })} className="text-stone-400 px-2">›</button>
-          </div>
-          <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
-            <div className="grid grid-cols-7 border-b border-stone-100">
-              {["Mo","Di","Mi","Do","Fr","Sa","So"].map(d => <div key={d} className="text-center text-xs font-medium text-stone-400 py-2">{d}</div>)}
-            </div>
-            <div className="grid grid-cols-7">
-              {Array.from({ length: offset }, (_, i) => <div key={`e${i}`} className="min-h-[60px] border-r border-b border-stone-50" />)}
-              {days.map(({ datum, day, dow }) => {
-                const eintraege = getEintraege(datum);
-                return (
-                  <div key={datum} className={`min-h-[60px] border-r border-b border-stone-50 p-1 ${dow === 0 ? "bg-stone-50" : ""}`}>
-                    <p className={`text-xs font-medium mb-1 ${dow === 0 ? "text-stone-300" : "text-stone-500"}`}>{day}</p>
-                    <div className="flex flex-col gap-0.5">
-                      {eintraege.map((e, i) => (
-                        <span key={i} className={`font-medium px-1 py-0.5 rounded truncate block ${FARBEN[e.typ] || "bg-stone-100 text-stone-600"}`} style={{fontSize:"9px"}}>{e.label}</span>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {[["urlaub","Urlaub"],["wunsch","Freier Wunsch"],["sonstige","Sonstige"],["feiertag","Feiertag"],["schliesztag","Schließtag"]].map(([typ, label]) => (
-              <span key={typ} className={`font-medium px-2 py-1 rounded-full ${FARBEN[typ]}`} style={{fontSize:"10px"}}>{label}</span>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    // ─── MEINE ANFRAGEN ───────────────────────────────────────────────────────
-    function MeineAnfragen({ anfragen, onNeueAnfrage }) {
-      const sorted = [...anfragen].sort((a,b) => b.erstellt.localeCompare(a.erstellt));
-      return (
-        <div className="px-4 py-6 flex flex-col gap-4">
-          <div>
-            <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Übersicht</p>
-            <h2 className="text-2xl font-bold text-stone-900">Meine Anfragen</h2>
-          </div>
-          {sorted.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-stone-400 text-sm">Noch keine Anfragen gestellt.</p>
-              <button onClick={onNeueAnfrage} className="mt-4 bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold">+ Erste Anfrage stellen</button>
-            </div>
-          ) : (
-            <>
-              <div className="flex flex-col gap-2">{sorted.map(a => <AnfrageKarte key={a.id} anfrage={a} showDate />)}</div>
-              <button onClick={onNeueAnfrage} className="w-full border-2 border-dashed border-stone-200 rounded-2xl py-4 text-sm font-medium text-stone-400 hover:border-stone-400 hover:text-stone-600 transition-colors">+ Neue Anfrage stellen</button>
-            </>
-          )}
-        </div>
-      );
-    }
-
-    // ─── ANFRAGEN ÜBERSICHT (INHABERIN) ──────────────────────────────────────
-    function AnfragenUebersicht({ anfragen, tab, setTab, onEntscheid, schliesztage, team }) {
-      const offen    = anfragen.filter(a => a.status === "ausstehend").sort((a,b) => a.erstellt.localeCompare(b.erstellt));
-      const erledigt = anfragen.filter(a => a.status !== "ausstehend").sort((a,b) => b.erstellt.localeCompare(a.erstellt));
-      const [deciding, setDeciding] = useState(null);
-
-      async function handleEntscheid(id, status) {
-        setDeciding(id);
-        try { await onEntscheid(id, status); }
-        catch(e) { alert("Fehler: " + e.message); }
-        setDeciding(null);
-      }
-
-      return (
-        <div className="px-4 py-6 flex flex-col gap-4">
-          <div>
-            <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Verwaltung</p>
-            <h2 className="text-2xl font-bold text-stone-900">Anfragen</h2>
-          </div>
-          <div className="flex bg-stone-100 rounded-xl p-1">
-            {[{id:"offen",label:`Offen${offen.length > 0 ? ` (${offen.length})` : ""}`},{id:"erledigt",label:"Erledigt"}].map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${tab === t.id ? "bg-white text-stone-900 shadow-sm" : "text-stone-500"}`}>
-                {t.label}
-              </button>
-            ))}
-          </div>
-          {tab === "offen" && (
-            offen.length === 0 ? <div className="text-center py-12"><p className="text-stone-400 text-sm">Keine offenen Anfragen. ✓</p></div> :
-            <div className="flex flex-col gap-3">
-              {offen.map(a => (
-                <div key={a.id} className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-3">
-                      <span className="w-8 h-8 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center flex-shrink-0">
-                        {team.find(p=>p.id===a.person_id)?.name[0]}
-                      </span>
-                      <div>
-                        <p className="font-semibold text-stone-800 text-sm">{team.find(p=>p.id===a.person_id)?.name}</p>
-                        <p className="text-xs text-stone-400">eingereicht {formatDatum(a.erstellt)}</p>
-                      </div>
-                    </div>
-                    <span className={`text-xs font-medium px-2 py-1 rounded-full border ${getTypConfig(a.typ)?.color}`}>{getTypConfig(a.typ)?.icon} {getTypConfig(a.typ)?.label}</span>
-                  </div>
-                  <div className="bg-stone-50 rounded-xl px-3 py-2.5">
-                    <p className="text-sm font-medium text-stone-800">{formatZeitraum(a.von, a.bis)}</p>
-                    {a.typ === "urlaub" && <p className="text-xs text-stone-400">{arbeitstage(a.von, a.bis, schliesztage).length} Urlaubstage</p>}
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => handleEntscheid(a.id, "genehmigt")} disabled={deciding === a.id}
-                      className="flex-1 bg-emerald-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-emerald-700 transition-colors disabled:opacity-50">
-                      {deciding === a.id ? "…" : "Genehmigen ✓"}
-                    </button>
-                    <button onClick={() => handleEntscheid(a.id, "abgelehnt")} disabled={deciding === a.id}
-                      className="flex-1 border border-rose-200 text-rose-600 rounded-xl py-2.5 text-sm font-semibold hover:bg-rose-50 transition-colors disabled:opacity-50">
-                      {deciding === a.id ? "…" : "Ablehnen ✗"}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {tab === "erledigt" && (
-            erledigt.length === 0 ? <p className="text-stone-400 text-sm text-center py-12">Noch keine erledigten Anfragen.</p> :
-            <div className="flex flex-col gap-2">
-              {erledigt.map(a => (
-                <div key={a.id} className={`bg-white border border-stone-200 rounded-2xl p-4 border-l-4 ${STATUS_CONFIG[a.status]?.border}`}>
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <p className="font-semibold text-stone-800 text-sm">{team.find(p=>p.id===a.person_id)?.name}</p>
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_CONFIG[a.status]?.bg} ${STATUS_CONFIG[a.status]?.text}`}>{STATUS_CONFIG[a.status]?.label}</span>
-                  </div>
-                  <p className="text-xs text-stone-500">{getTypConfig(a.typ)?.icon} {getTypConfig(a.typ)?.label} · {formatZeitraum(a.von, a.bis)}</p>
-                  <p className="text-xs text-stone-400 mt-1">Eingereicht {formatDatum(a.erstellt)}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ─── URLAUBSSTÄNDE ────────────────────────────────────────────────────────
-    function Urlaubsstaende({ team, warnschwelle }) {
-      return (
-        <div className="px-4 py-6 flex flex-col gap-4">
-          <div>
-            <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Übersicht</p>
-            <h2 className="text-2xl font-bold text-stone-900">Urlaubsstände 2025</h2>
-          </div>
-          <div className="flex flex-col gap-3">
-            {team.filter(p => p.role === "employee").map(p => {
-              const offen = p.urlaub_anspruch - p.urlaub_verbraucht;
-              const istWarnung = offen > warnschwelle;
-              const prozent = Math.min((p.urlaub_verbraucht / p.urlaub_anspruch) * 100, 100);
-              return (
-                <div key={p.id} className={`bg-white border rounded-2xl p-5 ${istWarnung ? "border-amber-300 bg-amber-50" : "border-stone-200"}`}>
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
-                      <p className="font-semibold text-stone-800">{p.name}</p>
-                    </div>
-                    {istWarnung && <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-full">{offen} Tage offen</span>}
-                  </div>
-                  <div className="flex gap-4 mb-3">
-                    {[{val:p.urlaub_verbraucht,label:"verbraucht",color:"text-stone-900"},{val:offen,label:"offen",color:istWarnung?"text-amber-600":"text-emerald-600"},{val:p.urlaub_anspruch,label:"gesamt",color:"text-stone-400"}].map((item,i) => (
-                      <div key={i} className="flex-1 text-center">
-                        <p className={`text-xl font-bold ${item.color}`}>{item.val}</p>
-                        <p className="text-stone-400 uppercase tracking-wide" style={{fontSize:"10px"}}>{item.label}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <div className={`rounded-full h-1.5 overflow-hidden ${istWarnung ? "bg-amber-200" : "bg-stone-100"}`}>
-                    <div className={`h-full rounded-full transition-all ${istWarnung ? "bg-amber-500" : "bg-stone-800"}`} style={{width:`${prozent}%`}} />
-                  </div>
-                </div>
-              );
+          <div className="grid grid-cols-7 px-3 py-2">
+            {["Mo","Di","Mi","Do","Fr","Sa","So"].map(d=><div key={d} className="text-center text-xs font-medium text-stone-400 py-1">{d}</div>)}
+            {Array.from({length:off},(_,i)=><div key={"e"+i}/>)}
+            {days.map(d=>{
+              const bi=blockInfo(d), isSun=parseD(d).getDay()===0;
+              const isSel=anfrage.von&&anfrage.bis&&d>=anfrage.von&&d<=anfrage.bis;
+              let cls="flex items-center justify-center text-xs h-9 rounded-lg mx-0.5 my-0.5 transition-colors ";
+              if (isSun) cls+="text-stone-200 ";
+              else if (bi==="sperre") cls+="bg-rose-50 text-rose-300 cursor-not-allowed ";
+              else if (bi==="belegt") cls+="bg-stone-100 text-stone-300 cursor-not-allowed ";
+              else if (bi==="feiertag"||bi==="schliesztag") cls+="text-stone-300 cursor-not-allowed ";
+              else if (isSel) cls+="bg-stone-900 text-white font-semibold cursor-pointer ";
+              else cls+="text-stone-700 hover:bg-stone-100 cursor-pointer ";
+              return <button key={d} onClick={()=>!isSun&&tapDay(d)} className={cls} disabled={!!bi||isSun}>{parseD(d).getDate()}</button>;
             })}
           </div>
-          <p className="text-xs text-stone-400 text-center">Warnung ab {warnschwelle} Tagen Resturlaub offen</p>
-        </div>
-      );
-    }
-
-    // ─── ANFRAGE KARTE ────────────────────────────────────────────────────────
-    function AnfrageKarte({ anfrage, showDate }) {
-      const typc = getTypConfig(anfrage.typ);
-      const status = STATUS_CONFIG[anfrage.status];
-      return (
-        <div className={`bg-white border border-stone-200 rounded-2xl px-4 py-3.5 border-l-4 ${status.border}`}>
-          <div className="flex items-start justify-between gap-2 mb-1">
-            <p className="text-sm font-semibold text-stone-800">{typc?.icon} {typc?.label}</p>
-            <span className={`font-bold uppercase px-2 py-0.5 rounded-full ${status.bg} ${status.text}`} style={{fontSize:"10px"}}>{status.label}</span>
+          <div className="px-4 py-2 border-t border-stone-100 flex gap-3 flex-wrap">
+            <span className="flex items-center gap-1 text-xs text-stone-400"><span className="w-3 h-3 rounded-sm bg-stone-900 inline-block"/>Gewählt</span>
+            {anfrage.typ==="urlaub"&&<span className="flex items-center gap-1 text-xs text-stone-400"><span className="w-3 h-3 rounded-sm bg-rose-100 inline-block"/>Sperre</span>}
           </div>
-          <p className="text-xs text-stone-500">{formatZeitraum(anfrage.von, anfrage.bis)}</p>
-          {showDate && <p className="text-stone-300 mt-1" style={{fontSize:"10px"}}>Eingereicht {formatDatum(anfrage.erstellt)}</p>}
         </div>
-      );
-    }
-
-    // ─── HAUPT APP ────────────────────────────────────────────────────────────
-    function App() {
-      const [ladeStatus, setLadeStatus] = useState("start"); // start | laden | bereit | fehler
-      const [currentUser, setCurrentUser] = useState(null);
-      const [team, setTeam] = useState([]);
-      const [anfragen, setAnfragen] = useState([]);
-      const [schliesztage, setSchliesztage] = useState([]);
-      const [warnschwelle, setWarnschwelle] = useState(10);
-      const [wunschLabel, setWunschLabel] = useState("Freier Wunsch");
-      const [sperrzeiten, setSperrzeiten] = useState([]); // [{von, bis, bezeichnung}]
-      const [screen, setScreen] = useState("home");
-      const [anfrageScreen, setAnfrageScreen] = useState(null);
-      const [neueAnfrage, setNeueAnfrage] = useState({ typ: null, von: null, bis: null });
-      const [kalenderMonat, setKalenderMonat] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() });
-      const [archivTab, setArchivTab] = useState("offen");
-      const [ersterStart, setErsterStart] = useState(false);
-
-      // Daten laden
-      async function ladeDaten(silent = false) {
-        if (!silent) setLadeStatus("laden");
-        try {
-          const [teamData, anfragenData, einstellungenData] = await Promise.all([
-            api.getTeam(),
-            api.getAnfragen(),
-            api.getEinstellungen(),
-          ]);
-          setTeam(teamData || []);
-          setAnfragen(anfragenData || []);
-          const sz = einstellungenData?.find(e => e.schluessel === "schliesztage");
-          const ws = einstellungenData?.find(e => e.schluessel === "warnschwelle");
-          const eroeff = einstellungenData?.find(e => e.schluessel === "eroeffnung_erledigt");
-          const wl = einstellungenData?.find(e => e.schluessel === "wunsch_label");
-          const spz = einstellungenData?.find(e => e.schluessel === "sperrzeiten");
-          if (sz) setSchliesztage(JSON.parse(sz.wert));
-          if (ws) setWarnschwelle(parseInt(ws.wert, 10));
-          if (wl) setWunschLabel(wl.wert);
-          if (spz) setSperrzeiten(JSON.parse(spz.wert));
-          if (!eroeff) setErsterStart(true);
-          setLadeStatus("bereit");
-        } catch(e) {
-          console.error(e);
-          if (!silent) setLadeStatus("fehler");
-        }
-      }
-
-      useEffect(() => {
-        ladeDaten();
-        // Auto-Refresh alle 30 Sekunden (silent = kein Lade-Screen)
-        const interval = setInterval(() => ladeDaten(true), 30000);
-        return () => clearInterval(interval);
-      }, []);
-
-      async function handleLogin(person) {
-        setCurrentUser(person);
-        setScreen("home");
-      }
-
-      async function handleAnfrageStellen(typ, von, bis, fuerPerson) {
-        const personId = fuerPerson || currentUser.id;
-        const neu = await api.addAnfrage({ person_id: personId, typ, von, bis, status: "ausstehend", erstellt: heute() });
-        setAnfragen(prev => [...prev, neu[0]]);
-        setAnfrageScreen(null);
-        setNeueAnfrage({ typ: null, von: null, bis: null });
-        setScreen("meine-anfragen");
-      }
-
-      async function handleEntscheid(id, status) {
-        await api.updateAnfrage(id, { status });
-        setAnfragen(prev => prev.map(a => a.id === id ? { ...a, status } : a));
-      }
-
-      async function handleEroeffnungFertig() {
-        await api.setEinstellung("eroeffnung_erledigt", "true");
-        setErsterStart(false);
-        // Team neu laden
-        const teamData = await api.getTeam();
-        setTeam(teamData || []);
-      }
-
-      if (ladeStatus === "start" || ladeStatus === "laden") return <AppShell><LadeScreen text="Verbinde mit Supabase…" /></AppShell>;
-      if (ladeStatus === "fehler") return (
-        <AppShell>
-          <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-6 text-center">
-            <p className="text-2xl">⚠️</p>
-            <p className="text-stone-700 font-semibold">Verbindungsfehler</p>
-            <p className="text-stone-400 text-sm">Supabase konnte nicht erreicht werden.</p>
-            <button onClick={ladeDaten} className="bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold mt-2">Nochmal versuchen</button>
+        {hinweis==="belegt"&&<div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3"><p className="text-sm text-rose-700 font-medium">In diesem Zeitraum ist bereits Urlaub bestätigt.</p></div>}
+        {hinweis==="sperre"&&<div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3"><p className="text-sm text-rose-700 font-medium">Urlaubssperre aktiv.</p></div>}
+        {anfrage.von&&!hinweis&&(
+          <div className="bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 flex items-center justify-between">
+            <div>
+              <p className="text-xs text-stone-400">Gewählt</p>
+              <p className="text-sm font-semibold text-stone-800">{fmtZ(anfrage.von,anfrage.bis)}</p>
+              {anzahl>0&&<p className="text-xs text-stone-400">{anzahl} {anfrage.typ==="urlaub"?"Urlaubstag":"Tag"}{anzahl!==1?"e":""}</p>}
+            </div>
+            <button onClick={()=>anfrage.von===anfrage.bis?submit():setScreen("zusammenfassung")}
+              className="bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold hover:bg-stone-800 transition-colors">
+              {anfrage.von===anfrage.bis?"Anfragen":"Weiter →"}
+            </button>
           </div>
-        </AppShell>
-      );
+        )}
+      </div>
+    );
+  }
 
-      if (!currentUser) return <LoginScreen team={team} onLogin={handleLogin} />;
+  if (screen==="zusammenfassung") {
+    const typc=getTyp(anfrage.typ);
+    return (
+      <div className="px-4 py-6 flex flex-col gap-6 min-h-screen">
+        <div className="flex items-center gap-3">
+          <button onClick={()=>setScreen("datum")} className="text-stone-400 text-xl">‹</button>
+          <div><p className="text-xs text-stone-400 uppercase tracking-widest">Zusammenfassung</p>
+          <h2 className="text-xl font-bold text-stone-900">Anfrage bestätigen</h2></div>
+        </div>
+        <div className="bg-white border border-stone-200 rounded-2xl p-5 flex flex-col gap-4">
+          <div className="flex items-center gap-3 pb-4 border-b border-stone-100">
+            <span className="text-3xl">{typc?.icon}</span>
+            <p className="font-semibold text-stone-800 text-lg">{typc?.label}</p>
+          </div>
+          {isOwner&&anfrage.fuerPerson&&<div className="flex justify-between">
+            <p className="text-sm text-stone-400">Für</p>
+            <p className="text-sm font-semibold text-stone-800">{team.find(p=>p.id===anfrage.fuerPerson)?.name}</p>
+          </div>}
+          <div className="flex justify-between"><p className="text-sm text-stone-400">Von</p><p className="text-sm font-semibold text-stone-800">{fmtD(anfrage.von)}</p></div>
+          <div className="flex justify-between"><p className="text-sm text-stone-400">Bis</p><p className="text-sm font-semibold text-stone-800">{fmtD(anfrage.bis)}</p></div>
+          {anfrage.typ==="urlaub"&&<div className="flex justify-between pt-3 border-t border-stone-100">
+            <p className="text-sm text-stone-400">Urlaubstage</p>
+            <p className="text-sm font-bold text-stone-900">{anzahl} Tage</p>
+          </div>}
+        </div>
+        <button onClick={submit} disabled={saving}
+          className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 transition-colors disabled:opacity-50">
+          {saving?"Wird gespeichert…":"Anfrage absenden"}
+        </button>
+        <button onClick={onAbbrechen} className="text-center text-sm text-stone-400 underline">Abbrechen</button>
+      </div>
+    );
+  }
+  return null;
+}
 
-      if (currentUser.role === "owner" && ersterStart) {
-        return (
-          <AppShell>
-            <EroeffnungsbuchungScreen team={team} onSave={handleEroeffnungFertig} onSkip={handleEroeffnungFertig} />
-          </AppShell>
-        );
-      }
+// ─── TEAMKALENDER ─────────────────────────────────────────────────────────────
+function Kalender({anfragen, team, monat, setMonat, schliesztage}) {
+  const {y,m}=monat;
+  const gen=anfragen.filter(a=>a.status==="genehmigt");
+  const fd=new Date(y,m,1).getDay(), dm=new Date(y,m+1,0).getDate(), off=fd===0?6:fd-1;
+  const days=Array.from({length:dm},(_,i)=>({d:datStr(new Date(y,m,i+1)),n:i+1,dow:new Date(y,m,i+1).getDay()}));
+  const FARBEN={urlaub:"bg-emerald-100 text-emerald-800",sonstige:"bg-violet-100 text-violet-800",feiertag:"bg-amber-100 text-amber-700",schliesztag:"bg-rose-100 text-rose-700"};
 
-      const isOwner = currentUser.role === "owner";
-      const personData = team.find(p => p.id === currentUser.id);
-      const eigeneAnfragen = anfragen.filter(a => a.person_id === currentUser.id);
-      const offeneAnfragen = anfragen.filter(a => a.status === "ausstehend");
-      const genehmigteUrlaube = anfragen.filter(a => a.typ === "urlaub" && a.status === "genehmigt");
+  function eintraege(datum) {
+    if (istFeiertag(datum)) return [{typ:"feiertag",label:feiertagName(datum)}];
+    if (schliesztage.includes(datum)) return [{typ:"schliesztag",label:"Schließtag"}];
+    return gen.filter(a=>tageZw(a.von,a.bis).includes(datum)).map(a=>({typ:a.typ,label:team.find(p=>p.id===a.person_id)?.name||a.person_id}));
+  }
 
-      const navItems = isOwner
-        ? [{id:"home",label:"Home",icon:"⌂"},{id:"kalender",label:"Kalender",icon:"◫"},{id:"anfragen",label:"Anfragen",icon:"◎",badge:offeneAnfragen.length},{id:"urlaubsstaende",label:"Urlaub",icon:"▦"}]
-        : [{id:"home",label:"Home",icon:"⌂"},{id:"kalender",label:"Kalender",icon:"◫"},{id:"meine-anfragen",label:"Anfragen",icon:"◎"}];
-
-      if (anfrageScreen) return (
-        <AppShell>
-          <AnfrageFlow screen={anfrageScreen} setScreen={setAnfrageScreen} anfrage={neueAnfrage} setAnfrage={setNeueAnfrage}
-            genehmigteUrlaube={genehmigteUrlaube} schliesztage={schliesztage} sperrzeiten={sperrzeiten}
-            isOwner={isOwner} team={team} currentUser={currentUser}
-            onSubmit={handleAnfrageStellen}
-            onAbbrechen={() => { setAnfrageScreen(null); setNeueAnfrage({ typ: null, von: null, bis: null }); }} />
-        </AppShell>
-      );
-
-      return (
-        <AppShell>
-          <div className="flex flex-col min-h-screen bg-stone-50">
-            <header className="bg-white border-b border-stone-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
-              <div>
-                <p className="text-xs text-stone-400 uppercase tracking-widest font-medium">Great Hair Day</p>
-                <p className="text-sm font-semibold text-stone-800">{currentUser.name}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                {isOwner && <button onClick={() => setScreen("einstellungen")} className="text-xs text-stone-400 hover:text-stone-700 px-2 py-1 rounded">⚙ Einstellungen</button>}
-                <button onClick={() => { setCurrentUser(null); setScreen("home"); }} className="text-xs text-stone-400 hover:text-stone-600 px-2 py-1 rounded">Abmelden</button>
-              </div>
-            </header>
-
-            <main className="flex-1 overflow-y-auto pb-24">
-              {screen === "home" && isOwner && <HomeInhaberin anfragen={anfragen} team={team} warnschwelle={warnschwelle} onNavigate={setScreen} />}
-              {screen === "home" && !isOwner && <HomeMitarbeiter person={personData} eigeneAnfragen={eigeneAnfragen} onNeueAnfrage={() => setAnfrageScreen("typ")} onNavigate={setScreen} />}
-              {screen === "kalender" && <Teamkalender anfragen={anfragen} team={team} monat={kalenderMonat} setMonat={setKalenderMonat} schliesztage={schliesztage} />}
-              {screen === "meine-anfragen" && <MeineAnfragen anfragen={eigeneAnfragen} onNeueAnfrage={() => setAnfrageScreen("typ")} />}
-              {screen === "anfragen" && isOwner && <AnfragenUebersicht anfragen={anfragen} tab={archivTab} setTab={setArchivTab} onEntscheid={handleEntscheid} schliesztage={schliesztage} team={team} />}
-              {screen === "urlaubsstaende" && isOwner && <Urlaubsstaende team={team} warnschwelle={warnschwelle} />}
-              {screen === "einstellungen" && isOwner && <Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} setWunschLabel={setWunschLabel} sperrzeiten={sperrzeiten} setSperrzeiten={setSperrzeiten} />}
-            </main>
-
-            <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white border-t border-stone-200 flex z-10">
-              {navItems.map(item => (
-                <button key={item.id} onClick={() => setScreen(item.id)}
-                  className={`flex-1 flex flex-col items-center py-3 gap-0.5 relative transition-colors ${screen === item.id ? "text-stone-900" : "text-stone-400"}`}>
-                  <span className="text-lg leading-none">{item.icon}</span>
-                  <span style={{fontSize:"10px"}} className="font-medium">{item.label}</span>
-                  {item.badge > 0 && <span className="absolute top-2 right-1/4 translate-x-2 bg-rose-500 text-white font-bold rounded-full w-4 h-4 flex items-center justify-center" style={{fontSize:"9px"}}>{item.badge}</span>}
-                  {screen === item.id && <span className="absolute bottom-0 left-1/4 right-1/4 h-0.5 bg-stone-800 rounded-t-full" />}
-                </button>
+  return <div className="px-4 py-6 flex flex-col gap-4">
+    <div><p className="text-xs text-stone-400 uppercase tracking-widest">Team</p>
+    <h2 className="text-2xl font-bold text-stone-900">Kalender</h2></div>
+    <div className="flex items-center justify-between bg-white border border-stone-200 rounded-xl px-4 py-2.5">
+      <button onClick={()=>setMonat(x=>x.m===0?{y:x.y-1,m:11}:{...x,m:x.m-1})} className="text-stone-400 px-2">‹</button>
+      <p className="text-sm font-semibold text-stone-800">{fmtM(y,m)}</p>
+      <button onClick={()=>setMonat(x=>x.m===11?{y:x.y+1,m:0}:{...x,m:x.m+1})} className="text-stone-400 px-2">›</button>
+    </div>
+    <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
+      <div className="grid grid-cols-7 border-b border-stone-100">
+        {["Mo","Di","Mi","Do","Fr","Sa","So"].map(d=><div key={d} className="text-center text-xs font-medium text-stone-400 py-2">{d}</div>)}
+      </div>
+      <div className="grid grid-cols-7">
+        {Array.from({length:off},(_,i)=><div key={"e"+i} className="min-h-[60px] border-r border-b border-stone-50"/>)}
+        {days.map(({d,n,dow})=>(
+          <div key={d} className={`min-h-[60px] border-r border-b border-stone-50 p-1 ${dow===0?"bg-stone-50":""}`}>
+            <p className={`text-xs font-medium mb-1 ${dow===0?"text-stone-300":"text-stone-500"}`}>{n}</p>
+            <div className="flex flex-col gap-0.5">
+              {eintraege(d).map((e,i)=>(
+                <span key={i} className={`font-medium px-1 py-0.5 rounded truncate block ${FARBEN[e.typ]||"bg-stone-100 text-stone-600"}`} style={{fontSize:"9px"}}>{e.label}</span>
               ))}
-            </nav>
+            </div>
           </div>
-        </AppShell>
-      );
-    }
+        ))}
+      </div>
+    </div>
+    <div className="flex flex-wrap gap-2">
+      {[["urlaub","Urlaub"],["sonstige","Sonstige Abw."],["feiertag","Feiertag"],["schliesztag","Schließtag"]].map(([t,l])=>(
+        <span key={t} className={`text-xs font-medium px-2 py-1 rounded-full ${FARBEN[t]}`}>{l}</span>
+      ))}
+    </div>
+  </div>;
+}
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-  </script>
+// ─── MEINE ANFRAGEN ───────────────────────────────────────────────────────────
+function MeineAnfragen({anfragen, onNeu}) {
+  const sorted=[...anfragen].sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
+  return <div className="px-4 py-6 flex flex-col gap-4">
+    <div><p className="text-xs text-stone-400 uppercase tracking-widest">Übersicht</p>
+    <h2 className="text-2xl font-bold text-stone-900">Meine Anfragen</h2></div>
+    {sorted.length===0
+      ? <div className="text-center py-12"><p className="text-stone-400 text-sm">Noch keine Anfragen.</p>
+          <button onClick={onNeu} className="mt-4 bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold">+ Erste Anfrage</button></div>
+      : <><div className="flex flex-col gap-2">{sorted.map(a=><AnfrageKarte key={a.id} anfrage={a} showDate/>)}</div>
+          <button onClick={onNeu} className="w-full border-2 border-dashed border-stone-200 rounded-2xl py-4 text-sm font-medium text-stone-400 hover:border-stone-400 hover:text-stone-600 transition-colors">+ Neue Anfrage</button></>
+    }
+  </div>;
+}
+
+// ─── ANFRAGEN INHABERIN ───────────────────────────────────────────────────────
+function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
+  const [tab, setTab] = useState("offen");
+  const offen=anfragen.filter(a=>a.status==="ausstehend").sort((a,b)=>a.erstellt.localeCompare(b.erstellt));
+  const erl=anfragen.filter(a=>a.status!=="ausstehend").sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
+  const [deciding, setDeciding] = useState(null);
+
+  async function entscheid(id, status) {
+    setDeciding(id);
+    try { await onEntscheid(id,status); } catch(e) { alert("Fehler: "+e.message); }
+    setDeciding(null);
+  }
+
+  return <div className="px-4 py-6 flex flex-col gap-4">
+    <div><p className="text-xs text-stone-400 uppercase tracking-widest">Verwaltung</p>
+    <h2 className="text-2xl font-bold text-stone-900">Anfragen</h2></div>
+    <div className="flex bg-stone-100 rounded-xl p-1">
+      {[{id:"offen",l:`Offen${offen.length>0?` (${offen.length})`:""}`},{id:"erl",l:"Erledigt"}].map(t=>(
+        <button key={t.id} onClick={()=>setTab(t.id)}
+          className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${tab===t.id?"bg-white text-stone-900 shadow-sm":"text-stone-500"}`}>
+          {t.l}
+        </button>
+      ))}
+    </div>
+    {tab==="offen"&&(offen.length===0
+      ?<div className="text-center py-12"><p className="text-stone-400 text-sm">Keine offenen Anfragen. ✓</p></div>
+      :<div className="flex flex-col gap-3">{offen.map(a=>(
+        <div key={a.id} className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-3">
+              <span className="w-8 h-8 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{team.find(p=>p.id===a.person_id)?.name[0]}</span>
+              <div><p className="font-semibold text-stone-800 text-sm">{team.find(p=>p.id===a.person_id)?.name}</p>
+              <p className="text-xs text-stone-400">eingereicht {fmtD(a.erstellt)}</p></div>
+            </div>
+            <span className={`text-xs font-medium px-2 py-1 rounded-full border ${getTyp(a.typ)?.color}`}>{getTyp(a.typ)?.icon} {getTyp(a.typ)?.label}</span>
+          </div>
+          <div className="bg-stone-50 rounded-xl px-3 py-2.5">
+            <p className="text-sm font-medium text-stone-800">{fmtZ(a.von,a.bis)}</p>
+            {a.typ==="urlaub"&&<p className="text-xs text-stone-400">{arbeitstage(a.von,a.bis,schliesztage).length} Urlaubstage</p>}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={()=>entscheid(a.id,"genehmigt")} disabled={deciding===a.id}
+              className="flex-1 bg-emerald-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-emerald-700 transition-colors disabled:opacity-50">
+              {deciding===a.id?"…":"Genehmigen ✓"}
+            </button>
+            <button onClick={()=>entscheid(a.id,"abgelehnt")} disabled={deciding===a.id}
+              className="flex-1 border border-rose-200 text-rose-600 rounded-xl py-2.5 text-sm font-semibold hover:bg-rose-50 transition-colors disabled:opacity-50">
+              {deciding===a.id?"…":"Ablehnen ✗"}
+            </button>
+          </div>
+        </div>
+      ))}</div>
+    )}
+    {tab==="erl"&&(erl.length===0
+      ?<p className="text-stone-400 text-sm text-center py-12">Noch keine erledigten Anfragen.</p>
+      :<div className="flex flex-col gap-2">{erl.map(a=>(
+        <div key={a.id} className={`bg-white border border-stone-200 rounded-2xl p-4 border-l-4 ${STATUS[a.status]?.border}`}>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <p className="font-semibold text-stone-800 text-sm">{team.find(p=>p.id===a.person_id)?.name}</p>
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS[a.status]?.bg} ${STATUS[a.status]?.text}`}>{STATUS[a.status]?.label}</span>
+          </div>
+          <p className="text-xs text-stone-500">{getTyp(a.typ)?.icon} {getTyp(a.typ)?.label} · {fmtZ(a.von,a.bis)}</p>
+          <p className="text-xs text-stone-400 mt-1">Eingereicht {fmtD(a.erstellt)}</p>
+        </div>
+      ))}</div>
+    )}
+  </div>;
+}
+
+// ─── URLAUBSSTÄNDE ────────────────────────────────────────────────────────────
+function Urlaubsstaende({team, warnschwelle}) {
+  return <div className="px-4 py-6 flex flex-col gap-4">
+    <div><p className="text-xs text-stone-400 uppercase tracking-widest">Übersicht</p>
+    <h2 className="text-2xl font-bold text-stone-900">Urlaubsstände {new Date().getFullYear()}</h2></div>
+    <div className="flex flex-col gap-3">
+      {team.filter(p=>p.role==="employee").map(p=>{
+        const offen=p.urlaub_anspruch-p.urlaub_verbraucht, warn=offen>warnschwelle;
+        return <div key={p.id} className={`bg-white border rounded-2xl p-5 ${warn?"border-amber-300 bg-amber-50":"border-stone-200"}`}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
+              <p className="font-semibold text-stone-800">{p.name}</p>
+            </div>
+            {warn&&<span className="text-xs font-bold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-full">{offen} Tage offen</span>}
+          </div>
+          <div className="flex gap-4 mb-3">
+            {[{v:p.urlaub_verbraucht,l:"verbraucht",c:"text-stone-900"},{v:offen,l:"offen",c:warn?"text-amber-600":"text-emerald-600"},{v:p.urlaub_anspruch,l:"gesamt",c:"text-stone-400"}].map((x,i)=>(
+              <div key={i} className="flex-1 text-center">
+                <p className={`text-xl font-bold ${x.c}`}>{x.v}</p>
+                <p className="text-stone-400 uppercase tracking-wide" style={{fontSize:"10px"}}>{x.l}</p>
+              </div>
+            ))}
+          </div>
+          <div className={`rounded-full h-1.5 overflow-hidden ${warn?"bg-amber-200":"bg-stone-100"}`}>
+            <div className={`h-full rounded-full ${warn?"bg-amber-500":"bg-stone-800"}`} style={{width:`${Math.min((p.urlaub_verbraucht/p.urlaub_anspruch)*100,100)}%`}}/>
+          </div>
+        </div>;
+      })}
+    </div>
+    <p className="text-xs text-stone-400 text-center">Warnung ab {warnschwelle} Tagen offen</p>
+  </div>;
+}
+
+// ─── EINSTELLUNGEN ────────────────────────────────────────────────────────────
+function PersonKarte({person, onUpdate}) {
+  const [anspruch, setAnspruch] = useState(String(person.urlaub_anspruch));
+  const [verbraucht, setVerbraucht] = useState(String(person.urlaub_verbraucht));
+  const [eintritt, setEintritt] = useState(person.eintrittsdatum||"");
+  const [pin, setPin] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const nxt = naechstesJubilaeum(eintritt);
+  const tage = nxt ? Math.ceil((nxt-new Date())/(1000*60*60*24)) : null;
+
+  async function save() {
+    setSaving(true);
+    try {
+      const d = { urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0, eintrittsdatum: eintritt||null };
+      if (pin.length===4) d.pin = pin;
+      await api.updatePerson(person.id, d);
+      onUpdate(d);
+      if (pin.length===4) setPin("");
+      setSaved(true); setTimeout(()=>setSaved(false),2000);
+    } catch(e) { alert("Fehler: "+e.message); }
+    setSaving(false);
+  }
+
+  return <div className="bg-white border border-stone-200 rounded-2xl px-4 py-4 flex flex-col gap-3">
+    <div className="flex items-center gap-3">
+      <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{person.name[0]}</span>
+      <p className="font-semibold text-stone-800">{person.name}</p>
+    </div>
+    <div className="flex gap-3">
+      <div className="flex-1">
+        <p className="text-xs text-stone-400 mb-1">Eintrittsdatum</p>
+        <input type="date" value={eintritt} onChange={e=>{setEintritt(e.target.value);setSaved(false);}}
+          className="w-full border border-stone-200 rounded-xl px-2 py-2 text-sm text-stone-900 focus:outline-none focus:border-stone-600"/>
+      </div>
+      <div className="flex-1">
+        <p className="text-xs text-stone-400 mb-1">Neuer PIN</p>
+        <input type="password" maxLength={4} value={pin} placeholder="••••"
+          onChange={e=>{setPin(e.target.value.replace(/[^0-9]/g,""));setSaved(false);}}
+          className="w-full border border-stone-200 rounded-xl px-2 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600"/>
+      </div>
+    </div>
+    {nxt&&<div className={`rounded-xl px-3 py-2 ${tage<=30?"bg-emerald-50 border border-emerald-200":"bg-stone-50"}`}>
+      <p className="text-xs text-stone-500">Nächster Urlaubsanspruch: <span className="font-semibold">{nxt.toLocaleDateString("de-AT")}</span></p>
+      <p className={`text-xs font-semibold mt-0.5 ${tage<=0?"text-emerald-700 font-bold":tage<=30?"text-emerald-600":"text-stone-400"}`}>
+        {tage<=0?"Heute fällig!":`in ${tage} Tagen`}
+      </p>
+    </div>}
+    <div className="flex gap-3">
+      <div className="flex-1">
+        <p className="text-xs text-stone-400 mb-1">Jahresanspruch</p>
+        <input type="number" min="0" value={anspruch} onChange={e=>{setAnspruch(e.target.value);setSaved(false);}}
+          className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600"/>
+      </div>
+      <div className="flex-1">
+        <p className="text-xs text-stone-400 mb-1">Verbraucht</p>
+        <input type="number" min="0" value={verbraucht} onChange={e=>{setVerbraucht(e.target.value);setSaved(false);}}
+          className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600"/>
+      </div>
+      <div className="flex items-end">
+        <button onClick={save} disabled={saving}
+          className={`rounded-xl px-3 py-2 text-sm font-semibold transition-colors ${saved?"bg-emerald-100 text-emerald-700":"bg-stone-900 text-white hover:bg-stone-800"}`}>
+          {saved?"✓":saving?"…":"→"}
+        </button>
+      </div>
+    </div>
+  </div>;
+}
+
+function Einstellungen({team, setTeam, schliesztage, setSchliesztage, warnschwelle, setWarnschwelle, sperrzeiten, setSperrzeiten}) {
+  const [tab, setTab] = useState("personen");
+  const [neuTag, setNeuTag] = useState("");
+  const [tagErr, setTagErr] = useState("");
+  const [schwelle, setSchwelle] = useState(String(warnschwelle));
+  const [schwSaved, setSchwSaved] = useState(false);
+  const [spVon, setSpVon] = useState(""); const [spBis, setSpBis] = useState(""); const [spName, setSpName] = useState(""); const [spErr, setSpErr] = useState("");
+
+  async function addTag() {
+    setTagErr("");
+    if (!neuTag) return;
+    if (schliesztage.includes(neuTag)) { setTagErr("Bereits eingetragen."); return; }
+    if (istFeiertag(neuTag)) { setTagErr("Ist ein gesetzlicher Feiertag."); return; }
+    const neu=[...schliesztage,neuTag].sort();
+    try { await api.setEinstellung("schliesztage",JSON.stringify(neu)); setSchliesztage(neu); setNeuTag(""); }
+    catch(e) { alert("Fehler: "+e.message); }
+  }
+
+  async function delTag(d) {
+    const neu=schliesztage.filter(x=>x!==d);
+    try { await api.setEinstellung("schliesztage",JSON.stringify(neu)); setSchliesztage(neu); }
+    catch(e) { alert("Fehler: "+e.message); }
+  }
+
+  async function saveSchwelle() {
+    const n=parseInt(schwelle,10);
+    if (isNaN(n)||n<0) return;
+    try { await api.setEinstellung("warnschwelle",String(n)); setWarnschwelle(n); setSchwSaved(true); setTimeout(()=>setSchwSaved(false),2000); }
+    catch(e) { alert("Fehler: "+e.message); }
+  }
+
+  async function addSperre() {
+    setSpErr("");
+    if (!spVon||!spBis) { setSpErr("Bitte Von und Bis ausfüllen."); return; }
+    if (spVon>spBis) { setSpErr("Von muss vor Bis liegen."); return; }
+    const neu=[...sperrzeiten,{von:spVon,bis:spBis,bezeichnung:spName||"Urlaubssperre"}];
+    try { await api.setEinstellung("sperrzeiten",JSON.stringify(neu)); setSperrzeiten(neu); setSpVon(""); setSpBis(""); setSpName(""); }
+    catch(e) { alert("Fehler: "+e.message); }
+  }
+
+  async function delSperre(i) {
+    const neu=sperrzeiten.filter((_,j)=>j!==i);
+    try { await api.setEinstellung("sperrzeiten",JSON.stringify(neu)); setSperrzeiten(neu); }
+    catch(e) { alert("Fehler: "+e.message); }
+  }
+
+  const tabs=[{id:"personen",l:"Personen"},{id:"schliesztage",l:"Schließtage"},{id:"sperrzeiten",l:"Sperrzeiten"},{id:"warnschwelle",l:"Resturlaub"}];
+
+  return <div className="px-4 py-6 flex flex-col gap-4">
+    <div><p className="text-xs text-stone-400 uppercase tracking-widest">Inhaberin</p>
+    <h2 className="text-2xl font-bold text-stone-900">Einstellungen</h2></div>
+    <div className="flex bg-stone-100 rounded-xl p-1 gap-1">
+      {tabs.map(t=>(
+        <button key={t.id} onClick={()=>setTab(t.id)}
+          className={`flex-1 py-2 text-xs font-medium rounded-lg transition-all ${tab===t.id?"bg-white text-stone-900 shadow-sm":"text-stone-500"}`}>
+          {t.l}
+        </button>
+      ))}
+    </div>
+
+    {tab==="personen"&&<div className="flex flex-col gap-3">
+      <p className="text-xs text-stone-400 px-1">PIN, Eintrittsdatum und Urlaubstage anpassen.</p>
+      {team.filter(p=>p.role==="employee").map(p=>(
+        <PersonKarte key={p.id} person={p} onUpdate={u=>setTeam(prev=>prev.map(x=>x.id===p.id?{...x,...u}:x))}/>
+      ))}
+    </div>}
+
+    {tab==="schliesztage"&&<div className="flex flex-col gap-4">
+      <div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-3">
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Neuer Schließtag</p>
+        <div className="flex gap-2">
+          <input type="date" value={neuTag} onChange={e=>{setNeuTag(e.target.value);setTagErr("");}}
+            className="flex-1 border border-stone-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-stone-600"/>
+          <button onClick={addTag} className="bg-stone-900 text-white rounded-xl px-4 py-2.5 text-sm font-semibold">+</button>
+        </div>
+        {tagErr&&<p className="text-xs text-rose-500">{tagErr}</p>}
+      </div>
+      <div className="bg-stone-100 rounded-xl px-4 py-2.5">
+        <p className="text-xs text-stone-400">Urlaubssperre 1.12.–24.12. ist fest hinterlegt.</p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">Eingetragene Schließtage</p>
+        {schliesztage.length===0?<p className="text-stone-400 text-sm px-1">Keine eingetragen.</p>:
+          schliesztage.map(d=>(
+            <div key={d} className="bg-white border border-stone-200 rounded-xl px-4 py-3 flex items-center justify-between">
+              <p className="text-sm font-medium text-stone-800">{fmtD(d)}</p>
+              <button onClick={()=>delTag(d)} className="text-rose-400 hover:text-rose-600 px-2">✕</button>
+            </div>
+          ))
+        }
+      </div>
+      <div className="flex flex-col gap-2">
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">Gesetzliche Feiertage Österreich</p>
+        {getFeiertage(new Date().getFullYear()).map(f=>(
+          <div key={f.datum} className="bg-stone-50 border border-stone-100 rounded-xl px-4 py-2.5 flex items-center justify-between">
+            <p className="text-sm font-medium text-stone-700">{f.name}</p>
+            <p className="text-xs text-stone-400">{fmtD(f.datum)}</p>
+          </div>
+        ))}
+        <p className="text-xs text-stone-300 px-1">Automatisch berechnet für {new Date().getFullYear()}</p>
+      </div>
+    </div>}
+
+    {tab==="sperrzeiten"&&<div className="flex flex-col gap-4">
+      <div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-3">
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Neue Urlaubssperre</p>
+        <input type="text" placeholder="Bezeichnung (z.B. Sommersperre)" value={spName} onChange={e=>setSpName(e.target.value)}
+          className="border border-stone-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-stone-600"/>
+        <div className="flex gap-2">
+          <div className="flex-1"><p className="text-xs text-stone-400 mb-1">Von</p>
+            <input type="date" value={spVon} onChange={e=>{setSpVon(e.target.value);setSpErr("");}}
+              className="w-full border border-stone-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-stone-600"/></div>
+          <div className="flex-1"><p className="text-xs text-stone-400 mb-1">Bis</p>
+            <input type="date" value={spBis} onChange={e=>{setSpBis(e.target.value);setSpErr("");}}
+              className="w-full border border-stone-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-stone-600"/></div>
+        </div>
+        {spErr&&<p className="text-xs text-rose-500">{spErr}</p>}
+        <button onClick={addSperre} className="bg-stone-900 text-white rounded-xl py-2.5 text-sm font-semibold">+ Hinzufügen</button>
+      </div>
+      <div className="bg-stone-100 rounded-xl px-4 py-2.5">
+        <p className="text-xs text-stone-400">Urlaubssperre 1.12.–24.12. ist immer aktiv.</p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">Aktive Sperrzeiten</p>
+        {sperrzeiten.length===0?<p className="text-stone-400 text-sm px-1">Keine eingetragen.</p>:
+          sperrzeiten.map((s,i)=>(
+            <div key={i} className="bg-white border border-stone-200 rounded-xl px-4 py-3 flex items-center justify-between">
+              <div><p className="text-sm font-medium text-stone-800">{s.bezeichnung}</p>
+              <p className="text-xs text-stone-400">{fmtD(s.von)} – {fmtD(s.bis)}</p></div>
+              <button onClick={()=>delSperre(i)} className="text-rose-400 hover:text-rose-600 px-2">✕</button>
+            </div>
+          ))
+        }
+      </div>
+    </div>}
+
+    {tab==="warnschwelle"&&<div className="flex flex-col gap-4">
+      <div className="bg-white border border-stone-200 rounded-2xl p-5 flex flex-col gap-4">
+        <div>
+          <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-1">Resturlaub-Warnschwelle</p>
+          <p className="text-stone-500 text-sm">Ab wie vielen offenen Tagen soll eine Warnung erscheinen?</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <input type="number" min="0" value={schwelle} onChange={e=>{setSchwelle(e.target.value);setSchwSaved(false);}}
+            className="w-20 text-center border border-stone-300 rounded-xl py-2.5 text-lg font-bold text-stone-900 focus:outline-none focus:border-stone-600"/>
+          <span className="text-stone-500 text-sm">Tage</span>
+          <button onClick={saveSchwelle}
+            className={`ml-auto rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors ${schwSaved?"bg-emerald-100 text-emerald-700":"bg-stone-900 text-white hover:bg-stone-800"}`}>
+            {schwSaved?"✓ Gespeichert":"Speichern"}
+          </button>
+        </div>
+      </div>
+      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+        <p className="text-xs text-amber-700">Aktuell: Warnung ab <span className="font-bold">{warnschwelle} Tagen</span> offen.</p>
+      </div>
+    </div>}
+  </div>;
+}
+
+// ─── ANFRAGE KARTE ────────────────────────────────────────────────────────────
+function AnfrageKarte({anfrage, showDate}) {
+  const typc=getTyp(anfrage.typ), st=STATUS[anfrage.status];
+  return <div className={`bg-white border border-stone-200 rounded-2xl px-4 py-3.5 border-l-4 ${st.border}`}>
+    <div className="flex items-start justify-between gap-2 mb-1">
+      <p className="text-sm font-semibold text-stone-800">{typc?.icon} {typc?.label}</p>
+      <span className={`font-bold uppercase px-2 py-0.5 rounded-full ${st.bg} ${st.text}`} style={{fontSize:"10px"}}>{st.label}</span>
+    </div>
+    <p className="text-xs text-stone-500">{fmtZ(anfrage.von,anfrage.bis)}</p>
+    {showDate&&<p className="text-stone-300 mt-1" style={{fontSize:"10px"}}>Eingereicht {fmtD(anfrage.erstellt)}</p>}
+  </div>;
+}
+
+// ─── HAUPT APP ────────────────────────────────────────────────────────────────
+function App() {
+  const [ladeStatus, setLadeStatus] = useState("laden");
+  const [user, setUser] = useState(null);
+  const [team, setTeam] = useState([]);
+  const [anfragen, setAnfragen] = useState([]);
+  const [schliesztage, setSchliesztage] = useState([]);
+  const [warnschwelle, setWarnschwelle] = useState(10);
+  const [sperrzeiten, setSperrzeiten] = useState([]);
+  const [screen, setScreen] = useState("home");
+  const [anfrageScreen, setAnfrageScreen] = useState(null);
+  const [neueAnfrage, setNeueAnfrage] = useState({typ:null,von:null,bis:null,fuerPerson:null});
+  const [kalM, setKalM] = useState({y:new Date().getFullYear(),m:new Date().getMonth()});
+  const [ersterStart, setErsterStart] = useState(false);
+
+  async function laden(silent=false) {
+    if (!silent) setLadeStatus("laden");
+    try {
+      const [t,a,e] = await Promise.all([api.getTeam(), api.getAnfragen(), api.getEinstellungen()]);
+      setTeam(t||[]);
+      setAnfragen(a||[]);
+      const sz=e?.find(x=>x.schluessel==="schliesztage");
+      const ws=e?.find(x=>x.schluessel==="warnschwelle");
+      const spz=e?.find(x=>x.schluessel==="sperrzeiten");
+      const er=e?.find(x=>x.schluessel==="eroeffnung_erledigt");
+      if (sz) setSchliesztage(JSON.parse(sz.wert));
+      if (ws) setWarnschwelle(parseInt(ws.wert,10));
+      if (spz) setSperrzeiten(JSON.parse(spz.wert));
+      if (!er) setErsterStart(true);
+      setLadeStatus("bereit");
+    } catch(e) { console.error(e); if (!silent) setLadeStatus("fehler"); }
+  }
+
+  useEffect(()=>{ laden(); const t=setInterval(()=>laden(true),30000); return ()=>clearInterval(t); },[]);
+
+  if (ladeStatus==="laden") return <Shell><Lade text="Verbinde…"/></Shell>;
+  if (ladeStatus==="fehler") return <Shell><div className="min-h-screen flex flex-col items-center justify-center gap-4 px-6 text-center">
+    <p className="text-2xl">⚠️</p><p className="text-stone-700 font-semibold">Verbindungsfehler</p>
+    <p className="text-stone-400 text-sm">Supabase konnte nicht erreicht werden.</p>
+    <button onClick={laden} className="bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold mt-2">Nochmal versuchen</button>
+  </div></Shell>;
+
+  if (!user) return <Login team={team} onLogin={setUser}/>;
+
+  if (user.role==="owner"&&ersterStart) return <Shell>
+    <Eroeffnung team={team} onDone={async()=>{ setErsterStart(false); const t=await api.getTeam(); setTeam(t||[]); }}/>
+  </Shell>;
+
+  const isOwner = user.role==="owner";
+  const meinAnfragen = anfragen.filter(a=>a.person_id===user.id);
+  const offeneAnfragen = anfragen.filter(a=>a.status==="ausstehend");
+  const genehmigteUrlaube = anfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt");
+
+  async function handleAnfrage(typ, von, bis, pid) {
+    const neu = await api.addAnfrage({person_id:pid||user.id, typ, von, bis, status:"ausstehend", erstellt:heute()});
+    setAnfragen(prev=>[...prev, neu[0]]);
+    setAnfrageScreen(null);
+    setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});
+    setScreen("meine-anfragen");
+  }
+
+  async function handleEntscheid(id, status) {
+    await api.updateAnfrage(id, {status});
+    setAnfragen(prev=>prev.map(a=>a.id===id?{...a,status}:a));
+  }
+
+  const navItems = isOwner
+    ? [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"anfragen",l:"Anfragen",i:"◎",b:offeneAnfragen.length},{id:"urlaubsstaende",l:"Urlaub",i:"▦"}]
+    : [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"meine-anfragen",l:"Anfragen",i:"◎"}];
+
+  if (anfrageScreen) return <Shell>
+    <AnfrageFlow
+      anfrage={neueAnfrage} setAnfrage={setNeueAnfrage}
+      screen={anfrageScreen} setScreen={setAnfrageScreen}
+      genehmigteUrlaube={genehmigteUrlaube} schliesztage={schliesztage} sperrzeiten={sperrzeiten}
+      isOwner={isOwner} team={team} currentUser={user}
+      onSubmit={handleAnfrage}
+      onAbbrechen={()=>{ setAnfrageScreen(null); setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null}); }}
+    />
+  </Shell>;
+
+  return <Shell>
+    <div className="flex flex-col min-h-screen bg-stone-50">
+      <header className="bg-white border-b border-stone-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
+        <div>
+          <p className="text-xs text-stone-400 uppercase tracking-widest">Great Hair Day</p>
+          <p className="text-sm font-semibold text-stone-800">{user.name}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {isOwner&&<button onClick={()=>setScreen("einstellungen")} className="text-xs text-stone-400 hover:text-stone-700 px-2 py-1">⚙ Einstellungen</button>}
+          <button onClick={()=>{setUser(null);setScreen("home");}} className="text-xs text-stone-400 hover:text-stone-600 px-2 py-1">Abmelden</button>
+        </div>
+      </header>
+
+      <main className="flex-1 overflow-y-auto pb-24">
+        {screen==="home"&&isOwner&&<HomeInhaberin anfragen={anfragen} team={team} warnschwelle={warnschwelle} onNav={setScreen}/>}
+        {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
+        {screen==="kalender"&&<Kalender anfragen={anfragen} team={team} monat={kalM} setMonat={setKalM} schliesztage={schliesztage}/>}
+        {screen==="meine-anfragen"&&<MeineAnfragen anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}}/>}
+        {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid}/>}
+        {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle}/>}
+        {screen==="einstellungen"&&isOwner&&<Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} sperrzeiten={sperrzeiten} setSperrzeiten={setSperrzeiten}/>}
+      </main>
+
+      <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white border-t border-stone-200 flex z-10">
+        {navItems.map(x=>(
+          <button key={x.id} onClick={()=>setScreen(x.id)}
+            className={`flex-1 flex flex-col items-center py-3 gap-0.5 relative transition-colors ${screen===x.id?"text-stone-900":"text-stone-400"}`}>
+            <span className="text-lg leading-none">{x.i}</span>
+            <span style={{fontSize:"10px"}} className="font-medium">{x.l}</span>
+            {x.b>0&&<span className="absolute top-2 right-1/4 translate-x-2 bg-rose-500 text-white font-bold rounded-full w-4 h-4 flex items-center justify-center" style={{fontSize:"9px"}}>{x.b}</span>}
+            {screen===x.id&&<span className="absolute bottom-0 left-1/4 right-1/4 h-0.5 bg-stone-800 rounded-t-full"/>}
+          </button>
+        ))}
+      </nav>
+    </div>
+  </Shell>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
 </body>
 </html>
