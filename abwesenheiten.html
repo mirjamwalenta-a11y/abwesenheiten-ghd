@@ -353,6 +353,7 @@
       const [anspruch, setAnspruch] = useState(String(person.urlaub_anspruch));
       const [verbraucht, setVerbraucht] = useState(String(person.urlaub_verbraucht));
       const [eintrittsdatum, setEintrittsdatum] = useState(person.eintrittsdatum || "");
+      const [pinInput, setPinInput] = useState("");
       const [saved, setSaved] = useState(false);
       const [saving, setSaving] = useState(false);
 
@@ -362,8 +363,13 @@
       async function handleSave() {
         setSaving(true);
         try {
-          await api.updatePerson(person.id, { urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0, eintrittsdatum: eintrittsdatum || null });
-          onUpdate({ urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0, eintrittsdatum: eintrittsdatum || null });
+          const saveData = { urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0, eintrittsdatum: eintrittsdatum || null };
+          if (pinInput && pinInput.length === 4) saveData.pin = pinInput;
+          await api.updatePerson(person.id, saveData);
+          const updateData = { urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0, eintrittsdatum: eintrittsdatum || null };
+          if (pinInput && pinInput.length === 4) updateData.pin = pinInput;
+          onUpdate(updateData);
+          if (pinInput && pinInput.length === 4) setPinInput("");
           setSaved(true); setTimeout(() => setSaved(false), 2000);
         } catch(e) { alert("Fehler: " + e.message); }
         setSaving(false);
@@ -375,10 +381,18 @@
             <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{person.name[0]}</span>
             <p className="font-semibold text-stone-800">{person.name}</p>
           </div>
-          <div className="flex-1">
-            <p className="text-xs text-stone-400 mb-1">Eintrittsdatum</p>
-            <input type="date" value={eintrittsdatum} onChange={e => { setEintrittsdatum(e.target.value); setSaved(false); }}
-              className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-900 focus:outline-none focus:border-stone-600" />
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <p className="text-xs text-stone-400 mb-1">Eintrittsdatum</p>
+              <input type="date" value={eintrittsdatum} onChange={e => { setEintrittsdatum(e.target.value); setSaved(false); }}
+                className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-900 focus:outline-none focus:border-stone-600" />
+            </div>
+            <div className="flex-1">
+              <p className="text-xs text-stone-400 mb-1">PIN (4-stellig)</p>
+              <input type="password" maxLength={4} value={pinInput} onChange={e => { setPinInput(e.target.value.replace(/\D/,"")); setSaved(false); }}
+                placeholder="••••"
+                className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm font-bold text-stone-900 focus:outline-none focus:border-stone-600" />
+            </div>
           </div>
           {naechstes && (
             <div className={`rounded-xl px-3 py-2 ${tage <= 30 ? "bg-emerald-50 border border-emerald-200" : "bg-stone-50"}`}>
@@ -769,7 +783,7 @@
 
       async function handleSubmit() {
         setSaving(true);
-        try { await onSubmit(anfrage.typ, anfrage.von, anfrage.bis); }
+        try { await onSubmit(anfrage.typ, anfrage.von, anfrage.bis, anfrage.fuerPerson); }
         catch(e) { alert("Fehler: " + e.message); setSaving(false); }
       }
 
@@ -1264,7 +1278,9 @@
       if (anfrageScreen) return (
         <AppShell>
           <AnfrageFlow screen={anfrageScreen} setScreen={setAnfrageScreen} anfrage={neueAnfrage} setAnfrage={setNeueAnfrage}
-            genehmigteUrlaube={genehmigteUrlaube} schliesztage={schliesztage} onSubmit={handleAnfrageStellen}
+            genehmigteUrlaube={genehmigteUrlaube} schliesztage={schliesztage} sperrzeiten={sperrzeiten}
+            isOwner={isOwner} team={team} currentUser={currentUser}
+            onSubmit={handleAnfrageStellen}
             onAbbrechen={() => { setAnfrageScreen(null); setNeueAnfrage({ typ: null, von: null, bis: null }); }} />
         </AppShell>
       );
