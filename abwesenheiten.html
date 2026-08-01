@@ -250,17 +250,35 @@
     }
 
     // ─── EINSTELLUNGEN ────────────────────────────────────────────────────────
+    // ─── Hilfsfunktionen Eintrittsdatum ─────────────────────────────────────
+    function naechstesUrlaubsdatum(eintrittsdatum) {
+      if (!eintrittsdatum) return null;
+      const heute2 = new Date();
+      const eintritt = new Date(eintrittsdatum + "T00:00:00");
+      let naechstes = new Date(heute2.getFullYear(), eintritt.getMonth(), eintritt.getDate());
+      if (naechstes <= heute2) naechstes.setFullYear(naechstes.getFullYear() + 1);
+      return naechstes;
+    }
+    function tagesBis(datum) {
+      if (!datum) return null;
+      return Math.ceil((datum - new Date()) / (1000 * 60 * 60 * 24));
+    }
+
     function PersonenKarte({ person, onUpdate }) {
       const [anspruch, setAnspruch] = useState(String(person.urlaub_anspruch));
       const [verbraucht, setVerbraucht] = useState(String(person.urlaub_verbraucht));
+      const [eintrittsdatum, setEintrittsdatum] = useState(person.eintrittsdatum || "");
       const [saved, setSaved] = useState(false);
       const [saving, setSaving] = useState(false);
+
+      const naechstes = naechstesUrlaubsdatum(eintrittsdatum);
+      const tage = tagesBis(naechstes);
 
       async function handleSave() {
         setSaving(true);
         try {
-          await api.updatePerson(person.id, { urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0 });
-          onUpdate({ urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0 });
+          await api.updatePerson(person.id, { urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0, eintrittsdatum: eintrittsdatum || null });
+          onUpdate({ urlaub_anspruch: parseInt(anspruch)||0, urlaub_verbraucht: parseInt(verbraucht)||0, eintrittsdatum: eintrittsdatum || null });
           setSaved(true); setTimeout(() => setSaved(false), 2000);
         } catch(e) { alert("Fehler: " + e.message); }
         setSaving(false);
@@ -272,6 +290,19 @@
             <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{person.name[0]}</span>
             <p className="font-semibold text-stone-800">{person.name}</p>
           </div>
+          <div className="flex-1">
+            <p className="text-xs text-stone-400 mb-1">Eintrittsdatum</p>
+            <input type="date" value={eintrittsdatum} onChange={e => { setEintrittsdatum(e.target.value); setSaved(false); }}
+              className="w-full border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-900 focus:outline-none focus:border-stone-600" />
+          </div>
+          {naechstes && (
+            <div className={`rounded-xl px-3 py-2 ${tage <= 30 ? "bg-emerald-50 border border-emerald-200" : "bg-stone-50"}`}>
+              <p className="text-xs text-stone-500">Nächster Urlaubsanspruch: <span className="font-semibold text-stone-800">{naechstes.toLocaleDateString("de-AT")}</span></p>
+              <p className={`text-xs font-semibold mt-0.5 ${tage <= 30 ? "text-emerald-700" : "text-stone-400"}`}>
+                {tage <= 0 ? "Heute fällig!" : `in ${tage} Tagen`}
+              </p>
+            </div>
+          )}
           <div className="flex gap-3">
             <div className="flex-1">
               <p className="text-xs text-stone-400 mb-1">Jahresanspruch</p>
@@ -463,6 +494,12 @@
       const warnungen = team.filter(p => p.role === "employee")
         .map(p => ({...p, offen: p.urlaub_anspruch - p.urlaub_verbraucht}))
         .filter(p => p.offen > warnschwelle);
+      // Urlaubsanspruch bald fällig (innerhalb 30 Tage)
+      const urlaubFaellig = team.filter(p => p.role === "employee" && p.eintrittsdatum).map(p => {
+        const naechstes = naechstesUrlaubsdatum(p.eintrittsdatum);
+        const tage = tagesBis(naechstes);
+        return { ...p, naechstes, tage };
+      }).filter(p => p.tage !== null && p.tage <= 30);
       return (
         <div className="px-4 py-6 flex flex-col gap-6">
           <div>
@@ -499,6 +536,18 @@
               <p className="text-xs font-medium text-amber-700 uppercase tracking-widest mb-2">Resturlaub-Hinweis</p>
               {warnungen.map(p => <p key={p.id} className="text-sm text-amber-800"><span className="font-semibold">{p.name}</span> hat noch {p.offen} Tage offen</p>)}
               <button onClick={() => onNavigate("urlaubsstaende")} className="mt-3 text-xs text-amber-700 underline underline-offset-2">Urlaubsstände ansehen →</button>
+            </div>
+          )}
+          {urlaubFaellig.length > 0 && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4">
+              <p className="text-xs font-medium text-emerald-700 uppercase tracking-widest mb-2">Urlaubsanspruch fällig</p>
+              {urlaubFaellig.map(p => (
+                <div key={p.id} className="flex items-center justify-between">
+                  <p className="text-sm text-emerald-800"><span className="font-semibold">{p.name}</span> — {p.naechstes.toLocaleDateString("de-AT")}</p>
+                  <span className="text-xs font-bold text-emerald-600">{p.tage <= 0 ? "Heute!" : `in ${p.tage}d`}</span>
+                </div>
+              ))}
+              <button onClick={() => onNavigate("einstellungen")} className="mt-3 text-xs text-emerald-700 underline underline-offset-2">Urlaub gutschreiben →</button>
             </div>
           )}
           <div className="grid grid-cols-3 gap-3">
