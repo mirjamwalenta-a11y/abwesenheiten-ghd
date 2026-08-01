@@ -347,6 +347,10 @@ function HomeInhaberin({anfragen, team, warnschwelle, onNav}) {
       ))}
       <button onClick={()=>onNav("einstellungen")} className="mt-2 text-xs text-emerald-700 underline">Urlaub gutschreiben →</button>
     </div>}
+    <button onClick={()=>{ onNav("neu-anfrage"); }}
+      className="w-full bg-stone-900 text-white rounded-2xl py-3.5 font-semibold text-sm hover:bg-stone-800 transition-colors">
+      + Abwesenheit eintragen
+    </button>
     <div className="grid grid-cols-3 gap-3">
       {[{l:"Kalender",i:"◫",s:"kalender"},{l:"Anfragen",i:"◎",s:"anfragen"},{l:"Urlaub",i:"▦",s:"urlaubsstaende"}].map(x=>(
         <button key={x.s} onClick={()=>onNav(x.s)} className="bg-white border border-stone-200 rounded-2xl py-4 flex flex-col items-center gap-1.5 hover:border-stone-400 hover:shadow-sm transition-all">
@@ -418,11 +422,11 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
       {isOwner&&<div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-2">
         <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-1">Für wen?</p>
         <div className="flex flex-wrap gap-2">
-          {team.filter(p=>p.role==="employee").map(p=>(
+          {team.map(p=>(
             <button key={p.id} onClick={()=>setAnfrage(a=>({...a,fuerPerson:p.id}))}
               className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-medium transition-all ${anfrage.fuerPerson===p.id?"bg-stone-900 text-white border-stone-900":"bg-white text-stone-700 border-stone-200 hover:border-stone-400"}`}>
               <span className="w-6 h-6 rounded-full bg-stone-200 flex items-center justify-center text-xs font-bold">{p.name[0]}</span>
-              {p.name}
+              {p.name}{p.role==="owner"?" (ich)":""}
             </button>
           ))}
         </div>
@@ -496,9 +500,9 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
               <p className="text-sm font-semibold text-stone-800">{fmtZ(anfrage.von,anfrage.bis)}</p>
               {anzahl>0&&<p className="text-xs text-stone-400">{anzahl} {anfrage.typ==="urlaub"?"Urlaubstag":"Tag"}{anzahl!==1?"e":""}</p>}
             </div>
-            <button onClick={()=>anfrage.von===anfrage.bis?submit():setScreen("zusammenfassung")}
+            <button onClick={()=>setScreen("zusammenfassung")}
               className="bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold hover:bg-stone-800 transition-colors">
-              {anfrage.von===anfrage.bis?"Anfragen":"Weiter →"}
+              Weiter →
             </button>
           </div>
         )}
@@ -531,11 +535,28 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
             <p className="text-sm font-bold text-stone-900">{anzahl} Tage</p>
           </div>}
         </div>
-        <button onClick={submit} disabled={saving}
-          className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 transition-colors disabled:opacity-50">
-          {saving?"Wird gespeichert…":"Anfrage absenden"}
-        </button>
-        <button onClick={onAbbrechen} className="text-center text-sm text-stone-400 underline">Abbrechen</button>
+        {isOwner ? (
+          <div className="flex flex-col gap-2">
+            <button onClick={async()=>{setSaving(true);try{const pid=anfrage.fuerPerson||currentUser.id;await onSubmit(anfrage.typ,anfrage.von,anfrage.bis,pid,true);}catch(e){alert("Fehler: "+e.message);setSaving(false);}}}
+              disabled={saving}
+              className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 transition-colors disabled:opacity-50">
+              {saving?"Wird gespeichert…":"✓ Direkt eintragen (genehmigt)"}
+            </button>
+            <button onClick={submit} disabled={saving}
+              className="w-full border border-stone-300 text-stone-700 rounded-2xl py-3 font-medium hover:bg-stone-100 transition-colors disabled:opacity-50">
+              Als Anfrage einreichen (ausstehend)
+            </button>
+            <button onClick={onAbbrechen} className="text-center text-sm text-stone-400 underline pt-1">Abbrechen</button>
+          </div>
+        ) : (
+          <>
+            <button onClick={submit} disabled={saving}
+              className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 transition-colors disabled:opacity-50">
+              {saving?"Wird gespeichert…":"Anfrage absenden"}
+            </button>
+            <button onClick={onAbbrechen} className="text-center text-sm text-stone-400 underline">Abbrechen</button>
+          </>
+        )}
       </div>
     );
   }
@@ -1134,12 +1155,15 @@ function App() {
   const offeneAnfragen = anfragen.filter(a=>a.status==="ausstehend");
   const genehmigteUrlaube = anfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt");
 
-  async function handleAnfrage(typ, von, bis, pid) {
-    const neu = await api.addAnfrage({person_id:pid||user.id, typ, von, bis, status:"ausstehend", erstellt:heute()});
+  async function handleAnfrage(typ, von, bis, pid, directApprove) {
+    const personId = pid || user.id;
+    const status = (isOwner && directApprove) ? "genehmigt" : "ausstehend";
+    const neu = await api.addAnfrage({person_id:personId, typ, von, bis, status, erstellt:heute()});
     setAnfragen(prev=>[...prev, neu[0]]);
     setAnfrageScreen(null);
     setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});
-    setScreen("meine-anfragen");
+    // Nach dem direkten Eintrag: Inhaberin bleibt auf Home/Kalender
+    setScreen(isOwner && directApprove ? "kalender" : "meine-anfragen");
   }
 
   async function handleEntscheid(id, status) {
@@ -1176,7 +1200,10 @@ function App() {
       </header>
 
       <main className="flex-1 overflow-y-auto pb-24">
-        {screen==="home"&&isOwner&&<HomeInhaberin anfragen={anfragen} team={team} warnschwelle={warnschwelle} onNav={setScreen}/>}
+        {screen==="home"&&isOwner&&<HomeInhaberin anfragen={anfragen} team={team} warnschwelle={warnschwelle} onNav={(s)=>{
+          if (s==="neu-anfrage") { setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null}); setAnfrageScreen("typ"); }
+          else setScreen(s);
+        }}/>}
         {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
         {screen==="kalender"&&<Kalender anfragen={anfragen} team={team} monat={kalM} setMonat={setKalM} schliesztage={schliesztage}/>}
         {screen==="meine-anfragen"&&<MeineAnfragen anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}}/>}
