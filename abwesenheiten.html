@@ -105,7 +105,7 @@ function tageZw(v,b) {
   return t;
 }
 function arbeitstage(v,b,sz) {
-  return tageZw(v,b).filter(d => parseD(d).getDay()!==0 && !istFeiertag(d) && !sz.includes(d));
+  return tageZw(v,b).filter(d => parseD(d).getDay()!==0 && parseD(d).getDay()!==1 && !istFeiertag(d) && !sz.includes(d));
 }
 function istSperre(d, fixSperre, sperrzeiten) {
   const dt=parseD(d), m=dt.getMonth()+1, t=dt.getDate();
@@ -266,10 +266,13 @@ function Eroeffnung({team, onDone}) {
 }
 
 // ─── HOME MITARBEITER ─────────────────────────────────────────────────────────
-function HomeMitarbeiter({person, anfragen, onNeu, onNav}) {
+function HomeMitarbeiter({person, anfragen, schliesztage, onNeu, onNav}) {
   if (!person) return null;
   const offen = person.urlaub_anspruch - person.urlaub_verbraucht;
   const recent = [...anfragen].sort((a,b)=>b.erstellt.localeCompare(a.erstellt)).slice(0,3);
+  const genehmigteTage = anfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt").reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
+  const ausstehendeTage = anfragen.filter(a=>a.typ==="urlaub"&&a.status==="ausstehend").reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
+  const tatsaechlichOffen = offen - genehmigteTage - ausstehendeTage;
   return <div className="px-4 py-6 flex flex-col gap-6">
     <div>
       <p className="text-xs text-stone-400 uppercase tracking-widest">Guten Tag</p>
@@ -285,6 +288,10 @@ function HomeMitarbeiter({person, anfragen, onNeu, onNav}) {
           </div>
         ))}
       </div>
+      {(genehmigteTage>0||ausstehendeTage>0)&&<div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+        {genehmigteTage>0&&<p className="text-xs text-amber-800">⚠️ Bedenke: <span className="font-semibold">{genehmigteTage} bestätigte UT</span> noch nicht abgezogen — verbleibend: <span className="font-bold">{offen-genehmigteTage} UT</span>{ausstehendeTage>0?` (+ ${ausstehendeTage} ausstehend)`:""}</p>}
+        {genehmigteTage===0&&ausstehendeTage>0&&<p className="text-xs text-amber-800">⏳ <span className="font-semibold">{ausstehendeTage} UT</span> noch ausstehend</p>}
+      </div>}
       <div className="mt-4 bg-stone-100 rounded-full h-1.5 overflow-hidden">
         <div className="h-full bg-stone-800 rounded-full" style={{width:`${Math.min((person.urlaub_verbraucht/person.urlaub_anspruch)*100,100)}%`}}/>
       </div>
@@ -387,7 +394,8 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
 
   function tapDay(d) {
     if (blockInfo(d)) return;
-    if (parseD(d).getDay()===0) return;
+    const dow=parseD(d).getDay();
+    if (dow===0||dow===1) return;
     if (!selStart) {
       setSelStart(d); setAnfrage(a=>({...a,von:d,bis:d}));
     } else {
@@ -407,7 +415,7 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
 
   const anzahl = anfrage.von&&anfrage.bis
     ? (anfrage.typ==="urlaub"?arbeitstage(anfrage.von,anfrage.bis,schliesztage).length
-      :tageZw(anfrage.von,anfrage.bis).filter(d=>parseD(d).getDay()!==0).length)
+      :tageZw(anfrage.von,anfrage.bis).filter(d=>{const w=parseD(d).getDay();return w!==0&&w!==1;}).length)
     : 0;
 
   async function submit() {
@@ -480,16 +488,16 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
             {["Mo","Di","Mi","Do","Fr","Sa","So"].map(d=><div key={d} className="text-center text-xs font-medium text-stone-400 py-1">{d}</div>)}
             {Array.from({length:off},(_,i)=><div key={"e"+i}/>)}
             {days.map(d=>{
-              const bi=blockInfo(d), isSun=parseD(d).getDay()===0;
+              const dow=parseD(d).getDay(), bi=blockInfo(d), isClosed=dow===0||dow===1;
               const isSel=anfrage.von&&anfrage.bis&&d>=anfrage.von&&d<=anfrage.bis;
               let cls="flex items-center justify-center text-xs h-9 rounded-lg mx-0.5 my-0.5 transition-colors ";
-              if (isSun) cls+="text-stone-200 ";
+              if (isClosed) cls+="text-stone-200 ";
               else if (bi==="sperre") cls+="bg-rose-50 text-rose-300 cursor-not-allowed ";
               else if (bi==="belegt") cls+="bg-stone-100 text-stone-300 cursor-not-allowed ";
               else if (bi==="feiertag"||bi==="schliesztag") cls+="text-stone-300 cursor-not-allowed ";
               else if (isSel) cls+="bg-stone-900 text-white font-semibold cursor-pointer ";
               else cls+="text-stone-700 hover:bg-stone-100 cursor-pointer ";
-              return <button key={d} onClick={()=>!isSun&&tapDay(d)} className={cls} disabled={!!bi||isSun}>{parseD(d).getDate()}</button>;
+              return <button key={d} onClick={()=>!isClosed&&tapDay(d)} className={cls} disabled={!!bi||isClosed}>{parseD(d).getDate()}</button>;
             })}
           </div>
           <div className="px-4 py-2 border-t border-stone-100 flex gap-3 flex-wrap">
@@ -579,6 +587,7 @@ function Kalender({anfragen, team, monat, setMonat, schliesztage}) {
 
   function eintraege(datum) {
     if (istFeiertag(datum)) return [{typ:"feiertag",label:feiertagName(datum)}];
+    if (parseD(datum).getDay()===1) return [{typ:"schliesztag",label:"Montag geschlossen"}];
     if (schliesztage.includes(datum)) return [{typ:"schliesztag",label:"Schließtag"}];
     return gen.filter(a=>tageZw(a.von,a.bis).includes(datum)).map(a=>({typ:a.typ,label:team.find(p=>p.id===a.person_id)?.name||a.person_id}));
   }
@@ -702,13 +711,16 @@ function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
 }
 
 // ─── URLAUBSSTÄNDE ────────────────────────────────────────────────────────────
-function Urlaubsstaende({team, warnschwelle}) {
+function Urlaubsstaende({team, warnschwelle, anfragen, schliesztage}) {
   return <div className="px-4 py-6 flex flex-col gap-4">
     <div><p className="text-xs text-stone-400 uppercase tracking-widest">Übersicht</p>
     <h2 className="text-2xl font-bold text-stone-900">Urlaubsstände {new Date().getFullYear()}</h2></div>
     <div className="flex flex-col gap-3">
       {team.filter(p=>p.role==="employee").map(p=>{
         const offen=p.urlaub_anspruch-p.urlaub_verbraucht, warn=offen>warnschwelle;
+        const pAnfragen=(anfragen||[]).filter(a=>a.person_id===p.id);
+        const genehmigteTage=pAnfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt").reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
+        const ausstehendeTage=pAnfragen.filter(a=>a.typ==="urlaub"&&a.status==="ausstehend").reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
         return <div key={p.id} className={`bg-white border rounded-2xl p-5 ${warn?"border-amber-300 bg-amber-50":"border-stone-200"}`}>
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-3">
@@ -725,6 +737,10 @@ function Urlaubsstaende({team, warnschwelle}) {
               </div>
             ))}
           </div>
+          {(genehmigteTage>0||ausstehendeTage>0)&&<div className="mb-3 bg-stone-50 border border-stone-200 rounded-xl px-3 py-2">
+            {genehmigteTage>0&&<p className="text-xs text-stone-600">✓ <span className="font-semibold">{genehmigteTage} UT bestätigt</span> noch nicht abgezogen — effektiv noch <span className="font-bold">{offen-genehmigteTage} UT</span> frei{ausstehendeTage>0?` (+ ${ausstehendeTage} UT ausstehend)`:""}</p>}
+            {genehmigteTage===0&&ausstehendeTage>0&&<p className="text-xs text-stone-600">⏳ <span className="font-semibold">{ausstehendeTage} UT</span> ausstehend</p>}
+          </div>}
           <div className={`rounded-full h-1.5 overflow-hidden ${warn?"bg-amber-200":"bg-stone-100"}`}>
             <div className={`h-full rounded-full ${warn?"bg-amber-500":"bg-stone-800"}`} style={{width:`${Math.min((p.urlaub_verbraucht/p.urlaub_anspruch)*100,100)}%`}}/>
           </div>
@@ -1210,11 +1226,11 @@ function App() {
           if (s==="neu-anfrage") { setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null}); setAnfrageScreen("typ"); }
           else setScreen(s);
         }}/>}
-        {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
+        {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} schliesztage={schliesztage} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
         {screen==="kalender"&&<Kalender anfragen={anfragen} team={team} monat={kalM} setMonat={setKalM} schliesztage={schliesztage}/>}
         {screen==="meine-anfragen"&&<MeineAnfragen anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}}/>}
         {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid}/>}
-        {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle}/>}
+        {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle} anfragen={anfragen} schliesztage={schliesztage}/>}
         {screen==="einstellungen"&&isOwner&&<Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} sperrzeiten={sperrzeiten} setSperrzeiten={setSperrzeiten}/>}
       </main>
 
