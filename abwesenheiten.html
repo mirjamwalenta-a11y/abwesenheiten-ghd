@@ -672,11 +672,12 @@ function MeineAnfragen({anfragen, onNeu}) {
 }
 
 // ─── ANFRAGEN INHABERIN ───────────────────────────────────────────────────────
-function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
+function AnfragenOw({anfragen, team, schliesztage, onEntscheid, onDeleteAnfrage}) {
   const [tab, setTab] = useState("offen");
   const offen=anfragen.filter(a=>a.status==="ausstehend").sort((a,b)=>a.erstellt.localeCompare(b.erstellt));
   const erl=anfragen.filter(a=>a.status!=="ausstehend").sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
   const [deciding, setDeciding] = useState(null);
+  const [deleting, setDeleting] = useState(null);
 
   async function entscheid(id, status) {
     setDeciding(id);
@@ -684,11 +685,18 @@ function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
     setDeciding(null);
   }
 
+  async function loeschen(a) {
+    if (!confirm(`Eintrag für ${team.find(p=>p.id===a.person_id)?.name} (${getTyp(a.typ)?.label} · ${fmtZ(a.von,a.bis)}) wirklich löschen?`)) return;
+    setDeleting(a.id);
+    try { await onDeleteAnfrage(a.id); } catch(e) { alert("Fehler: "+e.message); }
+    setDeleting(null);
+  }
+
   return <div className="px-4 py-6 flex flex-col gap-4">
     <div><p className="text-xs text-stone-400 uppercase tracking-widest">Verwaltung</p>
     <h2 className="text-2xl font-bold text-stone-900">Anfragen</h2></div>
     <div className="flex bg-stone-100 rounded-xl p-1">
-      {[{id:"offen",l:`Offen${offen.length>0?` (${offen.length})`:""}`},{id:"erl",l:"Erledigt"}].map(t=>(
+      {[{id:"offen",l:`Offen${offen.length>0?` (${offen.length})`:""}`},{id:"erl",l:"Alle Einträge"}].map(t=>(
         <button key={t.id} onClick={()=>setTab(t.id)}
           className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${tab===t.id?"bg-white text-stone-900 shadow-sm":"text-stone-500"}`}>
           {t.l}
@@ -721,16 +729,29 @@ function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
               {deciding===a.id?"…":"Ablehnen ✗"}
             </button>
           </div>
+          <button onClick={()=>loeschen(a)} disabled={deleting===a.id}
+            className="text-xs text-stone-300 hover:text-rose-500 transition-colors text-center py-1">
+            {deleting===a.id?"…":"Eintrag löschen"}
+          </button>
         </div>
       ))}</div>
     )}
     {tab==="erl"&&(erl.length===0
-      ?<p className="text-stone-400 text-sm text-center py-12">Noch keine erledigten Anfragen.</p>
+      ?<p className="text-stone-400 text-sm text-center py-12">Noch keine Einträge.</p>
       :<div className="flex flex-col gap-2">{erl.map(a=>(
         <div key={a.id} className={`bg-white border border-stone-200 rounded-2xl p-4 border-l-4 ${STATUS[a.status]?.border}`}>
           <div className="flex items-center justify-between gap-2 mb-2">
-            <p className="font-semibold text-stone-800 text-sm">{team.find(p=>p.id===a.person_id)?.name}</p>
-            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS[a.status]?.bg} ${STATUS[a.status]?.text}`}>{STATUS[a.status]?.label}</span>
+            <div className="flex items-center gap-2">
+              <span className="w-7 h-7 rounded-full bg-stone-900 text-white text-xs font-bold flex items-center justify-center">{team.find(p=>p.id===a.person_id)?.name[0]}</span>
+              <p className="font-semibold text-stone-800 text-sm">{team.find(p=>p.id===a.person_id)?.name}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS[a.status]?.bg} ${STATUS[a.status]?.text}`}>{STATUS[a.status]?.label}</span>
+              <button onClick={()=>loeschen(a)} disabled={deleting===a.id}
+                className="text-stone-300 hover:text-rose-500 transition-colors text-sm px-1">
+                {deleting===a.id?"…":"✕"}
+              </button>
+            </div>
           </div>
           <p className="text-xs text-stone-500">{getTyp(a.typ)?.icon} {getTyp(a.typ)?.label} · {fmtZ(a.von,a.bis)}</p>
           <p className="text-xs text-stone-400 mt-1">Eingereicht {fmtD(a.erstellt)}</p>
@@ -761,7 +782,8 @@ function Urlaubsstaende({team, warnschwelle, anfragen, schliesztage, onDeleteAnf
         {mitarbeiter.map(p=>{
           const offen=p.urlaub_anspruch-p.urlaub_verbraucht, warn=offen>warnschwelle;
           const pAnfragen=(anfragen||[]).filter(a=>a.person_id===p.id);
-          const genehmigteTage=pAnfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt").reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
+          const genehmigteUrlaube=pAnfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt");
+          const genehmigteTage=genehmigteUrlaube.reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
           const ausstehendeTage=pAnfragen.filter(a=>a.typ==="urlaub"&&a.status==="ausstehend").reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
           return <div key={p.id} className={`bg-white border rounded-2xl p-5 ${warn?"border-amber-300 bg-amber-50":"border-stone-200"}`}>
             <div className="flex items-center justify-between mb-3">
@@ -780,12 +802,25 @@ function Urlaubsstaende({team, warnschwelle, anfragen, schliesztage, onDeleteAnf
               ))}
             </div>
             {(genehmigteTage>0||ausstehendeTage>0)&&<div className="mb-3 bg-stone-50 border border-stone-200 rounded-xl px-3 py-2">
-              {genehmigteTage>0&&<p className="text-xs text-stone-600">✓ <span className="font-semibold">{genehmigteTage} UT bestätigt</span> noch nicht abgezogen — effektiv noch <span className="font-bold">{offen-genehmigteTage} UT</span> frei{ausstehendeTage>0?` (+ ${ausstehendeTage} UT ausstehend)`:""}</p>}
+              {genehmigteTage>0&&<p className="text-xs text-stone-600">✓ <span className="font-semibold">{genehmigteTage} UT bestätigt</span> — effektiv noch <span className="font-bold">{offen-genehmigteTage} UT</span> frei{ausstehendeTage>0?` (+ ${ausstehendeTage} UT ausstehend)`:""}</p>}
               {genehmigteTage===0&&ausstehendeTage>0&&<p className="text-xs text-stone-600">⏳ <span className="font-semibold">{ausstehendeTage} UT</span> ausstehend</p>}
             </div>}
-            <div className={`rounded-full h-1.5 overflow-hidden ${warn?"bg-amber-200":"bg-stone-100"}`}>
+            <div className={`rounded-full h-1.5 overflow-hidden mb-3 ${warn?"bg-amber-200":"bg-stone-100"}`}>
               <div className={`h-full rounded-full ${warn?"bg-amber-500":"bg-stone-800"}`} style={{width:`${Math.min((p.urlaub_verbraucht/p.urlaub_anspruch)*100,100)}%`}}/>
             </div>
+            {genehmigteUrlaube.length>0&&<div className="flex flex-col gap-1.5 mt-1">
+              <p className="text-xs text-stone-400 uppercase tracking-wide mb-0.5">Eingetragene Urlaube</p>
+              {genehmigteUrlaube.map(a=>{const ut=arbeitstage(a.von,a.bis,schliesztage||[]).length;return(
+                <div key={a.id} className="flex justify-between items-center bg-emerald-50 rounded-xl px-3 py-2 gap-2">
+                  <p className="text-xs font-medium text-emerald-800 flex-1">{fmtZ(a.von,a.bis)}</p>
+                  <p className="text-xs text-emerald-600">{ut} UT</p>
+                  <button onClick={async()=>{
+                    if (!confirm(`Urlaub ${fmtZ(a.von,a.bis)} für ${p.name} löschen?`)) return;
+                    try { await onDeleteAnfrage(a.id); } catch(e) { alert("Fehler: "+e.message); }
+                  }} className="text-emerald-200 hover:text-rose-500 transition-colors text-xs px-1">✕</button>
+                </div>
+              );})}
+            </div>}
           </div>;
         })}
       </div>
@@ -1317,7 +1352,7 @@ function App() {
         {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} schliesztage={schliesztage} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
         {screen==="kalender"&&<Kalender anfragen={anfragen} team={team} monat={kalM} setMonat={setKalM} schliesztage={schliesztage}/>}
         {screen==="meine-anfragen"&&<MeineAnfragen anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}}/>}
-        {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid}/>}
+        {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid} onDeleteAnfrage={handleDeleteAnfrage}/>}
         {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle} anfragen={anfragen} schliesztage={schliesztage} onDeleteAnfrage={handleDeleteAnfrage}/>}
         {screen==="einstellungen"&&isOwner&&<Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} sperrzeiten={sperrzeiten} setSperrzeiten={setSperrzeiten}/>}
       </main>
