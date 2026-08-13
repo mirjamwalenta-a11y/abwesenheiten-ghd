@@ -50,7 +50,7 @@ const api = {
   updateAnfrage: (id, d) => sb(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) }),
   getEinstellungen: () => sb("abw_einstellungen"),
   setEinstellung: (k, v) => sb("abw_einstellungen", { method: "POST", headers: { "Prefer": "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ schluessel: k, wert: v }) }),
-  addPerson: (d) => sb("abw_team", { method: "POST", body: JSON.stringify(d) }),
+  deleteAnfrage: (id) => sb(`abw_anfragen?id=eq.${id}`, { method: "DELETE", prefer: "" }),
   deletePerson: (id) => sb(`abw_team?id=eq.${id}`, { method: "DELETE", prefer: "" }),
 };
 
@@ -473,20 +473,22 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
         </div>
       </div>}
       <div className="flex flex-col gap-3">
-        {typen.map(typ=>(
+        {typen.map(typ=>{
+          const gesperrt = isOwner && (typ.id==="krank"||typ.id==="sonstige") && !anfrage.fuerPerson;
+          return (
           <button key={typ.id}
-            onClick={()=>{ setAnfrage(a=>({...a,typ:typ.id})); setScreen("datum"); }}
-            disabled={isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson}
-            className={`bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 hover:border-stone-400 hover:shadow-sm transition-all text-left ${isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson?"opacity-40 cursor-not-allowed":""}`}>
+            onClick={()=>{ if(!gesperrt){ setAnfrage(a=>({...a,typ:typ.id})); setScreen("datum"); } }}
+            disabled={gesperrt}
+            className={`bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 transition-all text-left ${gesperrt?"opacity-40 cursor-not-allowed":"hover:border-stone-400 hover:shadow-sm"}`}>
             <span className="text-2xl">{typ.icon}</span>
             <div className="flex-1">
               <p className="font-semibold text-stone-800">{typ.label}</p>
-              {isOwner&&typ.id==="krank"&&!anfrage.fuerPerson&&<p className="text-xs text-stone-400">Bitte oben Person wählen</p>}
-              {isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson&&<p className="text-xs text-stone-400">Erst Person auswählen</p>}
+              {gesperrt&&<p className="text-xs text-stone-400">Erst Person oben auswählen</p>}
             </div>
             <span className="text-stone-300 text-lg">›</span>
           </button>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -739,7 +741,7 @@ function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
 }
 
 // ─── URLAUBSSTÄNDE ────────────────────────────────────────────────────────────
-function Urlaubsstaende({team, warnschwelle, anfragen, schliesztage}) {
+function Urlaubsstaende({team, warnschwelle, anfragen, schliesztage, onDeleteAnfrage}) {
   const [tab, setTab] = useState("urlaub");
   const mitarbeiter = team.filter(p=>p.role==="employee");
   return <div className="px-4 py-6 flex flex-col gap-4">
@@ -814,9 +816,13 @@ function Urlaubsstaende({team, warnschwelle, anfragen, schliesztage}) {
                 </div>
                 <div className="flex flex-col gap-1.5">
                   {pKrank.map(a=>{const kt=arbeitstage(a.von,a.bis,schliesztage||[]).length;return(
-                    <div key={a.id} className="flex justify-between items-center bg-rose-50 rounded-xl px-3 py-2">
-                      <p className="text-xs font-medium text-rose-800">{fmtZ(a.von,a.bis)}</p>
+                    <div key={a.id} className="flex justify-between items-center bg-rose-50 rounded-xl px-3 py-2 gap-2">
+                      <p className="text-xs font-medium text-rose-800 flex-1">{fmtZ(a.von,a.bis)}</p>
                       <p className="text-xs text-rose-600">{kt} {kt===1?"Arbeitstag":"Arbeitstage"}</p>
+                      <button onClick={async()=>{
+                        if (!confirm(`Krankenstand ${fmtZ(a.von,a.bis)} wirklich löschen?`)) return;
+                        try { await onDeleteAnfrage(a.id); } catch(e) { alert("Fehler: "+e.message); }
+                      }} className="text-rose-300 hover:text-rose-600 text-xs px-1 transition-colors">✕</button>
                     </div>
                   );})}
                 </div>
@@ -1270,6 +1276,11 @@ function App() {
     setAnfragen(prev=>prev.map(a=>a.id===id?{...a,status}:a));
   }
 
+  async function handleDeleteAnfrage(id) {
+    await api.deleteAnfrage(id);
+    setAnfragen(prev=>prev.filter(a=>a.id!==id));
+  }
+
   const navItems = isOwner
     ? [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"anfragen",l:"Anfragen",i:"◎",b:offeneAnfragen.length},{id:"urlaubsstaende",l:"Stände",i:"▦"}]
     : [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"meine-anfragen",l:"Anfragen",i:"◎"}];
@@ -1307,7 +1318,7 @@ function App() {
         {screen==="kalender"&&<Kalender anfragen={anfragen} team={team} monat={kalM} setMonat={setKalM} schliesztage={schliesztage}/>}
         {screen==="meine-anfragen"&&<MeineAnfragen anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}}/>}
         {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid}/>}
-        {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle} anfragen={anfragen} schliesztage={schliesztage}/>}
+        {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle} anfragen={anfragen} schliesztage={schliesztage} onDeleteAnfrage={handleDeleteAnfrage}/>}
         {screen==="einstellungen"&&isOwner&&<Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} sperrzeiten={sperrzeiten} setSperrzeiten={setSperrzeiten}/>}
       </main>
 
