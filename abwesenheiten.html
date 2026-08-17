@@ -1272,7 +1272,31 @@ function App() {
       if (spz) setSperrzeiten(JSON.parse(spz.wert));
       if (!er) setErsterStart(true);
       setLadeStatus("bereit");
+      // OS-Sync: offene Anfragen melden
+      syncAbwesenheitOS(a||[]);
     } catch(e) { console.error(e); if (!silent) setLadeStatus("fehler"); }
+  }
+
+  // OS-Integration: offene Abwesenheitsanträge in os_aufgaben schreiben
+  async function syncAbwesenheitOS(anfragen) {
+    try {
+      const BELEGE_URL = "https://lpuxvvfrrcnbuzafscyk.supabase.co";
+      const BELEGE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxwdXh2dmZycmNuYnV6YWZzY3lrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2ODIxNDcsImV4cCI6MjEwMDI1ODE0N30.6VZUmmXj_x3Q8J55s_tbOHcW5-U5OXllGoEBhypaVfI";
+      const headers = { "apikey": BELEGE_KEY, "Authorization": `Bearer ${BELEGE_KEY}`, "Content-Type": "application/json", "Prefer": "return=minimal" };
+      const offene = anfragen.filter(a => a.status === "ausstehend");
+      if (offene.length === 0) {
+        await fetch(`${BELEGE_URL}/rest/v1/os_aufgaben?bereich=eq.team&status=eq.offen`, { method: "PATCH", headers, body: JSON.stringify({ status: "erledigt", erledigt_am: new Date().toISOString() }) });
+        return;
+      }
+      const titel = offene.length === 1 ? "1 Abwesenheitsantrag wartet auf dich" : `${offene.length} Abwesenheitsanträge warten auf dich`;
+      const r = await fetch(`${BELEGE_URL}/rest/v1/os_aufgaben?bereich=eq.team&status=eq.offen&select=id`, { headers: { "apikey": BELEGE_KEY, "Authorization": `Bearer ${BELEGE_KEY}` } });
+      const existing = await r.json();
+      if (Array.isArray(existing) && existing.length > 0) {
+        await fetch(`${BELEGE_URL}/rest/v1/os_aufgaben?bereich=eq.team&status=eq.offen`, { method: "PATCH", headers, body: JSON.stringify({ titel }) });
+      } else {
+        await fetch(`${BELEGE_URL}/rest/v1/os_aufgaben`, { method: "POST", headers: { ...headers, "Prefer": "return=minimal" }, body: JSON.stringify({ bereich: "team", titel, status: "offen", prioritaet: "orange", quelle: "app", app_link: "https://mirjamwalenta-a11y.github.io/abwesenheiten.greathairday/" }) });
+      }
+    } catch(e) { console.warn("OS-Sync Abwesenheit fehlgeschlagen:", e.message); }
   }
 
   useEffect(()=>{ laden(); const t=setInterval(()=>laden(true),30000); return ()=>clearInterval(t); },[]);
