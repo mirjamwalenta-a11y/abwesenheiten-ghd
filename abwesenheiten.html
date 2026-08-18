@@ -13,6 +13,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-title" content="Abwesenheiten"/>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = {}</script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -124,14 +125,16 @@ function naechstesJubilaeum(eintrittsdatum) {
 
 // ─── TYPEN ────────────────────────────────────────────────────────────────────
 const TYPEN_MA = [
-  { id:"urlaub", label:"Urlaub", icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
+  { id:"urlaub",       label:"Urlaub",              icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
+  { id:"krankenstand", label:"Krankenstand",         icon:"🤒", color:"bg-rose-100 text-rose-800 border-rose-200" },
 ];
 const TYPEN_OW = [
-  { id:"urlaub",   label:"Urlaub",              icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
-  { id:"sonstige", label:"Sonstige Abwesenheit", icon:"📋", color:"bg-violet-100 text-violet-800 border-violet-200" },
+  { id:"urlaub",       label:"Urlaub",              icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
+  { id:"krankenstand", label:"Krankenstand",         icon:"🤒", color:"bg-rose-100 text-rose-800 border-rose-200" },
+  { id:"sonstige",     label:"Sonstige Abwesenheit", icon:"📋", color:"bg-violet-100 text-violet-800 border-violet-200" },
 ];
 const ALLE_TYPEN = TYPEN_OW;
-function getTyp(id) { return ALLE_TYPEN.find(t=>t.id===id); }
+function getTyp(id) { return ALLE_TYPEN.find(t=>t.id===id) || { id:id, label:id||"Unbekannt", icon:"📋", color:"bg-stone-100 text-stone-800 border-stone-200" }; }
 
 const STATUS = {
   ausstehend: { label:"Ausstehend", text:"text-amber-700",   bg:"bg-amber-50",   border:"border-l-amber-400" },
