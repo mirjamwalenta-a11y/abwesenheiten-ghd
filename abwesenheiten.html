@@ -50,7 +50,7 @@ const api = {
   updateAnfrage: (id, d) => sb(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) }),
   getEinstellungen: () => sb("abw_einstellungen"),
   setEinstellung: (k, v) => sb("abw_einstellungen", { method: "POST", headers: { "Prefer": "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ schluessel: k, wert: v }) }),
-  deleteAnfrage: (id) => sb(`abw_anfragen?id=eq.${id}`, { method: "DELETE", prefer: "" }),
+  addPerson: (d) => sb("abw_team", { method: "POST", body: JSON.stringify(d) }),
   deletePerson: (id) => sb(`abw_team?id=eq.${id}`, { method: "DELETE", prefer: "" }),
 };
 
@@ -105,7 +105,7 @@ function tageZw(v,b) {
   return t;
 }
 function arbeitstage(v,b,sz) {
-  return tageZw(v,b).filter(d => parseD(d).getDay()!==0 && parseD(d).getDay()!==1 && !istFeiertag(d) && !sz.includes(d));
+  return tageZw(v,b).filter(d => parseD(d).getDay()!==0 && !istFeiertag(d) && !sz.includes(d));
 }
 function istSperre(d, fixSperre, sperrzeiten) {
   const dt=parseD(d), m=dt.getMonth()+1, t=dt.getDate();
@@ -127,9 +127,8 @@ const TYPEN_MA = [
   { id:"urlaub", label:"Urlaub", icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
 ];
 const TYPEN_OW = [
-  { id:"urlaub",    label:"Urlaub",              icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
-  { id:"krank",     label:"Krankenstand",         icon:"🤒", color:"bg-rose-100 text-rose-800 border-rose-200" },
-  { id:"sonstige",  label:"Sonstige Abwesenheit", icon:"📋", color:"bg-violet-100 text-violet-800 border-violet-200" },
+  { id:"urlaub",   label:"Urlaub",              icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
+  { id:"sonstige", label:"Sonstige Abwesenheit", icon:"📋", color:"bg-violet-100 text-violet-800 border-violet-200" },
 ];
 const ALLE_TYPEN = TYPEN_OW;
 function getTyp(id) { return ALLE_TYPEN.find(t=>t.id===id); }
@@ -267,15 +266,10 @@ function Eroeffnung({team, onDone}) {
 }
 
 // ─── HOME MITARBEITER ─────────────────────────────────────────────────────────
-function HomeMitarbeiter({person, anfragen, schliesztage, onNeu, onNav}) {
+function HomeMitarbeiter({person, anfragen, onNeu, onNav}) {
   if (!person) return null;
   const offen = person.urlaub_anspruch - person.urlaub_verbraucht;
   const recent = [...anfragen].sort((a,b)=>b.erstellt.localeCompare(a.erstellt)).slice(0,3);
-  const genehmigteTage = anfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt").reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
-  const ausstehendeTage = anfragen.filter(a=>a.typ==="urlaub"&&a.status==="ausstehend").reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
-  const tatsaechlichOffen = offen - genehmigteTage - ausstehendeTage;
-  const krankenEpisoden = anfragen.filter(a=>a.typ==="krank"&&a.status==="genehmigt");
-  const krankenTage = krankenEpisoden.reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
   return <div className="px-4 py-6 flex flex-col gap-6">
     <div>
       <p className="text-xs text-stone-400 uppercase tracking-widest">Guten Tag</p>
@@ -291,37 +285,9 @@ function HomeMitarbeiter({person, anfragen, schliesztage, onNeu, onNav}) {
           </div>
         ))}
       </div>
-      {(genehmigteTage>0||ausstehendeTage>0)&&<div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
-        {genehmigteTage>0&&<p className="text-xs text-amber-800">⚠️ Bedenke: <span className="font-semibold">{genehmigteTage} bestätigte UT</span> noch nicht abgezogen — verbleibend: <span className="font-bold">{offen-genehmigteTage} UT</span>{ausstehendeTage>0?` (+ ${ausstehendeTage} ausstehend)`:""}</p>}
-        {genehmigteTage===0&&ausstehendeTage>0&&<p className="text-xs text-amber-800">⏳ <span className="font-semibold">{ausstehendeTage} UT</span> noch ausstehend</p>}
-      </div>}
       <div className="mt-4 bg-stone-100 rounded-full h-1.5 overflow-hidden">
         <div className="h-full bg-stone-800 rounded-full" style={{width:`${Math.min((person.urlaub_verbraucht/person.urlaub_anspruch)*100,100)}%`}}/>
       </div>
-    </div>
-    <div className="bg-white rounded-2xl border border-stone-200 p-5">
-      <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-3">🤒 Krankenstand {new Date().getFullYear()}</p>
-      {krankenEpisoden.length===0
-        ? <p className="text-sm text-stone-400">Noch kein Krankenstand eingetragen.</p>
-        : <div className="flex gap-4">
-            <div className="flex-1 text-center">
-              <p className="text-3xl font-bold text-stone-900">{krankenEpisoden.length}</p>
-              <p className="text-xs text-stone-400 mt-0.5">{krankenEpisoden.length===1?"Episode":"Episoden"}</p>
-            </div>
-            <div className="flex-1 text-center">
-              <p className="text-3xl font-bold text-rose-700">{krankenTage}</p>
-              <p className="text-xs text-stone-400 mt-0.5">Arbeitstage</p>
-            </div>
-          </div>
-      }
-      {krankenEpisoden.length>0&&<div className="mt-3 flex flex-col gap-1.5">
-        {krankenEpisoden.slice(-3).reverse().map(a=>{const kt=arbeitstage(a.von,a.bis,schliesztage||[]).length;return(
-          <div key={a.id} className="flex justify-between items-center bg-rose-50 rounded-xl px-3 py-2">
-            <p className="text-xs font-medium text-rose-800">{fmtZ(a.von,a.bis)}</p>
-            <p className="text-xs text-rose-600">{kt} {kt===1?"Arbeitstag":"Arbeitstage"}</p>
-          </div>
-        );})}
-      </div>}
     </div>
     <button onClick={onNeu} className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 active:bg-stone-950 transition-colors">+ Neue Anfrage stellen</button>
     {recent.length>0 && <div>
@@ -392,7 +358,7 @@ function HomeInhaberin({anfragen, team, warnschwelle, onNav}) {
       + Abwesenheit eintragen
     </button>
     <div className="grid grid-cols-3 gap-3">
-      {[{l:"Kalender",i:"◫",s:"kalender"},{l:"Anfragen",i:"◎",s:"anfragen"},{l:"Stände",i:"▦",s:"urlaubsstaende"}].map(x=>(
+      {[{l:"Kalender",i:"◫",s:"kalender"},{l:"Anfragen",i:"◎",s:"anfragen"},{l:"Urlaub",i:"▦",s:"urlaubsstaende"}].map(x=>(
         <button key={x.s} onClick={()=>onNav(x.s)} className="bg-white border border-stone-200 rounded-2xl py-4 flex flex-col items-center gap-1.5 hover:border-stone-400 hover:shadow-sm transition-all">
           <span className="text-xl">{x.i}</span>
           <span className="text-xs font-medium text-stone-600">{x.l}</span>
@@ -421,8 +387,7 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
 
   function tapDay(d) {
     if (blockInfo(d)) return;
-    const dow=parseD(d).getDay();
-    if (dow===0||dow===1) return;
+    if (parseD(d).getDay()===0) return;
     if (!selStart) {
       setSelStart(d); setAnfrage(a=>({...a,von:d,bis:d}));
     } else {
@@ -442,7 +407,7 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
 
   const anzahl = anfrage.von&&anfrage.bis
     ? (anfrage.typ==="urlaub"?arbeitstage(anfrage.von,anfrage.bis,schliesztage).length
-      :tageZw(anfrage.von,anfrage.bis).filter(d=>{const w=parseD(d).getDay();return w!==0&&w!==1;}).length)
+      :tageZw(anfrage.von,anfrage.bis).filter(d=>parseD(d).getDay()!==0).length)
     : 0;
 
   async function submit() {
@@ -473,22 +438,19 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
         </div>
       </div>}
       <div className="flex flex-col gap-3">
-        {typen.map(typ=>{
-          const gesperrt = isOwner && (typ.id==="krank"||typ.id==="sonstige") && !anfrage.fuerPerson;
-          return (
+        {typen.map(typ=>(
           <button key={typ.id}
-            onClick={()=>{ if(!gesperrt){ setAnfrage(a=>({...a,typ:typ.id})); setScreen("datum"); } }}
-            disabled={gesperrt}
-            className={`bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 transition-all text-left ${gesperrt?"opacity-40 cursor-not-allowed":"hover:border-stone-400 hover:shadow-sm"}`}>
+            onClick={()=>{ setAnfrage(a=>({...a,typ:typ.id})); setScreen("datum"); }}
+            disabled={isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson}
+            className={`bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 hover:border-stone-400 hover:shadow-sm transition-all text-left ${isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson?"opacity-40 cursor-not-allowed":""}`}>
             <span className="text-2xl">{typ.icon}</span>
             <div className="flex-1">
               <p className="font-semibold text-stone-800">{typ.label}</p>
-              {gesperrt&&<p className="text-xs text-stone-400">Erst Person oben auswählen</p>}
+              {isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson&&<p className="text-xs text-stone-400">Erst Person auswählen</p>}
             </div>
             <span className="text-stone-300 text-lg">›</span>
           </button>
-          );
-        })}
+        ))}
       </div>
     </div>
   );
@@ -518,16 +480,16 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
             {["Mo","Di","Mi","Do","Fr","Sa","So"].map(d=><div key={d} className="text-center text-xs font-medium text-stone-400 py-1">{d}</div>)}
             {Array.from({length:off},(_,i)=><div key={"e"+i}/>)}
             {days.map(d=>{
-              const dow=parseD(d).getDay(), bi=blockInfo(d), isClosed=dow===0||dow===1;
+              const bi=blockInfo(d), isSun=parseD(d).getDay()===0;
               const isSel=anfrage.von&&anfrage.bis&&d>=anfrage.von&&d<=anfrage.bis;
               let cls="flex items-center justify-center text-xs h-9 rounded-lg mx-0.5 my-0.5 transition-colors ";
-              if (isClosed) cls+="text-stone-200 ";
+              if (isSun) cls+="text-stone-200 ";
               else if (bi==="sperre") cls+="bg-rose-50 text-rose-300 cursor-not-allowed ";
               else if (bi==="belegt") cls+="bg-stone-100 text-stone-300 cursor-not-allowed ";
               else if (bi==="feiertag"||bi==="schliesztag") cls+="text-stone-300 cursor-not-allowed ";
               else if (isSel) cls+="bg-stone-900 text-white font-semibold cursor-pointer ";
               else cls+="text-stone-700 hover:bg-stone-100 cursor-pointer ";
-              return <button key={d} onClick={()=>!isClosed&&tapDay(d)} className={cls} disabled={!!bi||isClosed}>{parseD(d).getDate()}</button>;
+              return <button key={d} onClick={()=>!isSun&&tapDay(d)} className={cls} disabled={!!bi||isSun}>{parseD(d).getDate()}</button>;
             })}
           </div>
           <div className="px-4 py-2 border-t border-stone-100 flex gap-3 flex-wrap">
@@ -613,11 +575,10 @@ function Kalender({anfragen, team, monat, setMonat, schliesztage}) {
   const gen=anfragen.filter(a=>a.status==="genehmigt");
   const fd=new Date(y,m,1).getDay(), dm=new Date(y,m+1,0).getDate(), off=fd===0?6:fd-1;
   const days=Array.from({length:dm},(_,i)=>({d:datStr(new Date(y,m,i+1)),n:i+1,dow:new Date(y,m,i+1).getDay()}));
-  const FARBEN={urlaub:"bg-emerald-100 text-emerald-800",krank:"bg-rose-200 text-rose-900",sonstige:"bg-violet-100 text-violet-800",feiertag:"bg-amber-100 text-amber-700",schliesztag:"bg-rose-100 text-rose-700"};
+  const FARBEN={urlaub:"bg-emerald-100 text-emerald-800",sonstige:"bg-violet-100 text-violet-800",feiertag:"bg-amber-100 text-amber-700",schliesztag:"bg-rose-100 text-rose-700"};
 
   function eintraege(datum) {
     if (istFeiertag(datum)) return [{typ:"feiertag",label:feiertagName(datum)}];
-    if (parseD(datum).getDay()===1) return [{typ:"schliesztag",label:"Montag geschlossen"}];
     if (schliesztage.includes(datum)) return [{typ:"schliesztag",label:"Schließtag"}];
     return gen.filter(a=>tageZw(a.von,a.bis).includes(datum)).map(a=>({typ:a.typ,label:team.find(p=>p.id===a.person_id)?.name||a.person_id}));
   }
@@ -649,7 +610,7 @@ function Kalender({anfragen, team, monat, setMonat, schliesztage}) {
       </div>
     </div>
     <div className="flex flex-wrap gap-2">
-      {[["urlaub","Urlaub"],["krank","Krankenstand"],["sonstige","Sonstige Abw."],["feiertag","Feiertag"],["schliesztag","Schließtag"]].map(([t,l])=>(
+      {[["urlaub","Urlaub"],["sonstige","Sonstige Abw."],["feiertag","Feiertag"],["schliesztag","Schließtag"]].map(([t,l])=>(
         <span key={t} className={`text-xs font-medium px-2 py-1 rounded-full ${FARBEN[t]}`}>{l}</span>
       ))}
     </div>
@@ -672,12 +633,11 @@ function MeineAnfragen({anfragen, onNeu}) {
 }
 
 // ─── ANFRAGEN INHABERIN ───────────────────────────────────────────────────────
-function AnfragenOw({anfragen, team, schliesztage, onEntscheid, onDeleteAnfrage}) {
+function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
   const [tab, setTab] = useState("offen");
   const offen=anfragen.filter(a=>a.status==="ausstehend").sort((a,b)=>a.erstellt.localeCompare(b.erstellt));
   const erl=anfragen.filter(a=>a.status!=="ausstehend").sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
   const [deciding, setDeciding] = useState(null);
-  const [deleting, setDeleting] = useState(null);
 
   async function entscheid(id, status) {
     setDeciding(id);
@@ -685,18 +645,11 @@ function AnfragenOw({anfragen, team, schliesztage, onEntscheid, onDeleteAnfrage}
     setDeciding(null);
   }
 
-  async function loeschen(a) {
-    if (!confirm(`Eintrag für ${team.find(p=>p.id===a.person_id)?.name} (${getTyp(a.typ)?.label} · ${fmtZ(a.von,a.bis)}) wirklich löschen?`)) return;
-    setDeleting(a.id);
-    try { await onDeleteAnfrage(a.id); } catch(e) { alert("Fehler: "+e.message); }
-    setDeleting(null);
-  }
-
   return <div className="px-4 py-6 flex flex-col gap-4">
     <div><p className="text-xs text-stone-400 uppercase tracking-widest">Verwaltung</p>
     <h2 className="text-2xl font-bold text-stone-900">Anfragen</h2></div>
     <div className="flex bg-stone-100 rounded-xl p-1">
-      {[{id:"offen",l:`Offen${offen.length>0?` (${offen.length})`:""}`},{id:"erl",l:"Alle Einträge"}].map(t=>(
+      {[{id:"offen",l:`Offen${offen.length>0?` (${offen.length})`:""}`},{id:"erl",l:"Erledigt"}].map(t=>(
         <button key={t.id} onClick={()=>setTab(t.id)}
           className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${tab===t.id?"bg-white text-stone-900 shadow-sm":"text-stone-500"}`}>
           {t.l}
@@ -729,29 +682,16 @@ function AnfragenOw({anfragen, team, schliesztage, onEntscheid, onDeleteAnfrage}
               {deciding===a.id?"…":"Ablehnen ✗"}
             </button>
           </div>
-          <button onClick={()=>loeschen(a)} disabled={deleting===a.id}
-            className="text-xs text-stone-300 hover:text-rose-500 transition-colors text-center py-1">
-            {deleting===a.id?"…":"Eintrag löschen"}
-          </button>
         </div>
       ))}</div>
     )}
     {tab==="erl"&&(erl.length===0
-      ?<p className="text-stone-400 text-sm text-center py-12">Noch keine Einträge.</p>
+      ?<p className="text-stone-400 text-sm text-center py-12">Noch keine erledigten Anfragen.</p>
       :<div className="flex flex-col gap-2">{erl.map(a=>(
         <div key={a.id} className={`bg-white border border-stone-200 rounded-2xl p-4 border-l-4 ${STATUS[a.status]?.border}`}>
           <div className="flex items-center justify-between gap-2 mb-2">
-            <div className="flex items-center gap-2">
-              <span className="w-7 h-7 rounded-full bg-stone-900 text-white text-xs font-bold flex items-center justify-center">{team.find(p=>p.id===a.person_id)?.name[0]}</span>
-              <p className="font-semibold text-stone-800 text-sm">{team.find(p=>p.id===a.person_id)?.name}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS[a.status]?.bg} ${STATUS[a.status]?.text}`}>{STATUS[a.status]?.label}</span>
-              <button onClick={()=>loeschen(a)} disabled={deleting===a.id}
-                className="text-stone-300 hover:text-rose-500 transition-colors text-sm px-1">
-                {deleting===a.id?"…":"✕"}
-              </button>
-            </div>
+            <p className="font-semibold text-stone-800 text-sm">{team.find(p=>p.id===a.person_id)?.name}</p>
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS[a.status]?.bg} ${STATUS[a.status]?.text}`}>{STATUS[a.status]?.label}</span>
           </div>
           <p className="text-xs text-stone-500">{getTyp(a.typ)?.icon} {getTyp(a.typ)?.label} · {fmtZ(a.von,a.bis)}</p>
           <p className="text-xs text-stone-400 mt-1">Eingereicht {fmtD(a.erstellt)}</p>
@@ -762,110 +702,36 @@ function AnfragenOw({anfragen, team, schliesztage, onEntscheid, onDeleteAnfrage}
 }
 
 // ─── URLAUBSSTÄNDE ────────────────────────────────────────────────────────────
-function Urlaubsstaende({team, warnschwelle, anfragen, schliesztage, onDeleteAnfrage}) {
-  const [tab, setTab] = useState("urlaub");
-  const mitarbeiter = team.filter(p=>p.role==="employee");
+function Urlaubsstaende({team, warnschwelle}) {
   return <div className="px-4 py-6 flex flex-col gap-4">
     <div><p className="text-xs text-stone-400 uppercase tracking-widest">Übersicht</p>
-    <h2 className="text-2xl font-bold text-stone-900">Stände {new Date().getFullYear()}</h2></div>
-    <div className="flex bg-stone-100 rounded-xl p-1">
-      {[{id:"urlaub",l:"🌴 Urlaub"},{id:"krank",l:"🤒 Krankenstand"}].map(t=>(
-        <button key={t.id} onClick={()=>setTab(t.id)}
-          className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${tab===t.id?"bg-white text-stone-900 shadow-sm":"text-stone-500"}`}>
-          {t.l}
-        </button>
-      ))}
-    </div>
-
-    {tab==="urlaub"&&<>
-      <div className="flex flex-col gap-3">
-        {mitarbeiter.map(p=>{
-          const offen=p.urlaub_anspruch-p.urlaub_verbraucht, warn=offen>warnschwelle;
-          const pAnfragen=(anfragen||[]).filter(a=>a.person_id===p.id);
-          const genehmigteUrlaube=pAnfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt");
-          const genehmigteTage=genehmigteUrlaube.reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
-          const ausstehendeTage=pAnfragen.filter(a=>a.typ==="urlaub"&&a.status==="ausstehend").reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
-          return <div key={p.id} className={`bg-white border rounded-2xl p-5 ${warn?"border-amber-300 bg-amber-50":"border-stone-200"}`}>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
-                <p className="font-semibold text-stone-800">{p.name}</p>
-              </div>
-              {warn&&<span className="text-xs font-bold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-full">{offen} Tage offen</span>}
+    <h2 className="text-2xl font-bold text-stone-900">Urlaubsstände {new Date().getFullYear()}</h2></div>
+    <div className="flex flex-col gap-3">
+      {team.filter(p=>p.role==="employee").map(p=>{
+        const offen=p.urlaub_anspruch-p.urlaub_verbraucht, warn=offen>warnschwelle;
+        return <div key={p.id} className={`bg-white border rounded-2xl p-5 ${warn?"border-amber-300 bg-amber-50":"border-stone-200"}`}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
+              <p className="font-semibold text-stone-800">{p.name}</p>
             </div>
-            <div className="flex gap-4 mb-3">
-              {[{v:p.urlaub_verbraucht,l:"verbraucht",c:"text-stone-900"},{v:offen,l:"offen",c:warn?"text-amber-600":"text-emerald-600"},{v:p.urlaub_anspruch,l:"gesamt",c:"text-stone-400"}].map((x,i)=>(
-                <div key={i} className="flex-1 text-center">
-                  <p className={`text-xl font-bold ${x.c}`}>{x.v}</p>
-                  <p className="text-stone-400 uppercase tracking-wide" style={{fontSize:"10px"}}>{x.l}</p>
-                </div>
-              ))}
-            </div>
-            {(genehmigteTage>0||ausstehendeTage>0)&&<div className="mb-3 bg-stone-50 border border-stone-200 rounded-xl px-3 py-2">
-              {genehmigteTage>0&&<p className="text-xs text-stone-600">✓ <span className="font-semibold">{genehmigteTage} UT bestätigt</span> — effektiv noch <span className="font-bold">{offen-genehmigteTage} UT</span> frei{ausstehendeTage>0?` (+ ${ausstehendeTage} UT ausstehend)`:""}</p>}
-              {genehmigteTage===0&&ausstehendeTage>0&&<p className="text-xs text-stone-600">⏳ <span className="font-semibold">{ausstehendeTage} UT</span> ausstehend</p>}
-            </div>}
-            <div className={`rounded-full h-1.5 overflow-hidden mb-3 ${warn?"bg-amber-200":"bg-stone-100"}`}>
-              <div className={`h-full rounded-full ${warn?"bg-amber-500":"bg-stone-800"}`} style={{width:`${Math.min((p.urlaub_verbraucht/p.urlaub_anspruch)*100,100)}%`}}/>
-            </div>
-            {genehmigteUrlaube.length>0&&<div className="flex flex-col gap-1.5 mt-1">
-              <p className="text-xs text-stone-400 uppercase tracking-wide mb-0.5">Eingetragene Urlaube</p>
-              {genehmigteUrlaube.map(a=>{const ut=arbeitstage(a.von,a.bis,schliesztage||[]).length;return(
-                <div key={a.id} className="flex justify-between items-center bg-emerald-50 rounded-xl px-3 py-2 gap-2">
-                  <p className="text-xs font-medium text-emerald-800 flex-1">{fmtZ(a.von,a.bis)}</p>
-                  <p className="text-xs text-emerald-600">{ut} UT</p>
-                  <button onClick={async()=>{
-                    if (!confirm(`Urlaub ${fmtZ(a.von,a.bis)} für ${p.name} löschen?`)) return;
-                    try { await onDeleteAnfrage(a.id); } catch(e) { alert("Fehler: "+e.message); }
-                  }} className="text-emerald-200 hover:text-rose-500 transition-colors text-xs px-1">✕</button>
-                </div>
-              );})}
-            </div>}
-          </div>;
-        })}
-      </div>
-      <p className="text-xs text-stone-400 text-center">Warnung ab {warnschwelle} Tagen offen</p>
-    </>}
-
-    {tab==="krank"&&<div className="flex flex-col gap-3">
-      {mitarbeiter.map(p=>{
-        const pKrank=(anfragen||[]).filter(a=>a.person_id===p.id&&a.typ==="krank"&&a.status==="genehmigt");
-        const kTage=pKrank.reduce((s,a)=>s+arbeitstage(a.von,a.bis,schliesztage||[]).length,0);
-        return <div key={p.id} className="bg-white border border-stone-200 rounded-2xl p-5">
-          <div className="flex items-center gap-3 mb-4">
-            <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
-            <p className="font-semibold text-stone-800">{p.name}</p>
+            {warn&&<span className="text-xs font-bold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-full">{offen} Tage offen</span>}
           </div>
-          {pKrank.length===0
-            ? <p className="text-sm text-stone-400">Kein Krankenstand eingetragen.</p>
-            : <>
-                <div className="flex gap-4 mb-3">
-                  <div className="flex-1 text-center">
-                    <p className="text-xl font-bold text-stone-900">{pKrank.length}</p>
-                    <p className="text-stone-400 uppercase tracking-wide" style={{fontSize:"10px"}}>{pKrank.length===1?"Episode":"Episoden"}</p>
-                  </div>
-                  <div className="flex-1 text-center">
-                    <p className="text-xl font-bold text-rose-700">{kTage}</p>
-                    <p className="text-stone-400 uppercase tracking-wide" style={{fontSize:"10px"}}>Arbeitstage</p>
-                  </div>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  {pKrank.map(a=>{const kt=arbeitstage(a.von,a.bis,schliesztage||[]).length;return(
-                    <div key={a.id} className="flex justify-between items-center bg-rose-50 rounded-xl px-3 py-2 gap-2">
-                      <p className="text-xs font-medium text-rose-800 flex-1">{fmtZ(a.von,a.bis)}</p>
-                      <p className="text-xs text-rose-600">{kt} {kt===1?"Arbeitstag":"Arbeitstage"}</p>
-                      <button onClick={async()=>{
-                        if (!confirm(`Krankenstand ${fmtZ(a.von,a.bis)} wirklich löschen?`)) return;
-                        try { await onDeleteAnfrage(a.id); } catch(e) { alert("Fehler: "+e.message); }
-                      }} className="text-rose-300 hover:text-rose-600 text-xs px-1 transition-colors">✕</button>
-                    </div>
-                  );})}
-                </div>
-              </>
-          }
+          <div className="flex gap-4 mb-3">
+            {[{v:p.urlaub_verbraucht,l:"verbraucht",c:"text-stone-900"},{v:offen,l:"offen",c:warn?"text-amber-600":"text-emerald-600"},{v:p.urlaub_anspruch,l:"gesamt",c:"text-stone-400"}].map((x,i)=>(
+              <div key={i} className="flex-1 text-center">
+                <p className={`text-xl font-bold ${x.c}`}>{x.v}</p>
+                <p className="text-stone-400 uppercase tracking-wide" style={{fontSize:"10px"}}>{x.l}</p>
+              </div>
+            ))}
+          </div>
+          <div className={`rounded-full h-1.5 overflow-hidden ${warn?"bg-amber-200":"bg-stone-100"}`}>
+            <div className={`h-full rounded-full ${warn?"bg-amber-500":"bg-stone-800"}`} style={{width:`${Math.min((p.urlaub_verbraucht/p.urlaub_anspruch)*100,100)}%`}}/>
+          </div>
         </div>;
       })}
-    </div>}
+    </div>
+    <p className="text-xs text-stone-400 text-center">Warnung ab {warnschwelle} Tagen offen</p>
   </div>;
 }
 
@@ -1272,31 +1138,7 @@ function App() {
       if (spz) setSperrzeiten(JSON.parse(spz.wert));
       if (!er) setErsterStart(true);
       setLadeStatus("bereit");
-      // OS-Sync: offene Anfragen melden
-      syncAbwesenheitOS(a||[]);
     } catch(e) { console.error(e); if (!silent) setLadeStatus("fehler"); }
-  }
-
-  // OS-Integration: offene Abwesenheitsanträge in os_aufgaben schreiben
-  async function syncAbwesenheitOS(anfragen) {
-    try {
-      const BELEGE_URL = "https://lpuxvvfrrcnbuzafscyk.supabase.co";
-      const BELEGE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxwdXh2dmZycmNuYnV6YWZzY3lrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2ODIxNDcsImV4cCI6MjEwMDI1ODE0N30.6VZUmmXj_x3Q8J55s_tbOHcW5-U5OXllGoEBhypaVfI";
-      const headers = { "apikey": BELEGE_KEY, "Authorization": `Bearer ${BELEGE_KEY}`, "Content-Type": "application/json", "Prefer": "return=minimal" };
-      const offene = anfragen.filter(a => a.status === "ausstehend");
-      if (offene.length === 0) {
-        await fetch(`${BELEGE_URL}/rest/v1/os_aufgaben?bereich=eq.team&status=eq.offen`, { method: "PATCH", headers, body: JSON.stringify({ status: "erledigt", erledigt_am: new Date().toISOString() }) });
-        return;
-      }
-      const titel = offene.length === 1 ? "1 Abwesenheitsantrag wartet auf dich" : `${offene.length} Abwesenheitsanträge warten auf dich`;
-      const r = await fetch(`${BELEGE_URL}/rest/v1/os_aufgaben?bereich=eq.team&status=eq.offen&select=id`, { headers: { "apikey": BELEGE_KEY, "Authorization": `Bearer ${BELEGE_KEY}` } });
-      const existing = await r.json();
-      if (Array.isArray(existing) && existing.length > 0) {
-        await fetch(`${BELEGE_URL}/rest/v1/os_aufgaben?bereich=eq.team&status=eq.offen`, { method: "PATCH", headers, body: JSON.stringify({ titel }) });
-      } else {
-        await fetch(`${BELEGE_URL}/rest/v1/os_aufgaben`, { method: "POST", headers: { ...headers, "Prefer": "return=minimal" }, body: JSON.stringify({ bereich: "team", titel, status: "offen", prioritaet: "orange", quelle: "app", app_link: "https://mirjamwalenta-a11y.github.io/abwesenheiten.greathairday/" }) });
-      }
-    } catch(e) { console.warn("OS-Sync Abwesenheit fehlgeschlagen:", e.message); }
   }
 
   useEffect(()=>{ laden(); const t=setInterval(()=>laden(true),30000); return ()=>clearInterval(t); },[]);
@@ -1331,17 +1173,32 @@ function App() {
   }
 
   async function handleEntscheid(id, status) {
+    const anfrage = anfragen.find(a=>a.id===id);
+    const vorherStatus = anfrage?.status;
     await api.updateAnfrage(id, {status});
     setAnfragen(prev=>prev.map(a=>a.id===id?{...a,status}:a));
-  }
 
-  async function handleDeleteAnfrage(id) {
-    await api.deleteAnfrage(id);
-    setAnfragen(prev=>prev.filter(a=>a.id!==id));
+    // Urlaubstage bei Genehmigung abziehen / bei Ablehnung zurückgeben
+    if (anfrage && anfrage.typ==="urlaub") {
+      const person = team.find(p=>p.id===anfrage.person_id);
+      if (person) {
+        const tage = arbeitstage(anfrage.von, anfrage.bis, schliesztage).length;
+        let neu = person.urlaub_verbraucht;
+        if (status==="genehmigt" && vorherStatus!=="genehmigt") {
+          neu = (person.urlaub_verbraucht||0) + tage;
+        } else if (status==="abgelehnt" && vorherStatus==="genehmigt") {
+          neu = Math.max(0, (person.urlaub_verbraucht||0) - tage);
+        }
+        if (neu !== person.urlaub_verbraucht) {
+          await api.updatePerson(person.id, {urlaub_verbraucht: neu});
+          setTeam(prev=>prev.map(p=>p.id===person.id?{...p,urlaub_verbraucht:neu}:p));
+        }
+      }
+    }
   }
 
   const navItems = isOwner
-    ? [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"anfragen",l:"Anfragen",i:"◎",b:offeneAnfragen.length},{id:"urlaubsstaende",l:"Stände",i:"▦"}]
+    ? [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"anfragen",l:"Anfragen",i:"◎",b:offeneAnfragen.length},{id:"urlaubsstaende",l:"Urlaub",i:"▦"}]
     : [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"meine-anfragen",l:"Anfragen",i:"◎"}];
 
   if (anfrageScreen) return <Shell>
@@ -1373,11 +1230,11 @@ function App() {
           if (s==="neu-anfrage") { setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null}); setAnfrageScreen("typ"); }
           else setScreen(s);
         }}/>}
-        {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} schliesztage={schliesztage} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
+        {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
         {screen==="kalender"&&<Kalender anfragen={anfragen} team={team} monat={kalM} setMonat={setKalM} schliesztage={schliesztage}/>}
         {screen==="meine-anfragen"&&<MeineAnfragen anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}}/>}
-        {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid} onDeleteAnfrage={handleDeleteAnfrage}/>}
-        {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle} anfragen={anfragen} schliesztage={schliesztage} onDeleteAnfrage={handleDeleteAnfrage}/>}
+        {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid}/>}
+        {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle}/>}
         {screen==="einstellungen"&&isOwner&&<Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} sperrzeiten={sperrzeiten} setSperrzeiten={setSperrzeiten}/>}
       </main>
 
