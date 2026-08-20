@@ -125,8 +125,7 @@ function naechstesJubilaeum(eintrittsdatum) {
 
 // ─── TYPEN ────────────────────────────────────────────────────────────────────
 const TYPEN_MA = [
-  { id:"urlaub",       label:"Urlaub",              icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
-  { id:"krankenstand", label:"Krankenstand",         icon:"🤒", color:"bg-rose-100 text-rose-800 border-rose-200" },
+  { id:"urlaub", label:"Urlaub", icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
 ];
 const TYPEN_OW = [
   { id:"urlaub",       label:"Urlaub",              icon:"🌴", color:"bg-emerald-100 text-emerald-800 border-emerald-200" },
@@ -272,7 +271,16 @@ function Eroeffnung({team, onDone}) {
 function HomeMitarbeiter({person, anfragen, onNeu, onNav}) {
   if (!person) return null;
   const offen = person.urlaub_anspruch - person.urlaub_verbraucht;
-  const recent = [...anfragen].sort((a,b)=>b.erstellt.localeCompare(a.erstellt)).slice(0,3);
+  // Oktober-Hinweis: geplante UT-Abzüge im Oktober
+  const jetzt = new Date();
+  const istVorOktober = jetzt.getMonth() < 9; // vor Oktober (0-basiert)
+  const oktAbzug = 5;
+  const offenNachOkt = offen - (istVorOktober ? oktAbzug : 0);
+  // Genehmigte Urlaube
+  const urlaubeGenehmigt = anfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt");
+  // Krankenstand-Einträge (nur lesen)
+  const krankenstaende = anfragen.filter(a=>a.typ==="krankenstand");
+  const recent = [...anfragen.filter(a=>a.typ==="urlaub")].sort((a,b)=>b.erstellt.localeCompare(a.erstellt)).slice(0,3);
   return <div className="px-4 py-6 flex flex-col gap-6">
     <div>
       <p className="text-xs text-stone-400 uppercase tracking-widest">Guten Tag</p>
@@ -291,11 +299,38 @@ function HomeMitarbeiter({person, anfragen, onNeu, onNav}) {
       <div className="mt-4 bg-stone-100 rounded-full h-1.5 overflow-hidden">
         <div className="h-full bg-stone-800 rounded-full" style={{width:`${Math.min((person.urlaub_verbraucht/person.urlaub_anspruch)*100,100)}%`}}/>
       </div>
+      {istVorOktober && <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+        <p className="text-xs text-amber-700 font-medium">
+          Du hast <span className="font-bold">{offen} UT</span> — bedenke, dass im Oktober noch <span className="font-bold">{oktAbzug} UT</span> abgezogen werden. Danach bleiben dir noch <span className="font-bold">{offenNachOkt} UT</span>.
+        </p>
+      </div>}
+      {urlaubeGenehmigt.length>0 && <div className="mt-3">
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-2">Genehmigte Urlaube</p>
+        <div className="flex flex-col gap-1.5">
+          {urlaubeGenehmigt.sort((a,b)=>a.von.localeCompare(b.von)).map(a=>(
+            <div key={a.id} className="flex items-center justify-between bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+              <span className="text-xs font-medium text-emerald-800">🌴 {fmtZ(a.von,a.bis)}</span>
+              <span className="text-xs text-emerald-600 font-bold">genehmigt</span>
+            </div>
+          ))}
+        </div>
+      </div>}
     </div>
-    <button onClick={onNeu} className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 active:bg-stone-950 transition-colors">+ Neue Anfrage stellen</button>
+    {krankenstaende.length>0 && <div className="bg-white rounded-2xl border border-stone-200 p-5">
+      <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-3">Mein Krankenstand</p>
+      <div className="flex flex-col gap-2">
+        {krankenstaende.sort((a,b)=>b.von.localeCompare(a.von)).map(a=>(
+          <div key={a.id} className="flex items-center justify-between bg-rose-50 border border-rose-100 rounded-xl px-3 py-2.5">
+            <span className="text-sm font-medium text-rose-800">🤒 {fmtZ(a.von,a.bis)}</span>
+            <span className="text-xs text-rose-500">eingetragen</span>
+          </div>
+        ))}
+      </div>
+    </div>}
+    <button onClick={onNeu} className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 active:bg-stone-950 transition-colors">+ Urlaub beantragen</button>
     {recent.length>0 && <div>
       <div className="flex items-center justify-between mb-3">
-        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Letzte Anfragen</p>
+        <p className="text-xs font-medium text-stone-400 uppercase tracking-widest">Letzte Anträge</p>
         <button onClick={()=>onNav("meine-anfragen")} className="text-xs text-stone-500 underline">Alle anzeigen</button>
       </div>
       <div className="flex flex-col gap-2">{recent.map(a=><AnfrageKarte key={a.id} anfrage={a}/>)}</div>
@@ -622,15 +657,40 @@ function Kalender({anfragen, team, monat, setMonat, schliesztage}) {
 
 // ─── MEINE ANFRAGEN ───────────────────────────────────────────────────────────
 function MeineAnfragen({anfragen, onNeu}) {
-  const sorted=[...anfragen].sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
+  // Mitarbeiter sehen: eigene Urlaube (alle) + eigener Krankenstand (nur lesen)
+  const urlaube = [...anfragen.filter(a=>a.typ==="urlaub")].sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
+  const krankenstaende = [...anfragen.filter(a=>a.typ==="krankenstand")].sort((a,b)=>b.von.localeCompare(a.von));
+  const sonstige = [...anfragen.filter(a=>a.typ!=="urlaub"&&a.typ!=="krankenstand")].sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
   return <div className="px-4 py-6 flex flex-col gap-4">
     <div><p className="text-xs text-stone-400 uppercase tracking-widest">Übersicht</p>
-    <h2 className="text-2xl font-bold text-stone-900">Meine Anfragen</h2></div>
-    {sorted.length===0
-      ? <div className="text-center py-12"><p className="text-stone-400 text-sm">Noch keine Anfragen.</p>
-          <button onClick={onNeu} className="mt-4 bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold">+ Erste Anfrage</button></div>
-      : <><div className="flex flex-col gap-2">{sorted.map(a=><AnfrageKarte key={a.id} anfrage={a} showDate/>)}</div>
-          <button onClick={onNeu} className="w-full border-2 border-dashed border-stone-200 rounded-2xl py-4 text-sm font-medium text-stone-400 hover:border-stone-400 hover:text-stone-600 transition-colors">+ Neue Anfrage</button></>
+    <h2 className="text-2xl font-bold text-stone-900">Meine Abwesenheiten</h2></div>
+    {urlaube.length===0 && krankenstaende.length===0
+      ? <div className="text-center py-12"><p className="text-stone-400 text-sm">Noch keine Einträge.</p>
+          <button onClick={onNeu} className="mt-4 bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold">+ Urlaub beantragen</button></div>
+      : <>
+          {urlaube.length>0 && <>
+            <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1">🌴 Urlaubsanträge</p>
+            <div className="flex flex-col gap-2">{urlaube.map(a=><AnfrageKarte key={a.id} anfrage={a} showDate/>)}</div>
+          </>}
+          {krankenstaende.length>0 && <>
+            <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1 mt-2">🤒 Krankenstand</p>
+            <div className="flex flex-col gap-2">{krankenstaende.map(a=>(
+              <div key={a.id} className="bg-white border border-rose-100 rounded-2xl px-4 py-3.5 border-l-4 border-l-rose-400">
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <p className="text-sm font-semibold text-stone-800">🤒 Krankenstand</p>
+                  <span className="font-bold uppercase px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 text-xs">eingetragen</span>
+                </div>
+                <p className="text-xs text-stone-500">{fmtZ(a.von,a.bis)}</p>
+                <p className="text-stone-300 mt-1" style={{fontSize:"10px"}}>Von der Inhaberin eingetragen</p>
+              </div>
+            ))}</div>
+          </>}
+          {sonstige.length>0 && <>
+            <p className="text-xs font-medium text-stone-400 uppercase tracking-widest px-1 mt-2">📋 Sonstiges</p>
+            <div className="flex flex-col gap-2">{sonstige.map(a=><AnfrageKarte key={a.id} anfrage={a} showDate/>)}</div>
+          </>}
+          <button onClick={onNeu} className="w-full border-2 border-dashed border-stone-200 rounded-2xl py-4 text-sm font-medium text-stone-400 hover:border-stone-400 hover:text-stone-600 transition-colors">+ Urlaub beantragen</button>
+        </>
     }
   </div>;
 }
