@@ -46,19 +46,17 @@ async function sb(path, opts = {}) {
 // ── GHD OS: Ereignis in zentrale ghd_ereignisse-Tabelle schreiben ──
 async function ghd_ereignisSchreiben(app, typ, titel, prioritaet, payload) {
   try {
-    await fetch(`${SB_URL}/rest/v1/ghd_ereignisse`, {
-      method: 'POST',
-      headers: {
-        'apikey': SB_KEY,
-        'Authorization': `Bearer ${SB_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal'
-      },
-      body: JSON.stringify({ app, typ, titel, prioritaet, payload: payload || null })
-    });
-  } catch(e) {
-    console.warn('ghd_ereignis fehlgeschlagen:', e);
-  }
+    const _h = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };
+    const _r = await fetch(`${SB_URL}/rest/v1/ghd_ereignisse?app=eq.${encodeURIComponent(app)}&typ=eq.${encodeURIComponent(typ)}&gelesen=eq.false&select=id`, { headers: _h });
+    const _ex = await _r.json();
+    if (Array.isArray(_ex) && _ex.length > 0) {
+      await fetch(`${SB_URL}/rest/v1/ghd_ereignisse?app=eq.${encodeURIComponent(app)}&typ=eq.${encodeURIComponent(typ)}&gelesen=eq.false`,
+        { method: 'PATCH', headers: { ..._h, 'Prefer': 'return=minimal' }, body: JSON.stringify({ titel, prioritaet, erstellt_am: new Date().toISOString(), payload: payload || null }) });
+    } else {
+      await fetch(`${SB_URL}/rest/v1/ghd_ereignisse`,
+        { method: 'POST', headers: { ..._h, 'Prefer': 'return=minimal' }, body: JSON.stringify({ app, typ, titel, prioritaet, payload: payload || null, gelesen: false }) });
+    }
+  } catch(e) { console.warn('ghd_ereignis fehlgeschlagen:', e); }
 }
 
 const api = {
