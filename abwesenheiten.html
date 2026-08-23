@@ -43,6 +43,24 @@ async function sb(path, opts = {}) {
   return t ? JSON.parse(t) : null;
 }
 
+// ── GHD OS: Ereignis in zentrale ghd_ereignisse-Tabelle schreiben ──
+async function ghd_ereignisSchreiben(app, typ, titel, prioritaet, payload) {
+  try {
+    await fetch(`${SB_URL}/rest/v1/ghd_ereignisse`, {
+      method: 'POST',
+      headers: {
+        'apikey': SB_KEY,
+        'Authorization': `Bearer ${SB_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({ app, typ, titel, prioritaet, payload: payload || null })
+    });
+  } catch(e) {
+    console.warn('ghd_ereignis fehlgeschlagen:', e);
+  }
+}
+
 const api = {
   getTeam: () => sb("abw_team?order=name"),
   updatePerson: (id, d) => sb(`abw_team?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) }),
@@ -1263,6 +1281,16 @@ function App() {
           })
         });
       } catch(e) { console.warn("Wörni-Aufgabe konnte nicht erstellt werden:", e); }
+
+      // ── GHD OS: Ereignis in zentrale Tabelle schreiben ──
+      await ghd_ereignisSchreiben(
+        'Abwesenheiten',
+        'anfrage_neu',
+        `${typLabel} von ${personName}: ${vonFmt}${bisFmt}`,
+        typ === 'krankenstand' ? 'heute' : 'wann-moeglich',
+        { typ, von, bis, person_id: personId, person_name: personName }
+      );
+      // ─────────────────────────────────────────────────────
     }
     // ──────────────────────────────────────────────────────────────
 
