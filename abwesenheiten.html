@@ -16,6 +16,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     * { -webkit-tap-highlight-color: transparent; }
     body { background: #e7e5e4; }
@@ -31,10 +32,18 @@ const { useState, useEffect, useMemo } = React;
 // ─── SUPABASE ─────────────────────────────────────────────────────────────────
 const SB_URL = "https://wrxlaltgtgkdomklgrlj.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndyeGxhbHRndGdrZG9ta2xncmxqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNDYwMzYsImV4cCI6MjA5OTgyMjAzNn0.Bw8ch-EJb_cLYTwxHdpjUJWgoCjje3Jc32pB0yiBS8g";
+const sbAuth = supabase.createClient(SB_URL, SB_KEY);
+
+// baut aus dem Vornamen die Login-Email nach dem Muster <name>.abwesenheit@greathairday.at
+function abwEmail(name) {
+  return name.trim().toLowerCase().replace(/\s+/g, ".") + ".abwesenheit@greathairday.at";
+}
 
 async function sb(path, opts = {}) {
+  const { data: { session } } = await sbAuth.auth.getSession();
+  const token = session?.access_token || SB_KEY;
   const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
-    headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}`, "Content-Type": "application/json", "Prefer": opts.prefer || "return=representation", ...opts.headers },
+    headers: { "apikey": SB_KEY, "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Prefer": opts.prefer || "return=representation", ...opts.headers },
     ...opts
   });
   const t = await r.text();
@@ -59,6 +68,7 @@ async function ghd_ereignisSchreiben(app, typ, titel, prioritaet, payload) {
 }
 
 const api = {
+  getTeamPublic: () => sb("abw_team_login?order=name"),
   getTeam: () => sb("abw_team?order=name"),
   updatePerson: (id, d) => sb(`abw_team?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) }),
   getAnfragen: () => sb("abw_anfragen?order=erstellt.desc"),
@@ -176,12 +186,13 @@ function Login({team, onLogin}) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState(false);
 
-  function tapPin(v) {
+  async function tapPin(v) {
     if (v==="del") { setPin(p=>p.slice(0,-1)); setErr(false); return; }
     const n = pin+v; if (n.length>4) return;
     setPin(n); setErr(false);
     if (n.length===4) {
-      if (sel.pin===n) { setTimeout(()=>onLogin(sel),150); }
+      const { error } = await sbAuth.auth.signInWithPassword({ email: abwEmail(sel.name), password: n+"-ghd" });
+      if (!error) { setTimeout(()=>onLogin(sel),150); }
       else { setTimeout(()=>{ setPin(""); setErr(true); },400); }
     }
   }
@@ -1201,6 +1212,15 @@ function App() {
   const [kalM, setKalM] = useState({y:new Date().getFullYear(),m:new Date().getMonth()});
   const [ersterStart, setErsterStart] = useState(false);
 
+  async function ladeOeffentlich() {
+    setLadeStatus("laden");
+    try {
+      const t = await api.getTeamPublic();
+      setTeam(t||[]);
+      setLadeStatus("bereit");
+    } catch(e) { console.error(e); setLadeStatus("fehler"); }
+  }
+
   async function laden(silent=false) {
     if (!silent) setLadeStatus("laden");
     try {
@@ -1219,7 +1239,12 @@ function App() {
     } catch(e) { console.error(e); if (!silent) setLadeStatus("fehler"); }
   }
 
-  useEffect(()=>{ laden(); const t=setInterval(()=>laden(true),30000); return ()=>clearInterval(t); },[]);
+  useEffect(()=>{
+    if (!user) { ladeOeffentlich(); return; }
+    laden();
+    const t=setInterval(()=>laden(true),30000);
+    return ()=>clearInterval(t);
+  },[user]);
 
   if (ladeStatus==="laden") return <Shell><Lade text="Verbinde…"/></Shell>;
   if (ladeStatus==="fehler") return <Shell><div className="min-h-screen flex flex-col items-center justify-center gap-4 px-6 text-center">
