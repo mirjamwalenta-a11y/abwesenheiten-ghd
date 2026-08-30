@@ -1406,9 +1406,11 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 // ── Wörni / Claude – sicherer Proxy ──
 async function claudeAnfrage(system, userText, maxTokens) {
   maxTokens = maxTokens || 400;
-  const res = await fetch('https://wrxlaltgtgkdomklgrlj.supabase.co/functions/v1/rapid-service', {
+  const { data: sessionData } = await sbAuth.auth.getSession();
+  const token = sessionData?.session?.access_token || SB_KEY;
+  const res = await fetch('https://wrxlaltgtgkdomklgrlj.supabase.co/functions/v1/rapid-function', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
       max_tokens: maxTokens,
