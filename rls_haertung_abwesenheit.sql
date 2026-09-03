@@ -51,7 +51,13 @@ CREATE POLICY "abw_team_delete" ON abw_team FOR DELETE TO authenticated
 
 -- PIN nie per REST/API zurücklesbar, für niemanden (auch nicht die Chefin über diesen Weg) —
 -- er wird ausschließlich geschrieben (PATCH), nie gelesen.
-REVOKE SELECT (pin) ON abw_team FROM authenticated, anon;
+-- Wichtig: ein reines "REVOKE SELECT (pin) ... FROM authenticated" wirkt NICHT, wenn die
+-- Rolle das SELECT-Recht bereits tabellenweit hat (Supabase-Standard für authenticated/anon) —
+-- ein Spalten-REVOKE kann eine bestehende Tabellen-weite Berechtigung nicht einschränken.
+-- Deshalb erst die Tabellen-weite SELECT-Berechtigung entziehen, dann nur die unbedenklichen
+-- Spalten gezielt zurückgeben.
+REVOKE SELECT ON abw_team FROM authenticated, anon;
+GRANT SELECT (id, name, role, urlaub_anspruch, urlaub_verbraucht, eintrittsdatum) ON abw_team TO authenticated;
 
 -- ── abw_anfragen ───────────────────────────────────────────────
 -- Fachlich (bereits im Frontend-Kommentar so festgehalten, jetzt echt erzwungen):
