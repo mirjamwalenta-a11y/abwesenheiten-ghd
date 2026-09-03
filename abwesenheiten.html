@@ -75,7 +75,14 @@ function _istChefin() { return !!(_aktuellerUser && _aktuellerUser.role === "own
 
 const api = {
   getTeamPublic: () => sb("abw_team_login?order=name"),
-  getTeam: () => sb("abw_team?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum&order=name"),
+  // Mitarbeiter:innen bekommen nur Name/Rolle der anderen (fürs Team-Kalender), nicht deren
+  // Urlaubsstände/Eintrittsdatum — das ist Chefin-Sache. Die eigenen Werte werden dazugemischt.
+  getTeam: (selbstId) => selbstId
+    ? Promise.all([
+        sb("abw_team?select=id,name,role&order=name"),
+        sb(`abw_team?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum&id=eq.${selbstId}`)
+      ]).then(([alle, mich]) => alle.map(p => p.id === selbstId ? { ...p, ...(mich && mich[0]) } : p))
+    : sb("abw_team?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum&order=name"),
   updatePerson: (id, d) => {
     if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personendaten ändern."));
     return sb(`abw_team?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) });
@@ -1261,7 +1268,7 @@ function App() {
       const anfragenAbruf = (user && user.role!=="owner")
         ? sb(`abw_anfragen?or=(status.eq.genehmigt,person_id.eq.${user.id})&order=erstellt.desc`)
         : api.getAnfragen();
-      const [t,a,e] = await Promise.all([api.getTeam(), anfragenAbruf, api.getEinstellungen()]);
+      const [t,a,e] = await Promise.all([api.getTeam(user && user.role!=="owner" ? user.id : null), anfragenAbruf, api.getEinstellungen()]);
       setTeam(t||[]);
       setAnfragen(a||[]);
       const sz=e?.find(x=>x.schluessel==="schliesztage");
