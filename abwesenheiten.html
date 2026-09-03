@@ -75,7 +75,10 @@ function _istChefin() { return !!(_aktuellerUser && _aktuellerUser.role === "own
 
 const api = {
   getTeamPublic: () => sb("abw_team_login?order=name"),
-  getTeam: () => sb("abw_team?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum&order=name"),
+  // abw_team_scoped maskiert Urlaubsstände/Eintrittsdatum fremder Zeilen serverseitig
+  // (siehe rls_haertung_abw_team_spalten.sql) — die eigene Zeile und die Chefin sehen
+  // dort weiterhin alles, ganz ohne dass der Client seine eigene Identität mitschicken muss.
+  getTeam: () => sb("abw_team_scoped?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum&order=name"),
   updatePerson: (id, d) => {
     if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personendaten ändern."));
     return sb(`abw_team?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) });
