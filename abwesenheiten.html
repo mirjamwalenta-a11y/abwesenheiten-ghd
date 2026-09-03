@@ -67,17 +67,46 @@ async function ghd_ereignisSchreiben(app, typ, titel, prioritaet, payload) {
   } catch(e) { console.warn('ghd_ereignis fehlgeschlagen:', e); }
 }
 
+// ── Zugriffsschutz für Schreibfunktionen: Spiegel des eingeloggten Users außerhalb von React,
+// damit die api-Schreibmethoden (global aufrufbar, z.B. über die Browser-Konsole) die Rolle
+// prüfen können, nicht nur die Oberfläche. Wird per useEffect in App() synchron gehalten.
+let _aktuellerUser = null;
+function _istChefin() { return !!(_aktuellerUser && _aktuellerUser.role === "owner"); }
+
 const api = {
   getTeamPublic: () => sb("abw_team_login?order=name"),
-  getTeam: () => sb("abw_team?order=name"),
-  updatePerson: (id, d) => sb(`abw_team?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) }),
+  getTeam: () => sb("abw_team?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum&order=name"),
+  updatePerson: (id, d) => {
+    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personendaten ändern."));
+    return sb(`abw_team?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) });
+  },
   getAnfragen: () => sb("abw_anfragen?order=erstellt.desc"),
-  addAnfrage: (d) => sb("abw_anfragen", { method: "POST", body: JSON.stringify(d) }),
-  updateAnfrage: (id, d) => sb(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) }),
+  addAnfrage: (d) => {
+    // Mitarbeiter:innen dürfen nur für sich selbst und nur als "ausstehend" einreichen —
+    // unabhängig davon, was ein direkter Aufruf sonst übergeben würde.
+    if (!_istChefin()) {
+      if (!_aktuellerUser) return Promise.reject(new Error("Bitte zuerst anmelden."));
+      d = { ...d, person_id: _aktuellerUser.id, status: "ausstehend" };
+    }
+    return sb("abw_anfragen", { method: "POST", body: JSON.stringify(d) });
+  },
+  updateAnfrage: (id, d) => {
+    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf über Anfragen entscheiden."));
+    return sb(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) });
+  },
   getEinstellungen: () => sb("abw_einstellungen"),
-  setEinstellung: (k, v) => sb("abw_einstellungen", { method: "POST", headers: { "Prefer": "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ schluessel: k, wert: v }) }),
-  addPerson: (d) => sb("abw_team", { method: "POST", body: JSON.stringify(d) }),
-  deletePerson: (id) => sb(`abw_team?id=eq.${id}`, { method: "DELETE", prefer: "" }),
+  setEinstellung: (k, v) => {
+    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Einstellungen ändern."));
+    return sb("abw_einstellungen", { method: "POST", headers: { "Prefer": "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ schluessel: k, wert: v }) });
+  },
+  addPerson: (d) => {
+    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personen anlegen."));
+    return sb("abw_team", { method: "POST", body: JSON.stringify(d) });
+  },
+  deletePerson: (id) => {
+    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personen entfernen."));
+    return sb(`abw_team?id=eq.${id}`, { method: "DELETE", prefer: "" });
+  },
 };
 
 // ─── ÖSTERREICH FEIERTAGE ─────────────────────────────────────────────────────
@@ -1212,6 +1241,9 @@ function App() {
   const [kalM, setKalM] = useState({y:new Date().getFullYear(),m:new Date().getMonth()});
   const [ersterStart, setErsterStart] = useState(false);
 
+  // Schreibschutz: globale Rollen-Referenz synchron mit dem React-State halten
+  useEffect(()=>{ _aktuellerUser = user; }, [user]);
+
   async function ladeOeffentlich() {
     setLadeStatus("laden");
     try {
@@ -1224,7 +1256,12 @@ function App() {
   async function laden(silent=false) {
     if (!silent) setLadeStatus("laden");
     try {
-      const [t,a,e] = await Promise.all([api.getTeam(), api.getAnfragen(), api.getEinstellungen()]);
+      // Mitarbeiter:innen brauchen für den gemeinsamen Kalender nur genehmigte Einträge aller
+      // + ihre eigenen Anfragen jeden Status — nicht die ausstehenden/abgelehnten Anfragen anderer.
+      const anfragenAbruf = (user && user.role!=="owner")
+        ? sb(`abw_anfragen?or=(status.eq.genehmigt,person_id.eq.${user.id})&order=erstellt.desc`)
+        : api.getAnfragen();
+      const [t,a,e] = await Promise.all([api.getTeam(), anfragenAbruf, api.getEinstellungen()]);
       setTeam(t||[]);
       setAnfragen(a||[]);
       const sz=e?.find(x=>x.schluessel==="schliesztage");
