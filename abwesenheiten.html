@@ -8,6 +8,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="https://mirjamwalenta-a11y.github.io/abwesenheiten-ghd/logo.png">
   <link rel="icon" type="image/png" sizes="512x512" href="https://mirjamwalenta-a11y.github.io/abwesenheiten-ghd/logo.png">
   <meta charset="UTF-8"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://wrxlaltgtgkdomklgrlj.supabase.co wss://wrxlaltgtgkdomklgrlj.supabase.co; font-src 'self' data:; base-uri 'self'; form-action 'self'"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
   <title>Abwesenheiten · Great Hair Day</title>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -41,7 +42,9 @@ function abwEmail(name) {
 
 async function sb(path, opts = {}) {
   const { data: { session } } = await sbAuth.auth.getSession();
-  const token = session?.access_token || SB_KEY;
+  const isWrite = opts.method && opts.method !== 'GET';
+  const token = session?.access_token || (isWrite ? null : SB_KEY);
+  if (isWrite && !token) throw new Error('Nicht angemeldet');
   const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
     headers: { "apikey": SB_KEY, "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Prefer": opts.prefer || "return=representation", ...opts.headers },
     ...opts
@@ -54,15 +57,15 @@ async function sb(path, opts = {}) {
 // ── GHD OS: Ereignis in zentrale ghd_ereignisse-Tabelle schreiben ──
 async function ghd_ereignisSchreiben(app, typ, titel, prioritaet, payload) {
   try {
-    const _h = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' };
-    const _r = await fetch(`${SB_URL}/rest/v1/ghd_ereignisse?app=eq.${encodeURIComponent(app)}&typ=eq.${encodeURIComponent(typ)}&gelesen=eq.false&select=id`, { headers: _h });
-    const _ex = await _r.json();
-    if (Array.isArray(_ex) && _ex.length > 0) {
-      await fetch(`${SB_URL}/rest/v1/ghd_ereignisse?app=eq.${encodeURIComponent(app)}&typ=eq.${encodeURIComponent(typ)}&gelesen=eq.false`,
-        { method: 'PATCH', headers: { ..._h, 'Prefer': 'return=minimal' }, body: JSON.stringify({ titel, prioritaet, erstellt_am: new Date().toISOString(), payload: payload || null }) });
+    const ex = await sb(`ghd_ereignisse?app=eq.${encodeURIComponent(app)}&typ=eq.${encodeURIComponent(typ)}&gelesen=eq.false&select=id`);
+    if (Array.isArray(ex) && ex.length > 0) {
+      await sb(`ghd_ereignisse?app=eq.${encodeURIComponent(app)}&typ=eq.${encodeURIComponent(typ)}&gelesen=eq.false`,
+        { method: 'PATCH', prefer: 'return=minimal',
+          body: JSON.stringify({ titel, prioritaet, erstellt_am: new Date().toISOString(), payload: payload || null }) });
     } else {
-      await fetch(`${SB_URL}/rest/v1/ghd_ereignisse`,
-        { method: 'POST', headers: { ..._h, 'Prefer': 'return=minimal' }, body: JSON.stringify({ app, typ, titel, prioritaet, payload: payload || null, gelesen: false }) });
+      await sb('ghd_ereignisse',
+        { method: 'POST', prefer: 'return=minimal',
+          body: JSON.stringify({ app, typ, titel, prioritaet, payload: payload || null, gelesen: false }) });
     }
   } catch(e) { console.warn('ghd_ereignis fehlgeschlagen:', e); }
 }
@@ -1320,14 +1323,9 @@ function App() {
       const vonFmt = fmtD(von);
       const bisFmt = von !== bis ? ` – ${fmtD(bis)}` : "";
       try {
-        await fetch(`${SB_URL}/rest/v1/ghd_aufgaben`, {
+        await sb("ghd_aufgaben", {
           method: "POST",
-          headers: {
-            "apikey": SB_KEY,
-            "Authorization": `Bearer ${SB_KEY}`,
-            "Content-Type": "application/json",
-            "Prefer": "return=minimal"
-          },
+          prefer: "return=minimal",
           body: JSON.stringify({
             typ: "entscheidung",
             titel: `${typLabel} von ${personName} prüfen`,
@@ -1408,7 +1406,10 @@ function App() {
         </div>
         <div className="flex items-center gap-2">
           {isOwner&&<button onClick={()=>setScreen("einstellungen")} className="text-xs text-stone-400 hover:text-stone-700 px-2 py-1">⚙ Einstellungen</button>}
-          <button onClick={()=>{setUser(null);setScreen("home");}} className="text-xs text-stone-400 hover:text-stone-600 px-2 py-1">Abmelden</button>
+          <button onClick={async()=>{
+            await sbAuth.auth.signOut();
+            setUser(null);setScreen("home");
+          }} className="text-xs text-stone-400 hover:text-stone-600 px-2 py-1">Abmelden</button>
         </div>
       </header>
 
@@ -1444,20 +1445,22 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 <script>
 // ── Wörni / Claude – sicherer Proxy ──
-async function claudeAnfrage(system, userText, maxTokens) {
-  maxTokens = maxTokens || 400;
-  const { data: sessionData } = await sbAuth.auth.getSession();
-  const token = sessionData?.session?.access_token || SB_KEY;
+// Modell/Prompt/Limit stehen serverseitig in der Edge Function fest (Zweck
+// "abwesenheiten"); der Browser schickt nur den Nutzertext und muss
+// eingeloggt sein.
+async function claudeAnfrage(userText) {
+  const { data: { session } } = await sbAuth.auth.getSession();
+  if (!session) return null;
   const res = await fetch('https://wrxlaltgtgkdomklgrlj.supabase.co/functions/v1/rapid-function', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: maxTokens,
-      system: system,
-      messages: [{ role: 'user', content: userText }]
-    })
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SB_KEY,
+      'Authorization': `Bearer ${session.access_token}`
+    },
+    body: JSON.stringify({ zweck: 'abwesenheiten', text: userText })
   });
+  if (!res.ok) return null;
   const data = await res.json();
   return data?.content?.[0]?.text || null;
 }
