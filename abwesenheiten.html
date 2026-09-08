@@ -8,6 +8,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="https://mirjamwalenta-a11y.github.io/abwesenheiten-ghd/logo.png">
   <link rel="icon" type="image/png" sizes="512x512" href="https://mirjamwalenta-a11y.github.io/abwesenheiten-ghd/logo.png">
   <meta charset="UTF-8"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://wrxlaltgtgkdomklgrlj.supabase.co wss://wrxlaltgtgkdomklgrlj.supabase.co; font-src 'self' data:; base-uri 'self'; form-action 'self'"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
   <title>Abwesenheiten · Great Hair Day</title>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -1405,7 +1406,10 @@ function App() {
         </div>
         <div className="flex items-center gap-2">
           {isOwner&&<button onClick={()=>setScreen("einstellungen")} className="text-xs text-stone-400 hover:text-stone-700 px-2 py-1">⚙ Einstellungen</button>}
-          <button onClick={()=>{setUser(null);setScreen("home");}} className="text-xs text-stone-400 hover:text-stone-600 px-2 py-1">Abmelden</button>
+          <button onClick={async()=>{
+            await sbAuth.auth.signOut();
+            setUser(null);setScreen("home");
+          }} className="text-xs text-stone-400 hover:text-stone-600 px-2 py-1">Abmelden</button>
         </div>
       </header>
 
