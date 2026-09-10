@@ -1120,10 +1120,8 @@ function Einstellungen({team, setTeam, schliesztage, setSchliesztage, warnschwel
       ))}
 
       <NeueMitarbeiterinKarte onAdd={async(d)=>{
-        try {
-          const r = await api.addPerson(d);
-          setTeam(prev=>[...prev, r[0]]);
-        } catch(e) { alert("Fehler: "+e.message); }
+        const r = await api.addPerson(d);
+        setTeam(prev=>[...prev, r[0]]);
       }}/>
     </div>}
 
