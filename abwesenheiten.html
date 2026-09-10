@@ -84,7 +84,11 @@ const api = {
   getTeam: () => sb("abw_team_scoped?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum&order=name"),
   updatePerson: (id, d) => {
     if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personendaten ändern."));
-    return sb(`abw_team?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) });
+    // return=minimal: keine Repräsentation der Zeile zurückholen — sonst schlägt jedes
+    // Update an der PIN-Spalte fehl, weil PostgREST standardmäßig alle Spalten zurückgeben
+    // will, "authenticated" laut RLS-Härtung aber kein SELECT auf die PIN-Spalte hat. Kein
+    // Aufrufer braucht die Repräsentation, alle arbeiten mit dem lokal bekannten d weiter.
+    return sb(`abw_team?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(d) });
   },
   getAnfragen: () => sb("abw_anfragen?order=erstellt.desc"),
   addAnfrage: (d) => {
@@ -107,7 +111,10 @@ const api = {
   },
   addPerson: (d) => {
     if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personen anlegen."));
-    return sb("abw_team", { method: "POST", body: JSON.stringify(d) });
+    // select= schränkt die zurückgegebene Repräsentation auf die Spalten ein, die
+    // "authenticated" laut RLS-Härtung lesen darf — sonst schlägt das Insert an der
+    // PIN-Spalte fehl, weil PostgREST standardmäßig alle Spalten zurückgeben will.
+    return sb("abw_team?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum", { method: "POST", body: JSON.stringify(d) });
   },
   deletePerson: (id) => {
     if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personen entfernen."));
