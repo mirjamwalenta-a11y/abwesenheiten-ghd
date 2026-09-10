@@ -1315,6 +1315,19 @@ function App() {
     setAnfrageScreen(null);
     setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});
 
+    // Direkt genehmigter Urlaub (Chefin trägt ihn sofort ein): Urlaubstage sofort
+    // abziehen — sonst bleibt der Urlaubsstand falsch, weil dieser Abzug sonst nur
+    // beim späteren Genehmigen einer "ausstehend"-Anfrage in handleEntscheid passiert.
+    if (status === "genehmigt" && typ === "urlaub") {
+      const person = team.find(p=>p.id===personId);
+      if (person) {
+        const tage = arbeitstage(von, bis, schliesztage).length;
+        const neuVerbraucht = (person.urlaub_verbraucht||0) + tage;
+        await api.updatePerson(person.id, {urlaub_verbraucht: neuVerbraucht});
+        setTeam(prev=>prev.map(p=>p.id===person.id?{...p,urlaub_verbraucht:neuVerbraucht}:p));
+      }
+    }
+
     // ── WÖRNI: Aufgabe erzeugen wenn Mitarbeiterin Antrag stellt ──
     if (!isOwner || !directApprove) {
       const person = team.find(p => p.id === personId);
