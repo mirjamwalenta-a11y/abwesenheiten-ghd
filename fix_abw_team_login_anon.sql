@@ -1,0 +1,23 @@
+-- ════════════════════════════════════════════════════════════
+--  Fix: "Wer bist du?"-Vorschau vor dem Login (abw_team_login)
+--  war für anon (nicht angemeldete Nutzer:innen) nicht mehr lesbar.
+--
+--  Ursache: Die RLS-Härtung (rls_haertung_abwesenheit.sql) hat der
+--  Rolle "anon" komplett den Zugriff auf die Tabelle abw_team entzogen
+--  (absichtlich, wegen der PIN-Spalte). Dabei wurde aber übersehen,
+--  dass die abgesicherte Vorschau-View abw_team_login (nur Name,
+--  keine PIN) genau für anon gedacht ist — die Namensauswahl VOR dem
+--  Login braucht sie, weil man da naturgemäß noch nicht angemeldet
+--  sein kann.
+--
+--  WICHTIG: Das ist NICHT dasselbe wie der Hinweis aus der
+--  Fehlermeldung ("GRANT SELECT ON public.abw_team TO anon") — das
+--  würde die komplette Tabelle inkl. PIN wieder öffentlich lesbar
+--  machen und die Härtung von vorher zunichtemachen. Hier wird
+--  bewusst nur die bereits abgesicherte VIEW freigegeben, nicht die
+--  Tabelle selbst.
+--
+--  Im Supabase SQL-Editor ausführen. Sicher mehrfach ausführbar.
+-- ════════════════════════════════════════════════════════════
+
+GRANT SELECT ON public.abw_team_login TO anon;
