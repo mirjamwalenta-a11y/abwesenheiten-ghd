@@ -1233,6 +1233,7 @@ function AnfrageKarte({anfrage, showDate}) {
 // ─── HAUPT APP ────────────────────────────────────────────────────────────────
 function App() {
   const [ladeStatus, setLadeStatus] = useState("laden");
+  const [ladeFehler, setLadeFehler] = useState(null);
   const [user, setUser] = useState(null);
   const [team, setTeam] = useState([]);
   const [anfragen, setAnfragen] = useState([]);
@@ -1254,7 +1255,7 @@ function App() {
       const t = await api.getTeamPublic();
       setTeam(t||[]);
       setLadeStatus("bereit");
-    } catch(e) { console.error(e); setLadeStatus("fehler"); }
+    } catch(e) { console.error(e); setLadeFehler(e.message); setLadeStatus("fehler"); }
   }
 
   async function laden(silent=false) {
@@ -1277,7 +1278,7 @@ function App() {
       if (spz) setSperrzeiten(JSON.parse(spz.wert));
       if (!er) setErsterStart(true);
       setLadeStatus("bereit");
-    } catch(e) { console.error(e); if (!silent) setLadeStatus("fehler"); }
+    } catch(e) { console.error(e); if (!silent) { setLadeFehler(e.message); setLadeStatus("fehler"); } }
   }
 
   useEffect(()=>{
@@ -1291,7 +1292,8 @@ function App() {
   if (ladeStatus==="fehler") return <Shell><div className="min-h-screen flex flex-col items-center justify-center gap-4 px-6 text-center">
     <p className="text-2xl">⚠️</p><p className="text-stone-700 font-semibold">Verbindungsfehler</p>
     <p className="text-stone-400 text-sm">Supabase konnte nicht erreicht werden.</p>
-    <button onClick={laden} className="bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold mt-2">Nochmal versuchen</button>
+    {ladeFehler&&<p className="text-stone-300 text-xs max-w-xs break-words">{ladeFehler}</p>}
+    <button onClick={()=>{setLadeFehler(null);user?laden():ladeOeffentlich();}} className="bg-stone-900 text-white rounded-xl px-5 py-2.5 text-sm font-semibold mt-2">Nochmal versuchen</button>
   </div></Shell>;
 
   if (!user) return <Login team={team} onLogin={setUser}/>;
