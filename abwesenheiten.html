@@ -35,11 +35,6 @@ const SB_URL = "https://wrxlaltgtgkdomklgrlj.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndyeGxhbHRndGdrZG9ta2xncmxqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNDYwMzYsImV4cCI6MjA5OTgyMjAzNn0.Bw8ch-EJb_cLYTwxHdpjUJWgoCjje3Jc32pB0yiBS8g";
 const sbAuth = supabase.createClient(SB_URL, SB_KEY);
 
-// baut aus dem Vornamen die Login-Email nach dem Muster <name>.abwesenheit@greathairday.at
-function abwEmail(name) {
-  return name.trim().toLowerCase().replace(/\s+/g, ".") + ".abwesenheit@greathairday.at";
-}
-
 async function sb(path, opts = {}) {
   const { data: { session } } = await sbAuth.auth.getSession();
   const isWrite = opts.method && opts.method !== 'GET';
@@ -223,67 +218,71 @@ function Lade({text}) {
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
+// Statt eigenem Name+PIN-Login: derselbe Team-Login (E-Mail+Passwort) wie in
+// team.html / Mitarbeiterhandbuch_App.html / salon-checklist.html. Wer im selben
+// Browser schon dort angemeldet ist, kommt hier automatisch rein — keine erneute
+// Eingabe nötig, weil alle Apps dieselbe Supabase-Sitzung teilen.
 function Login({team, onLogin}) {
-  const [sel, setSel] = useState(null);
-  const [pin, setPin] = useState("");
-  const [err, setErr] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  async function tapPin(v) {
-    if (v==="del") { setPin(p=>p.slice(0,-1)); setErr(false); return; }
-    const n = pin+v; if (n.length>4) return;
-    setPin(n); setErr(false);
-    if (n.length===4) {
-      const { error } = await sbAuth.auth.signInWithPassword({ email: abwEmail(sel.name), password: n+"-ghd" });
-      if (!error) { setTimeout(()=>onLogin(sel),150); }
-      else { setTimeout(()=>{ setPin(""); setErr(true); },400); }
-    }
+  // Ordnet die per Team-Login angemeldete Person (teamapp_persons) der passenden
+  // Zeile in abw_team zu (Namensabgleich) — abw_team bleibt die fachliche Tabelle
+  // für Urlaubsstände, nur die Anmeldung läuft jetzt über den Team-Zugang.
+  async function nachAnmeldung(sessionEmail) {
+    try {
+      const rows = await sb(`teamapp_persons?email=eq.${encodeURIComponent(sessionEmail)}&aktiv=eq.true&select=name,rolle`);
+      const person = rows && rows[0];
+      if (!person) { setErr("Für diese E-Mail gibt es keinen aktiven Team-Zugang."); return false; }
+      const match = (team||[]).find(p => p.name.trim().toLowerCase() === person.name.trim().toLowerCase());
+      if (!match) { setErr(`${person.name} ist in den Abwesenheiten noch nicht angelegt. Bitte die Inhaberin bitten, dich hinzuzufügen.`); return false; }
+      onLogin({ ...match, role: person.rolle === "inhaberin" ? "owner" : "employee" });
+      return true;
+    } catch (e) { setErr("Fehler: " + e.message); return false; }
   }
 
-  if (!sel) return (
+  useEffect(() => {
+    (async () => {
+      const { data: { session } } = await sbAuth.auth.getSession();
+      if (session?.user?.email && await nachAnmeldung(session.user.email)) return;
+      setChecking(false);
+    })();
+  }, []);
+
+  async function doLogin() {
+    setErr(""); setBusy(true);
+    const { error } = await sbAuth.auth.signInWithPassword({ email: email.trim(), password: pw });
+    if (error) { setErr("E-Mail oder Passwort falsch."); setBusy(false); return; }
+    await nachAnmeldung(email.trim());
+    setBusy(false);
+  }
+
+  if (checking) return <Shell><Lade text="Verbinde…"/></Shell>;
+
+  return (
     <Shell><div className="flex flex-col justify-center min-h-screen px-6 py-12">
       <div className="mb-10">
         <p className="text-xs text-stone-400 uppercase tracking-widest mb-1">Great Hair Day</p>
         <h1 className="text-2xl font-bold text-stone-900">Abwesenheiten</h1>
-        <p className="text-stone-500 text-sm mt-1">Wer bist du?</p>
+        <p className="text-stone-500 text-sm mt-1">Mit deinem Team-Login anmelden</p>
       </div>
       <div className="flex flex-col gap-3">
-        {team.map(p=>(
-          <button key={p.id} onClick={()=>{setSel(p);setPin("");setErr(false);}}
-            className="flex items-center gap-4 bg-white border border-stone-200 rounded-xl px-4 py-3.5 text-left hover:border-stone-400 hover:shadow-sm transition-all">
-            <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
-            <div><p className="font-semibold text-stone-900 text-sm">{p.name}</p>
-            <p className="text-xs text-stone-400">{p.role==="owner"?"Inhaberin":"Mitarbeiter:in"}</p></div>
-            <span className="ml-auto text-stone-300 text-lg">›</span>
-          </button>
-        ))}
+        <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="E-Mail"
+          autoComplete="username"
+          className="border border-stone-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-stone-500"/>
+        <input type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="Passwort"
+          autoComplete="current-password" onKeyDown={e=>{ if (e.key==="Enter") doLogin(); }}
+          className="border border-stone-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-stone-500"/>
+        {err && <p className="text-rose-500 text-sm">{err}</p>}
+        <button onClick={doLogin} disabled={busy}
+          className="bg-stone-900 text-white rounded-xl py-3 font-semibold disabled:opacity-50 mt-2">
+          {busy ? "Wird geprüft…" : "Anmelden"}
+        </button>
       </div>
       <p className="text-center text-xs text-stone-300 mt-8">Great Hair Day Wien</p>
-    </div></Shell>
-  );
-
-  return (
-    <Shell><div className="flex flex-col justify-center min-h-screen px-6 py-12">
-      <button onClick={()=>setSel(null)} className="text-stone-400 text-sm mb-8 self-start">‹ Zurück</button>
-      <div className="flex flex-col items-center mb-10">
-        <span className="w-16 h-16 rounded-full bg-stone-900 text-white text-2xl font-bold flex items-center justify-center mb-4">{sel.name[0]}</span>
-        <p className="text-xl font-bold text-stone-900">{sel.name}</p>
-        <p className="text-stone-400 text-sm mt-1">PIN eingeben</p>
-      </div>
-      <div className="flex justify-center gap-4 mb-8">
-        {[0,1,2,3].map(i=>(
-          <div key={i} className={`w-4 h-4 rounded-full border-2 transition-all ${err?"border-rose-400 bg-rose-400":i<pin.length?"border-stone-900 bg-stone-900":"border-stone-300"}`}/>
-        ))}
-      </div>
-      {err && <p className="text-center text-rose-500 text-sm mb-4">Falscher PIN.</p>}
-      <div className="grid grid-cols-3 gap-3 max-w-xs mx-auto w-full">
-        {["1","2","3","4","5","6","7","8","9","","0","del"].map((k,i)=>(
-          k===""?<div key={i}/>:
-          <button key={i} onClick={()=>tapPin(k)}
-            className={`h-14 rounded-2xl text-xl font-semibold transition-all active:scale-95 ${k==="del"?"text-stone-500 hover:bg-stone-100":"bg-white border border-stone-200 text-stone-900 hover:border-stone-400"}`}>
-            {k==="del"?"⌫":k}
-          </button>
-        ))}
-      </div>
     </div></Shell>
   );
 }
