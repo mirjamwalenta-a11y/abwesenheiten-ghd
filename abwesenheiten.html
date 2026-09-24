@@ -173,7 +173,7 @@ function tageZw(v,b) {
   return t;
 }
 function arbeitstage(v,b,sz) {
-  return tageZw(v,b).filter(d => parseD(d).getDay()!==0 && !istFeiertag(d) && !sz.includes(d));
+  return tageZw(v,b).filter(d => parseD(d).getDay()!==0 && parseD(d).getDay()!==1 && !istFeiertag(d) && !sz.includes(d));
 }
 function istSperre(d, fixSperre, sperrzeiten) {
   const dt=parseD(d), m=dt.getMonth()+1, t=dt.getDate();
@@ -493,7 +493,8 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
 
   function tapDay(d) {
     if (blockInfo(d)) return;
-    if (parseD(d).getDay()===0) return;
+    const dow=parseD(d).getDay();
+    if (dow===0||dow===1) return;
     if (!selStart) {
       setSelStart(d); setAnfrage(a=>({...a,von:d,bis:d}));
     } else {
@@ -513,7 +514,7 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
 
   const anzahl = anfrage.von&&anfrage.bis
     ? (anfrage.typ==="urlaub"?arbeitstage(anfrage.von,anfrage.bis,schliesztage).length
-      :tageZw(anfrage.von,anfrage.bis).filter(d=>parseD(d).getDay()!==0).length)
+      :tageZw(anfrage.von,anfrage.bis).filter(d=>{const w=parseD(d).getDay();return w!==0&&w!==1;}).length)
     : 0;
 
   async function submit() {
@@ -586,16 +587,16 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
             {["Mo","Di","Mi","Do","Fr","Sa","So"].map(d=><div key={d} className="text-center text-xs font-medium text-stone-400 py-1">{d}</div>)}
             {Array.from({length:off},(_,i)=><div key={"e"+i}/>)}
             {days.map(d=>{
-              const bi=blockInfo(d), isSun=parseD(d).getDay()===0;
+              const dow=parseD(d).getDay(), bi=blockInfo(d), isClosed=dow===0||dow===1;
               const isSel=anfrage.von&&anfrage.bis&&d>=anfrage.von&&d<=anfrage.bis;
               let cls="flex items-center justify-center text-xs h-9 rounded-lg mx-0.5 my-0.5 transition-colors ";
-              if (isSun) cls+="text-stone-200 ";
+              if (isClosed) cls+="text-stone-200 ";
               else if (bi==="sperre") cls+="bg-rose-50 text-rose-300 cursor-not-allowed ";
               else if (bi==="belegt") cls+="bg-stone-100 text-stone-300 cursor-not-allowed ";
               else if (bi==="feiertag"||bi==="schliesztag") cls+="text-stone-300 cursor-not-allowed ";
               else if (isSel) cls+="bg-stone-900 text-white font-semibold cursor-pointer ";
               else cls+="text-stone-700 hover:bg-stone-100 cursor-pointer ";
-              return <button key={d} onClick={()=>!isSun&&tapDay(d)} className={cls} disabled={!!bi||isSun}>{parseD(d).getDate()}</button>;
+              return <button key={d} onClick={()=>!isClosed&&tapDay(d)} className={cls} disabled={!!bi||isClosed}>{parseD(d).getDate()}</button>;
             })}
           </div>
           <div className="px-4 py-2 border-t border-stone-100 flex gap-3 flex-wrap">
@@ -685,6 +686,7 @@ function Kalender({anfragen, team, monat, setMonat, schliesztage}) {
 
   function eintraege(datum) {
     if (istFeiertag(datum)) return [{typ:"feiertag",label:feiertagName(datum)}];
+    if (parseD(datum).getDay()===1) return [{typ:"schliesztag",label:"Montag geschlossen"}];
     if (schliesztage.includes(datum)) return [{typ:"schliesztag",label:"Schließtag"}];
     return gen.filter(a=>tageZw(a.von,a.bis).includes(datum)).map(a=>({typ:a.typ,label:team.find(p=>p.id===a.person_id)?.name||a.person_id}));
   }
