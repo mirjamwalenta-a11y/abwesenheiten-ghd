@@ -336,16 +336,18 @@ function Eroeffnung({team, onDone}) {
 }
 
 // ─── HOME MITARBEITER ─────────────────────────────────────────────────────────
-function HomeMitarbeiter({person, anfragen, onNeu, onNav}) {
+function HomeMitarbeiter({person, anfragen, schliesztage=[], onNeu, onNav}) {
   if (!person) return null;
   const offen = person.urlaub_anspruch - person.urlaub_verbraucht;
-  // Oktober-Hinweis: geplante UT-Abzüge im Oktober
-  const jetzt = new Date();
-  const istVorOktober = jetzt.getMonth() < 9; // vor Oktober (0-basiert)
-  const oktAbzug = 5;
-  const offenNachOkt = offen - (istVorOktober ? oktAbzug : 0);
   // Genehmigte Urlaube
   const urlaubeGenehmigt = anfragen.filter(a=>a.typ==="urlaub"&&a.status==="genehmigt");
+  // Hinweis auf bereits genehmigte, noch bevorstehende Urlaubstage. Diese sind
+  // bei der Genehmigung schon in urlaub_verbraucht abgezogen — "offen" ist also
+  // bereits der Rest, der noch frei verplant werden kann.
+  const h = heute();
+  const kommendeUT = urlaubeGenehmigt
+    .filter(a=>a.bis>=h)
+    .reduce((s,a)=>s+arbeitstage(a.von>h?a.von:h, a.bis, schliesztage).length, 0);
   // Krankenstand-Einträge (nur lesen)
   const krankenstaende = anfragen.filter(a=>a.typ==="krankenstand");
   const recent = [...anfragen.filter(a=>a.typ==="urlaub")].sort((a,b)=>b.erstellt.localeCompare(a.erstellt)).slice(0,3);
@@ -367,9 +369,9 @@ function HomeMitarbeiter({person, anfragen, onNeu, onNav}) {
       <div className="mt-4 bg-stone-100 rounded-full h-1.5 overflow-hidden">
         <div className="h-full bg-stone-800 rounded-full" style={{width:`${Math.min((person.urlaub_verbraucht/person.urlaub_anspruch)*100,100)}%`}}/>
       </div>
-      {istVorOktober && <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+      {kommendeUT>0 && <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
         <p className="text-xs text-amber-700 font-medium">
-          Du hast <span className="font-bold">{offen} UT</span> — bedenke, dass im Oktober noch <span className="font-bold">{oktAbzug} UT</span> abgezogen werden. Danach bleiben dir noch <span className="font-bold">{offenNachOkt} UT</span>.
+          Deine bereits genehmigten, noch bevorstehenden Urlaube (<span className="font-bold">{kommendeUT} UT</span>) sind schon abgezogen. Du hast noch <span className="font-bold">{offen} UT</span> zur freien Planung.
         </p>
       </div>}
       {urlaubeGenehmigt.length>0 && <div className="mt-3">
@@ -1440,7 +1442,7 @@ function App() {
           if (s==="neu-anfrage") { setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null}); setAnfrageScreen("typ"); }
           else setScreen(s);
         }}/>}
-        {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
+        {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} schliesztage={schliesztage} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
         {screen==="kalender"&&<Kalender anfragen={anfragen} team={team} monat={kalM} setMonat={setKalM} schliesztage={schliesztage}/>}
         {screen==="meine-anfragen"&&<MeineAnfragen anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}}/>}
         {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid}/>}
