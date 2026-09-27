@@ -54,19 +54,19 @@ async function sb(path, opts = {}) {
   return t ? JSON.parse(t) : null;
 }
 
+// ── Wörni-Meldungen über Serverfunktionen (Team-Repo, Migration 20260927100000) ──
+// Die App liest die Wörni-Tabellen nicht mehr selbst; „schon da? dann
+// aktualisieren, sonst anlegen“ erledigt der Server.
+async function ghdRpc(fn, args) {
+  await sb(`rpc/${fn}`, { method: 'POST', prefer: 'return=minimal', body: JSON.stringify(args) });
+}
+
 // ── GHD OS: Ereignis in zentrale ghd_ereignisse-Tabelle schreiben ──
 async function ghd_ereignisSchreiben(app, typ, titel, prioritaet, payload) {
   try {
-    const ex = await sb(`ghd_ereignisse?app=eq.${encodeURIComponent(app)}&typ=eq.${encodeURIComponent(typ)}&gelesen=eq.false&select=id`);
-    if (Array.isArray(ex) && ex.length > 0) {
-      await sb(`ghd_ereignisse?app=eq.${encodeURIComponent(app)}&typ=eq.${encodeURIComponent(typ)}&gelesen=eq.false`,
-        { method: 'PATCH', prefer: 'return=minimal',
-          body: JSON.stringify({ titel, prioritaet, erstellt_am: new Date().toISOString(), payload: payload || null }) });
-    } else {
-      await sb('ghd_ereignisse',
-        { method: 'POST', prefer: 'return=minimal',
-          body: JSON.stringify({ app, typ, titel, prioritaet, payload: payload || null, gelesen: false }) });
-    }
+    await ghdRpc('ghd_ereignis_melden', {
+      p_app: app, p_typ: typ, p_titel: titel, p_prioritaet: prioritaet, p_payload: payload || null
+    });
   } catch(e) { console.warn('ghd_ereignis fehlgeschlagen:', e); }
 }
 
@@ -1347,22 +1347,18 @@ function App() {
       const vonFmt = fmtD(von);
       const bisFmt = von !== bis ? ` – ${fmtD(bis)}` : "";
       try {
-        await sb("ghd_aufgaben", {
-          method: "POST",
-          prefer: "return=minimal",
-          body: JSON.stringify({
+        await ghdRpc('ghd_aufgabe_melden', {
+          p_signal_key: `abwesenheit_${personId}_${von}`,
+          p_daten: {
             typ: "entscheidung",
             titel: `${typLabel} von ${personName} prüfen`,
             naechster_schritt: `${typLabel} ${vonFmt}${bisFmt} genehmigen oder ablehnen`,
             verantwortlich: "mirjam",
             prioritaet: "wann-moeglich",
-            status: "neu",
             app_kontext: "abwesenheiten",
             fach_kontext: typ,
-            signal_key: `abwesenheit_${personId}_${von}`,
-            erstellt_von: personName,
-            erstellt_am: new Date().toISOString()
-          })
+            erstellt_von: personName
+          }
         });
       } catch(e) { console.warn("Wörni-Aufgabe konnte nicht erstellt werden:", e); }
 
