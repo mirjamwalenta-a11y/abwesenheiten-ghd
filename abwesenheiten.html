@@ -81,7 +81,7 @@ const api = {
   // abw_team_scoped maskiert Urlaubsstände/Eintrittsdatum fremder Zeilen serverseitig
   // (siehe rls_haertung_abw_team_spalten.sql) — die eigene Zeile und die Chefin sehen
   // dort weiterhin alles, ganz ohne dass der Client seine eigene Identität mitschicken muss.
-  getTeam: () => sb("abw_team_scoped?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum&order=name"),
+  getTeam: () => sb("abw_team_scoped?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum,ausgeschieden_am&order=name"),
   updatePerson: (id, d) => {
     if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personendaten ändern."));
     // return=minimal: keine Repräsentation der Zeile zurückholen — sonst schlägt jedes
@@ -116,9 +116,22 @@ const api = {
     // PIN-Spalte fehl, weil PostgREST standardmäßig alle Spalten zurückgeben will.
     return sb("abw_team?select=id,name,role,urlaub_anspruch,urlaub_verbraucht,eintrittsdatum", { method: "POST", body: JSON.stringify(d) });
   },
-  deletePerson: (id) => {
-    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personen entfernen."));
-    return sb(`abw_team?id=eq.${id}`, { method: "DELETE", prefer: "" });
+  // Ausgeschiedene werden markiert statt gelöscht: ihre Anfragen (Urlaub, Krankenstand)
+  // bleiben so für die Jahreskontrolle erhalten. Serverseitig erkennt
+  // abw_current_person_id() sie danach nicht mehr (ausgeschieden_mitarbeitende.sql).
+  setAusgeschieden: (id, datum) => {
+    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Personen als ausgeschieden markieren."));
+    return sb(`abw_team?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify({ ausgeschieden_am: datum }) });
+  },
+  deletePerson: async (id) => {
+    if (!_istChefin()) throw new Error("Nur die Chefin darf Personen entfernen.");
+    try {
+      return await sb(`abw_team?id=eq.${id}`, { method: "DELETE", prefer: "" });
+    } catch (e) {
+      if (/foreign key|23503/i.test(e.message))
+        throw new Error("Diese Person hat noch Anfragen (Urlaub, Krankenstand) und kann deshalb nicht gelöscht werden. Sie bleibt unter „Ausgeschieden“ mit allen Anfragen erhalten.");
+      throw e;
+    }
   },
 };
 
@@ -166,6 +179,8 @@ function fmtD(s) { return parseD(s).toLocaleDateString("de-AT",{day:"2-digit",mo
 function fmtM(y,m) { return new Date(y,m,1).toLocaleDateString("de-AT",{month:"long",year:"numeric"}); }
 function fmtZ(v,b) { return v===b ? fmtD(v) : `${fmtD(v)} – ${fmtD(b)}`; }
 function heute() { return datStr(new Date()); }
+// Aktiv = nicht als ausgeschieden markiert (siehe api.setAusgeschieden)
+function istAktiv(p) { return !p.ausgeschieden_am; }
 
 function tageZw(v,b) {
   const t=[];
@@ -247,7 +262,7 @@ function Login({team, onLogin}) {
         <p className="text-stone-500 text-sm mt-1">Wer bist du?</p>
       </div>
       <div className="flex flex-col gap-3">
-        {team.map(p=>(
+        {team.filter(istAktiv).map(p=>(
           <button key={p.id} onClick={()=>{setSel(p);setPin("");setErr(false);}}
             className="flex items-center gap-4 bg-white border border-stone-200 rounded-xl px-4 py-3.5 text-left hover:border-stone-400 hover:shadow-sm transition-all">
             <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
@@ -290,7 +305,7 @@ function Login({team, onLogin}) {
 
 // ─── ERÖFFNUNGSBUCHUNG ────────────────────────────────────────────────────────
 function Eroeffnung({team, onDone}) {
-  const ma = team.filter(p=>p.role==="employee");
+  const ma = team.filter(p=>p.role==="employee"&&istAktiv(p));
   const [w, setW] = useState(Object.fromEntries(ma.map(p=>[p.id,String(p.urlaub_verbraucht||0)])));
   const [saving, setSaving] = useState(false);
 
@@ -411,10 +426,10 @@ function HomeMitarbeiter({person, anfragen, schliesztage=[], onNeu, onNav}) {
 // ─── HOME INHABERIN ───────────────────────────────────────────────────────────
 function HomeInhaberin({anfragen, team, warnschwelle, onNav}) {
   const offen = anfragen.filter(a=>a.status==="ausstehend");
-  const warnungen = team.filter(p=>p.role==="employee")
+  const warnungen = team.filter(p=>p.role==="employee"&&istAktiv(p))
     .map(p=>({...p,rest:p.urlaub_anspruch-p.urlaub_verbraucht}))
     .filter(p=>p.rest>warnschwelle);
-  const faellig = team.filter(p=>p.role==="employee"&&p.eintrittsdatum).map(p=>{
+  const faellig = team.filter(p=>p.role==="employee"&&istAktiv(p)&&p.eintrittsdatum).map(p=>{
     const n=naechstesJubilaeum(p.eintrittsdatum);
     const tage=n?Math.ceil((n-new Date())/(1000*60*60*24)):null;
     return {...p,naechstes:n,tage};
@@ -537,7 +552,7 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
       {isOwner&&<div className="bg-white border border-stone-200 rounded-2xl p-4 flex flex-col gap-2">
         <p className="text-xs font-medium text-stone-400 uppercase tracking-widest mb-1">Für wen?</p>
         <div className="flex flex-wrap gap-2">
-          {team.map(p=>(
+          {team.filter(istAktiv).map(p=>(
             <button key={p.id} onClick={()=>setAnfrage(a=>({...a,fuerPerson:p.id}))}
               className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-medium transition-all ${anfrage.fuerPerson===p.id?"bg-stone-900 text-white border-stone-900":"bg-white text-stone-700 border-stone-200 hover:border-stone-400"}`}>
               <span className="w-6 h-6 rounded-full bg-stone-200 flex items-center justify-center text-xs font-bold">{p.name[0]}</span>
@@ -837,12 +852,18 @@ function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
 }
 
 // ─── URLAUBSSTÄNDE ────────────────────────────────────────────────────────────
-function Urlaubsstaende({team, warnschwelle}) {
+function Urlaubsstaende({team, warnschwelle, anfragen=[]}) {
+  const jahr = String(new Date().getFullYear());
+  // Tage einer Abwesenheitsart im laufenden Jahr (nur genehmigte), für Ausgeschiedene
+  const tageImJahr = (personId, typ) => anfragen
+    .filter(a=>a.person_id===personId&&a.typ===typ&&a.status==="genehmigt")
+    .reduce((s,a)=>s+tageZw(a.von,a.bis).filter(d=>d.startsWith(jahr)).length, 0);
+  const ehemalige = team.filter(p=>p.role==="employee"&&!istAktiv(p));
   return <div className="px-4 py-6 flex flex-col gap-4">
     <div><p className="text-xs text-stone-400 uppercase tracking-widest">Übersicht</p>
     <h2 className="text-2xl font-bold text-stone-900">Urlaubsstände {new Date().getFullYear()}</h2></div>
     <div className="flex flex-col gap-3">
-      {team.filter(p=>p.role==="employee").map(p=>{
+      {team.filter(p=>p.role==="employee"&&istAktiv(p)).map(p=>{
         const offen=p.urlaub_anspruch-p.urlaub_verbraucht, warn=offen>warnschwelle;
         return <div key={p.id} className={`bg-white border rounded-2xl p-5 ${warn?"border-amber-300 bg-amber-50":"border-stone-200"}`}>
           <div className="flex items-center justify-between mb-3">
@@ -866,6 +887,29 @@ function Urlaubsstaende({team, warnschwelle}) {
         </div>;
       })}
     </div>
+    {ehemalige.length>0&&<div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 pt-2">
+        <div className="flex-1 h-px bg-stone-200"/>
+        <p className="text-xs text-stone-400 uppercase tracking-widest">Ausgeschieden · Kontrolle {jahr}</p>
+        <div className="flex-1 h-px bg-stone-200"/>
+      </div>
+      {ehemalige.map(p=>(
+        <div key={p.id} className="bg-stone-50 border border-stone-200 rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="font-semibold text-stone-600">{p.name}</p>
+            <span className="text-xs text-stone-400">ausgeschieden {fmtD(p.ausgeschieden_am)}</span>
+          </div>
+          <div className="flex gap-4">
+            {[{v:p.urlaub_verbraucht,l:"Urlaub verbraucht"},{v:tageImJahr(p.id,"urlaub"),l:`Urlaubstage ${jahr} (App)`},{v:tageImJahr(p.id,"krankenstand"),l:`Krankenstand ${jahr}`}].map((x,i)=>(
+              <div key={i} className="flex-1 text-center">
+                <p className="text-lg font-bold text-stone-700">{x.v??"–"}</p>
+                <p className="text-stone-400 uppercase tracking-wide" style={{fontSize:"10px"}}>{x.l}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>}
     <p className="text-xs text-stone-400 text-center">Warnung ab {warnschwelle} Tagen offen</p>
   </div>;
 }
@@ -1099,7 +1143,7 @@ function Einstellungen({team, setTeam, schliesztage, setSchliesztage, warnschwel
     </div>
 
     {tab==="personen"&&<div className="flex flex-col gap-3">
-      <p className="text-xs text-stone-400 px-1">PIN, Eintrittsdatum und Urlaubstage anpassen. Mitarbeitende hinzufügen oder entfernen.</p>
+      <p className="text-xs text-stone-400 px-1">PIN, Eintrittsdatum und Urlaubstage anpassen. Mitarbeitende hinzufügen oder als ausgeschieden markieren.</p>
 
       {/* Inhaberin eigener PIN */}
       {team.filter(p=>p.role==="owner").map(p=>(
@@ -1119,16 +1163,40 @@ function Einstellungen({team, setTeam, schliesztage, setSchliesztage, warnschwel
         <div className="flex-1 h-px bg-stone-200"/>
       </div>
 
-      {team.filter(p=>p.role==="employee").map(p=>(
+      {team.filter(p=>p.role==="employee"&&istAktiv(p)).map(p=>(
         <div key={p.id} className="relative">
           <PersonKarte person={p} onUpdate={u=>setTeam(prev=>prev.map(x=>x.id===p.id?{...x,...u}:x))}/>
           <button onClick={async()=>{
-            if (!confirm(`${p.name} wirklich löschen? Alle Anfragen dieser Person bleiben erhalten.`)) return;
-            try { await api.deletePerson(p.id); setTeam(prev=>prev.filter(x=>x.id!==p.id)); }
+            if (!confirm(`${p.name} als ausgeschieden markieren?\n\nUrlaube und Krankenstände bleiben erhalten (Urlaubsstände → „Ausgeschieden“). ${p.name} verschwindet aus der Login-Auswahl und kann keine Anfragen mehr stellen.\n\nWichtig: den Supabase-Login zusätzlich sperren.`)) return;
+            try { const d=heute(); await api.setAusgeschieden(p.id, d); setTeam(prev=>prev.map(x=>x.id===p.id?{...x,ausgeschieden_am:d}:x)); }
             catch(e) { alert("Fehler: "+e.message); }
-          }} className="absolute top-4 right-4 text-xs text-rose-400 hover:text-rose-600 font-medium">Löschen</button>
+          }} className="absolute top-4 right-4 text-xs text-rose-400 hover:text-rose-600 font-medium">Ausgeschieden</button>
         </div>
       ))}
+
+      {team.some(p=>p.role==="employee"&&!istAktiv(p))&&<>
+        <div className="flex items-center gap-2 pt-2">
+          <div className="flex-1 h-px bg-stone-200"/>
+          <p className="text-xs text-stone-400 uppercase tracking-widest">Ausgeschieden</p>
+          <div className="flex-1 h-px bg-stone-200"/>
+        </div>
+        {team.filter(p=>p.role==="employee"&&!istAktiv(p)).map(p=>(
+          <div key={p.id} className="bg-stone-50 border border-stone-200 rounded-2xl px-4 py-3 flex items-center gap-3">
+            <div className="flex-1"><p className="font-semibold text-stone-600 text-sm">{p.name}</p>
+            <p className="text-xs text-stone-400">ausgeschieden {fmtD(p.ausgeschieden_am)}</p></div>
+            <button onClick={async()=>{
+              if (!confirm(`${p.name} wieder als aktiv führen?`)) return;
+              try { await api.setAusgeschieden(p.id, null); setTeam(prev=>prev.map(x=>x.id===p.id?{...x,ausgeschieden_am:null}:x)); }
+              catch(e) { alert("Fehler: "+e.message); }
+            }} className="text-xs text-stone-500 hover:text-stone-800 font-medium">Wieder aktiv</button>
+            <button onClick={async()=>{
+              if (!confirm(`${p.name} endgültig löschen? Geht nur, wenn es keine Anfragen mehr gibt.`)) return;
+              try { await api.deletePerson(p.id); setTeam(prev=>prev.filter(x=>x.id!==p.id)); }
+              catch(e) { alert(e.message); }
+            }} className="text-xs text-rose-400 hover:text-rose-600 font-medium">Löschen</button>
+          </div>
+        ))}
+      </>}
 
       <NeueMitarbeiterinKarte onAdd={async(d)=>{
         const r = await api.addPerson(d);
@@ -1442,7 +1510,7 @@ function App() {
         {screen==="kalender"&&<Kalender anfragen={anfragen} team={team} monat={kalM} setMonat={setKalM} schliesztage={schliesztage}/>}
         {screen==="meine-anfragen"&&<MeineAnfragen anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}}/>}
         {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid}/>}
-        {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle}/>}
+        {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle} anfragen={anfragen}/>}
         {screen==="einstellungen"&&isOwner&&<Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} sperrzeiten={sperrzeiten} setSperrzeiten={setSperrzeiten}/>}
       </main>
 
