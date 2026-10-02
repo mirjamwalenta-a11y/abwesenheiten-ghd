@@ -100,15 +100,22 @@ const api = {
     }
     return sb("abw_anfragen", { method: "POST", body: JSON.stringify(d) });
   },
-  updateAnfrage: (id, d) => {
-    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf über Anfragen entscheiden."));
-    return sb(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) });
+  // Lehnt die Datenbank (RLS) eine Änderung ab, antwortet sie nicht mit einem Fehler,
+  // sondern einfach mit 0 geänderten Zeilen — das wäre sonst ein stilles "hat nicht
+  // geklappt", das erst beim nächsten Neuladen auffällt.
+  updateAnfrage: async (id, d) => {
+    if (!_istChefin()) throw new Error("Nur die Chefin darf über Anfragen entscheiden.");
+    const r = await sb(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) });
+    if (!r || r.length === 0) throw new Error("Die Datenbank hat die Änderung nicht übernommen (keine Berechtigung für diesen Eintrag).");
+    return r;
   },
   // Löschen ist serverseitig per RLS (abw_anfragen_delete → abw_is_owner()) abgesichert;
   // die Prüfung hier blendet nur früh aus.
-  deleteAnfrage: (id) => {
-    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Einträge löschen."));
-    return sb(`abw_anfragen?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+  deleteAnfrage: async (id) => {
+    if (!_istChefin()) throw new Error("Nur die Chefin darf Einträge löschen.");
+    const r = await sb(`abw_anfragen?id=eq.${id}`, { method: "DELETE" });
+    if (!r || r.length === 0) throw new Error("Die Datenbank hat das Löschen nicht übernommen (keine Berechtigung für diesen Eintrag).");
+    return r;
   },
   getEinstellungen: () => sb("abw_einstellungen"),
   setEinstellung: (k, v) => {
