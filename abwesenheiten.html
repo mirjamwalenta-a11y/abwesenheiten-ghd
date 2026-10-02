@@ -104,6 +104,12 @@ const api = {
     if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf über Anfragen entscheiden."));
     return sb(`abw_anfragen?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(d) });
   },
+  // Löschen ist serverseitig per RLS (abw_anfragen_delete → abw_is_owner()) abgesichert;
+  // die Prüfung hier blendet nur früh aus.
+  deleteAnfrage: (id) => {
+    if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Einträge löschen."));
+    return sb(`abw_anfragen?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+  },
   getEinstellungen: () => sb("abw_einstellungen"),
   setEinstellung: (k, v) => {
     if (!_istChefin()) return Promise.reject(new Error("Nur die Chefin darf Einstellungen ändern."));
@@ -537,7 +543,8 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
   async function submit() {
     setSaving(true);
     try {
-      const pid = isOwner ? (anfrage.fuerPerson||currentUser.id) : currentUser.id;
+      if (isOwner && !anfrage.fuerPerson) throw new Error("Bitte zuerst auswählen, für wen der Eintrag ist.");
+      const pid = isOwner ? anfrage.fuerPerson : currentUser.id;
       await onSubmit(anfrage.typ, anfrage.von, anfrage.bis, pid);
     } catch(e) { alert("Fehler: "+e.message); setSaving(false); }
   }
@@ -565,12 +572,12 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
         {typen.map(typ=>(
           <button key={typ.id}
             onClick={()=>{ setAnfrage(a=>({...a,typ:typ.id})); setScreen("datum"); }}
-            disabled={isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson}
-            className={`bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 hover:border-stone-400 hover:shadow-sm transition-all text-left ${isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson?"opacity-40 cursor-not-allowed":""}`}>
+            disabled={isOwner&&!anfrage.fuerPerson}
+            className={`bg-white border border-stone-200 rounded-2xl px-5 py-4 flex items-center gap-4 hover:border-stone-400 hover:shadow-sm transition-all text-left ${isOwner&&!anfrage.fuerPerson?"opacity-40 cursor-not-allowed":""}`}>
             <span className="text-2xl">{typ.icon}</span>
             <div className="flex-1">
               <p className="font-semibold text-stone-800">{typ.label}</p>
-              {isOwner&&typ.id==="sonstige"&&!anfrage.fuerPerson&&<p className="text-xs text-stone-400">Erst Person auswählen</p>}
+              {isOwner&&!anfrage.fuerPerson&&<p className="text-xs text-stone-400">Erst Person auswählen</p>}
             </div>
             <span className="text-stone-300 text-lg">›</span>
           </button>
@@ -667,7 +674,7 @@ function AnfrageFlow({anfrage, setAnfrage, screen, setScreen, genehmigteUrlaube,
         </div>
         {isOwner ? (
           <div className="flex flex-col gap-2">
-            <button onClick={async()=>{setSaving(true);try{const pid=anfrage.fuerPerson||currentUser.id;await onSubmit(anfrage.typ,anfrage.von,anfrage.bis,pid,true);}catch(e){alert("Fehler: "+e.message);setSaving(false);}}}
+            <button onClick={async()=>{setSaving(true);try{if(!anfrage.fuerPerson)throw new Error("Bitte zuerst auswählen, für wen der Eintrag ist.");const pid=anfrage.fuerPerson;await onSubmit(anfrage.typ,anfrage.von,anfrage.bis,pid,true);}catch(e){alert("Fehler: "+e.message);setSaving(false);}}}
               disabled={saving}
               className="w-full bg-stone-900 text-white rounded-2xl py-4 font-semibold hover:bg-stone-800 transition-colors disabled:opacity-50">
               {saving?"Wird gespeichert…":"✓ Direkt eintragen (genehmigt)"}
@@ -783,11 +790,28 @@ function MeineAnfragen({anfragen, onNeu}) {
 }
 
 // ─── ANFRAGEN INHABERIN ───────────────────────────────────────────────────────
-function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
+function AnfragenOw({anfragen, team, schliesztage, onEntscheid, onPersonAendern, onLoeschen}) {
   const [tab, setTab] = useState("offen");
   const offen=anfragen.filter(a=>a.status==="ausstehend").sort((a,b)=>a.erstellt.localeCompare(b.erstellt));
   const erl=anfragen.filter(a=>a.status!=="ausstehend").sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
   const [deciding, setDeciding] = useState(null);
+
+  const [bearbeite, setBearbeite] = useState(null);
+
+  async function personAendern(a, pid) {
+    if (!pid || pid===a.person_id) { setBearbeite(null); return; }
+    setDeciding(a.id);
+    try { await onPersonAendern(a.id, pid); setBearbeite(null); } catch(e) { alert("Fehler: "+e.message); }
+    setDeciding(null);
+  }
+
+  async function loeschen(a) {
+    const name = team.find(p=>p.id===a.person_id)?.name || "";
+    if (!confirm(`${getTyp(a.typ)?.label} von ${name} (${fmtZ(a.von,a.bis)}) wirklich löschen?`)) return;
+    setDeciding(a.id);
+    try { await onLoeschen(a.id); } catch(e) { alert("Fehler: "+e.message); }
+    setDeciding(null);
+  }
 
   async function entscheid(id, status) {
     setDeciding(id);
@@ -845,6 +869,23 @@ function AnfragenOw({anfragen, team, schliesztage, onEntscheid}) {
           </div>
           <p className="text-xs text-stone-500">{getTyp(a.typ)?.icon} {getTyp(a.typ)?.label} · {fmtZ(a.von,a.bis)}</p>
           <p className="text-xs text-stone-400 mt-1">Eingereicht {fmtD(a.erstellt)}</p>
+          {bearbeite===a.id
+            ? <div className="flex flex-col gap-2 mt-3 pt-3 border-t border-stone-100">
+                <p className="text-xs text-stone-400">Eintrag gehört zu:</p>
+                <div className="flex flex-wrap gap-2">
+                  {team.filter(p=>istAktiv(p)||p.id===a.person_id).map(p=>(
+                    <button key={p.id} onClick={()=>personAendern(a,p.id)} disabled={deciding===a.id}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-medium disabled:opacity-50 ${a.person_id===p.id?"bg-stone-900 text-white border-stone-900":"bg-white text-stone-700 border-stone-200 hover:border-stone-400"}`}>
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={()=>setBearbeite(null)} className="text-xs text-stone-400 underline self-start">Abbrechen</button>
+              </div>
+            : <div className="flex gap-3 mt-3 pt-3 border-t border-stone-100">
+                <button onClick={()=>setBearbeite(a.id)} disabled={deciding===a.id} className="text-xs font-medium text-stone-500 hover:text-stone-800 disabled:opacity-50">✎ Person ändern</button>
+                <button onClick={()=>loeschen(a)} disabled={deciding===a.id} className="text-xs font-medium text-rose-500 hover:text-rose-700 disabled:opacity-50">{deciding===a.id?"…":"🗑 Löschen"}</button>
+              </div>}
         </div>
       ))}</div>
     )}
@@ -1470,6 +1511,37 @@ function App() {
     }
   }
 
+  // Urlaubsstand nachziehen, wenn ein genehmigter Urlaub einer Person zu- oder abgeht.
+  async function urlaubVerbuchen(personId, delta) {
+    const person = team.find(p=>p.id===personId);
+    if (!person || !delta) return;
+    const neu = Math.max(0, (person.urlaub_verbraucht||0) + delta);
+    await api.updatePerson(person.id, {urlaub_verbraucht: neu});
+    setTeam(prev=>prev.map(p=>p.id===person.id?{...p,urlaub_verbraucht:neu}:p));
+  }
+
+  async function handlePersonAendern(id, neuePid) {
+    const anfrage = anfragen.find(a=>a.id===id);
+    if (!anfrage) return;
+    await api.updateAnfrage(id, {person_id: neuePid});
+    setAnfragen(prev=>prev.map(a=>a.id===id?{...a,person_id:neuePid}:a));
+    if (anfrage.typ==="urlaub" && anfrage.status==="genehmigt") {
+      const tage = arbeitstage(anfrage.von, anfrage.bis, schliesztage).length;
+      await urlaubVerbuchen(anfrage.person_id, -tage);
+      await urlaubVerbuchen(neuePid, tage);
+    }
+  }
+
+  async function handleLoeschen(id) {
+    const anfrage = anfragen.find(a=>a.id===id);
+    if (!anfrage) return;
+    await api.deleteAnfrage(id);
+    setAnfragen(prev=>prev.filter(a=>a.id!==id));
+    if (anfrage.typ==="urlaub" && anfrage.status==="genehmigt") {
+      await urlaubVerbuchen(anfrage.person_id, -arbeitstage(anfrage.von, anfrage.bis, schliesztage).length);
+    }
+  }
+
   const navItems = isOwner
     ? [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"anfragen",l:"Anfragen",i:"◎",b:offeneAnfragen.length},{id:"urlaubsstaende",l:"Urlaub",i:"▦"}]
     : [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"meine-anfragen",l:"Anfragen",i:"◎"}];
@@ -1509,7 +1581,7 @@ function App() {
         {screen==="home"&&!isOwner&&<HomeMitarbeiter person={team.find(p=>p.id===user.id)} anfragen={meinAnfragen} schliesztage={schliesztage} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}} onNav={setScreen}/>}
         {screen==="kalender"&&<Kalender anfragen={anfragen} team={team} monat={kalM} setMonat={setKalM} schliesztage={schliesztage}/>}
         {screen==="meine-anfragen"&&<MeineAnfragen anfragen={meinAnfragen} onNeu={()=>{setNeueAnfrage({typ:null,von:null,bis:null,fuerPerson:null});setAnfrageScreen("typ");}}/>}
-        {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid}/>}
+        {screen==="anfragen"&&isOwner&&<AnfragenOw anfragen={anfragen} team={team} schliesztage={schliesztage} onEntscheid={handleEntscheid} onPersonAendern={handlePersonAendern} onLoeschen={handleLoeschen}/>}
         {screen==="urlaubsstaende"&&isOwner&&<Urlaubsstaende team={team} warnschwelle={warnschwelle} anfragen={anfragen}/>}
         {screen==="einstellungen"&&isOwner&&<Einstellungen team={team} setTeam={setTeam} schliesztage={schliesztage} setSchliesztage={setSchliesztage} warnschwelle={warnschwelle} setWarnschwelle={setWarnschwelle} sperrzeiten={sperrzeiten} setSperrzeiten={setSperrzeiten}/>}
       </main>
