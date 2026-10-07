@@ -107,6 +107,8 @@ Am Tablet: Name antippen → PIN → Kommen / Pause / Gehen. Der Server prüft d
 
 ## 6. Offene Fragen an dich
 
+- **Ausgetretene im Beschäftigungsstand:** geklärt – offene Tage mit „(Ersatzleistung)“, nicht „UT 0“.
+
 - **Urlaubsjahr:** geklärt – **Arbeitsjahr ab dem Eintrittsdatum** (neuer Anspruch am Jahrestag, Rest wird übertragen). Im ersten Halbjahr und bei Austritt anteilig nach Tagen. Beim Umstieg je Person ein Startbestand „offener Urlaub am Stichtag“. Der Jahresabschluss zeigt die offenen Tage am 31.12. im jeweils laufenden Urlaubsjahr.
 
 1. **Vorgesetzte:** Gibt es neben dir eine Salonleitung, die Urlaub genehmigen soll? Dafür muss eine bestehende Policy von `abw_anfragen` erweitert werden (im SQL auskommentiert vorbereitet).
