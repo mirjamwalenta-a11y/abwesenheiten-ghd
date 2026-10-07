@@ -470,7 +470,8 @@ function jahresDaten(db, jahr) {
     const faelle = db.abwesenheiten.filter(a => a.maId === m.id && KRANK_ARTEN.includes(a.art) && wirksam(a) && a.von <= stichtag && (a.bis || heute()) >= von);
     const krankAT = tageZw(von, stichtag).filter(d => { const a = abwAm(db, m.id, d); return a && KRANK_ARTEN.includes(a.art) && sollMin(db, m, d) > 0; }).length;
     const arztMin = db.abwesenheiten.filter(a => a.maId === m.id && a.art === "arzt" && wirksam(a) && a.von >= von && a.von <= stichtag).reduce((s, a) => s + (+a.minuten || 0), 0);
-    return { m, ausgetreten, stichtag, anspruchJahr: k.anspruch, anspruch, aliquot, uebertrag: k.uebertrag, verbraucht, offen,
+    const arbeitstage = tageZw(start, stichtag).filter(d => sollMin(db, m, d) > 0).length;
+    return { m, ausgetreten, stichtag, start, arbeitstageOhneUrlaub: Math.max(0, arbeitstage - verbraucht), anspruchJahr: k.anspruch, anspruch, aliquot, uebertrag: k.uebertrag, verbraucht, offen,
       krankKT: abwKalendertage(db, m, ["krank"], von, stichtag), unfallKT: abwKalendertage(db, m, ["unfall"], von, stichtag), krankAT, faelle,
       pflegeKT: abwKalendertage(db, m, ["pflege"], von, stichtag), arztMin, konto: zeitkonto(db, m, stichtag < heute() ? stichtag : heute()) };
   });
@@ -478,6 +479,12 @@ function jahresDaten(db, jahr) {
   return { jahr, von, bis, zeilen, stand0101: amStichtag(von), stand3112: amStichtag(bis),
     eintritte: personen.filter(m => m.eintritt >= von && m.eintritt <= bis).length, austritte: zeilen.filter(z => z.ausgetreten).length,
     vorlaeufig: bis >= heute() };
+}
+
+// „26.01.2024“ bzw. „16.08. - 17.08.2024“ (wie im bisherigen Beschäftigungsstand)
+function fmtZrKurz(v, b) {
+  if (!b || v === b) return fmtD(v);
+  return v.slice(0, 4) === b.slice(0, 4) ? `${fmtD(v).slice(0, 6)} - ${fmtD(b)}` : `${fmtD(v)} - ${fmtD(b)}`;
 }
 
 const STAMM_FELDER = { name: "Name", personalnr: "Personalnummer", abteilung: "Abteilung", funktion: "Funktion", eintritt: "Eintritt", modellId: "Dienstplan",
@@ -2033,6 +2040,30 @@ function Auswertungen({ ctx }) {
     X.writeFile(wb, `Jahresabschluss_${jahr}_Mitarbeiter.xlsx`);
     setLaedt(false);
   }
+  // Beschäftigungsstand im Format, das der Steuerberater bisher bekommt
+  async function beschaeftigungsstand() {
+    setLaedt(true);
+    let X;
+    try { X = await ladeXlsx(); } catch (e) { setLaedt(false); alert("Excel konnte nicht geladen werden (keine Internetverbindung?)."); return; }
+    const jd = jahresDaten(db, jahr), tageJahr = tageZw(jd.von, jd.bis).length;
+    const rows = [[], ["BESCHÄFTIGUNGSSTAND:", "", "", "Wochen: 52", `Tage: ${tageJahr}`], [jahr], ["Angestellte: ", "AT:", "UT:", "Resttage", "Krankstandstage:"], ["", "ohne UT", "", "Urlaub"], [], []];
+    jd.zeilen.forEach(z => {
+      const kt = z.faelle.slice().sort((a, b) => a.von.localeCompare(b.von)).map(a => {
+        const v = a.von < jd.von ? jd.von : a.von, b = (a.bis || heute()) > z.stichtag ? z.stichtag : (a.bis || heute());
+        return fmtZrKurz(v, b) + (a.art === "unfall" ? " (Arbeitsunfall)" : "");
+      });
+      const ktText = kt.length ? `${kt.join(", ")}  (gesamt ${z.krankKT + z.unfallKT} KT)` : 0;
+      rows.push([z.m.name, z.arbeitstageOhneUrlaub, `${fmtTage(z.anspruch)} UT`, `UT ${fmtTage(z.offen)}${z.ausgetreten && z.offen > 0 ? " (Ersatzleistung)" : ""}`, ktText]);
+      rows.push([z.ausgetreten ? `${fmtD(z.m.eintritt)} - ${fmtD(z.m.austritt)}` : fmtD(z.m.eintritt)]);
+      rows.push([], []);
+    });
+    if (jd.vorlaeufig) rows.push([`VORLÄUFIG – Stand ${fmtD(heute())}, genehmigter Urlaub bis 31.12. eingerechnet`]);
+    const wb = X.utils.book_new(), ws = X.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [38, 18.7, 13.6, 16.7, 81].map(w => ({ wch: w }));
+    X.utils.book_append_sheet(wb, ws, "Tabelle1");
+    X.writeFile(wb, `Beschaeftigungsstand_${jahr}.xlsx`);
+    setLaedt(false);
+  }
   const mitUS = db.einstellungen.ueberstunden;
   const zt = (v, vz) => <span className={vz ? (v > 0 ? "text-emerald-700" : v < 0 ? "text-rose-700" : "") : ""}>{fmtH(v, vz)}</span>;
 
@@ -2053,8 +2084,9 @@ function Auswertungen({ ctx }) {
       <p className="mt-2 text-[13px] opacity-90">Pro Person: Mitarbeiterstand mit Ein- und Austritt, Urlaub (Anspruch, verbraucht, <b>offen am 31.12.</b>), Krankenstände mit allen Fällen, Arbeitsunfälle, Pflegefreistellung, Arztbesuche und Zeitkonto. Wer im Jahr ausgetreten ist, steht mit dem Stand zum letzten Arbeitstag drin.</p>
       {jd.vorlaeufig && <p className="mt-2 text-xs rounded-lg bg-white/15 px-3 py-2">Vorläufig: Das Jahr läuft noch. Genehmigter Urlaub bis 31.12. ist schon eingerechnet – nach dem 31.12. noch einmal herunterladen.</p>}
       <div className="mt-4 flex flex-wrap gap-2">
-        <button onClick={jahresExcel} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">⬇️ Excel für den Steuerberater</button>
-        <button onClick={() => setDruck("jahr")} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50">🖨️ Als PDF</button>
+        <button onClick={beschaeftigungsstand} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">⬇️ Beschäftigungsstand {jahr} (wie bisher)</button>
+        <button onClick={jahresExcel} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25 disabled:opacity-60">⬇️ Ausführlich (Excel)</button>
+        <button onClick={() => setDruck("jahr")} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25">🖨️ Als PDF</button>
       </div>
     </section>; })()}
 
