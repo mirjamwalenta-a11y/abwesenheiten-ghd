@@ -104,7 +104,7 @@ Am Tablet: Name antippen → PIN → Kommen / Pause / Gehen. Der Server prüft d
 
 1. **Vorgesetzte:** Gibt es neben dir eine Salonleitung, die Urlaub genehmigen soll? Dafür muss eine bestehende Policy von `abw_anfragen` erweitert werden (im SQL auskommentiert vorbereitet).
 2. **Dienstpläne:** geklärt – fixer Plan, keine Überstunden. Öffnungszeiten: So + Mo geschlossen, Di + Mi 9–18, Do + Fr 9–19, Sa 8–14, Di–Fr je 1 h Pause (= 40 h). Derzeit keine Teilzeit; eigene Pläne pro Person sind möglich.
-3. **Pausen-Vereinbarung:** Steht die Pause (Dauer, Zeitfenster) schriftlich im Dienstvertrag? Das ist die Voraussetzung, dass Pausen automatisch eingetragen werden dürfen.
+3. **Pausen-Vereinbarung:** Es gibt nur den Kollektivvertrag, keinen eigenen Dienstvertrag. Daher ist die automatische Pause vorerst **aus** (Einstellung „Schriftliche Pausen-Vereinbarung liegt vor“); Pausen werden gestempelt. Mit einer kurzen schriftlichen Pausen-Vereinbarung je Person (§ 26 Abs 5 AZG) kann sie eingeschaltet werden. Außerdem prüfen: Dienstzettel nach § 2 AVRAG (Pflicht, auch ohne Dienstvertrag).
 4. **Lehrlinge:** geklärt – Wien 1. Lj. 1,5 Tage, 2./3. Lj. 1 Tag; Schultage fix je Lehrling; unter/über 18 automatisch über das Geburtsdatum.
 5. **Krankenstand mit offenem Ende:** In `abw_anfragen` ist `bis` heute Pflicht. Offenes Ende erlauben (dann muss die Abwesenheiten-App damit umgehen) oder „voraussichtliches Ende“ eintragen?
 6. **Datenschutz im Kalender:** Die Abwesenheiten-App zeigt allen genehmigte Einträge inkl. Art. Sollen Kolleg/innen „Krankenstand“ weiterhin sehen oder nur „abwesend“ (so macht es der Prototyp)?

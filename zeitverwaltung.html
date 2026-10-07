@@ -68,7 +68,7 @@ const { useState, useEffect, useMemo } = React;
 //  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
 //  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
 // ═════════════════════════════════════════════════════════════════════════════
-const LS_KEY = "ghd-zeitverwaltung-demo-v5";
+const LS_KEY = "ghd-zeitverwaltung-demo-v6";
 const SESS_KEY = "ghd-zeitverwaltung-demo-user";
 
 // ─── DATUM & ZEIT ─────────────────────────────────────────────────────────────
@@ -191,6 +191,7 @@ const STANDARD_EINSTELLUNGEN = {
   oeffnungszeiten: [null, { b: "09:00", e: "18:00" }, { b: "09:00", e: "18:00" }, { b: "09:00", e: "19:00" }, { b: "09:00", e: "19:00" }, { b: "08:00", e: "14:00" }, null],
   // Fixer Dienstplan: vergessenes Stempeln und Pausen automatisch laut Plan ergänzen
   autoPause: true,             // Pause laut Plan eintragen, wenn keine (ausreichende) gestempelt wurde
+  pausenVereinbarung: false,   // § 26 Abs 5 AZG: schriftliche Pausen-Vereinbarung je Person liegt vor?
   autoGehen: true,             // vergessenes „Gehen“ = Dienstende laut Plan
   autoFehltag: true,           // gar nicht gestempelt = Arbeitszeit laut Plan
   ueberstunden: false,         // Überstunden/Mehrarbeit vorgesehen? (fixer Plan: nein)
@@ -241,6 +242,9 @@ function pauseFehlt(db, ma, z) {
 function oeffnung(db, d) { return (db.einstellungen.oeffnungszeiten || [])[wd(d)] || null; }
 // Liegt ein Dienstplan-Tag außerhalb der Öffnungszeiten?
 function ausserhalbOeffnung(oz, i, t) { if (!t) return false; const o = oz?.[i]; return !o || t.b < o.b || t.e > o.e; }
+// Automatische Pausen nur mit schriftlicher Pausen-Vereinbarung (§ 26 Abs 5 AZG) –
+// sonst muss die Pause gestempelt werden und fehlende Pausen werden als Fehler gezeigt.
+function autoPauseAktiv(e) { return !!(e.autoPause && e.pausenVereinbarung); }
 const AUTO_TEXT = { kommen: "Kommen", gehen: "Gehen", pause: "Pause", tag: "ganzer Tag" };
 
 function sollMin(db, ma, d) {
@@ -465,7 +469,7 @@ function automatik(n) {
         if (z.pauseStart) { z.pause += Math.max(0, hm2min(z.ende) - hm2min(z.pauseStart)); z.pauseStart = null; }
         z.auto = [...(z.auto || []), "gehen"]; log(ma, d, "Gehen", alt, { beginn: z.beginn, ende: z.ende, pause: z.pause });
       }
-      if (e.autoPause && pauseFehlt(n, ma, z)) {
+      if (autoPauseAktiv(e) && pauseFehlt(n, ma, z)) {
         const alt = { beginn: z.beginn, ende: z.ende, pause: z.pause };
         z.pause = Math.max(+plan.p || 0, e.pauseMin);
         z.auto = [...(z.auto || []), "pause"]; log(ma, d, "Pause", alt, { beginn: z.beginn, ende: z.ende, pause: z.pause });
@@ -494,7 +498,7 @@ function stempelBuchen(n, ma, aktion) {
     x.ende = t;
     let msg = `${vn}: Gehen ${t}`;
     if (x.auto?.includes("kommen")) msg += ` · Beginn ${x.beginn} laut Plan`;
-    if (n.einstellungen.autoPause && pauseFehlt(n, ma, x)) {
+    if (autoPauseAktiv(n.einstellungen) && pauseFehlt(n, ma, x)) {
       x.pause = Math.max(+plan?.p || 0, n.einstellungen.pauseMin);
       x.auto = [...(x.auto || []), "pause"];
       msg += ` · Pause ${x.pause} min laut Plan eingetragen`;
@@ -913,7 +917,7 @@ function Terminal({ db, aendern, onEnde }) {
             <button className={`${gross} bg-stone-900 text-white`} onClick={() => buchen(m, "gehen")}><Icon n="stopp" className="w-6 h-6" />Gehen</button></>}
           {(st.k === "fertig" || st.k === "abw") && <p className="text-stone-600">{st.k === "fertig" ? "Heute schon ausgestempelt. Änderungen bitte über die Zeiterfassung." : `Heute eingetragen: ${st.text}.`}</p>}
         </div>}
-        {db.einstellungen.autoPause && (st.k === "da" || st.k === "pause") && <p className="mt-4 text-sm text-stone-500">Pause nicht gestempelt? Beim Gehen wird sie laut Dienstplan eingetragen.</p>}
+        {autoPauseAktiv(db.einstellungen) && (st.k === "da" || st.k === "pause") && <p className="mt-4 text-sm text-stone-500">Pause nicht gestempelt? Beim Gehen wird sie laut Dienstplan eingetragen.</p>}
       </div>
     </div>}
   </div>;
@@ -944,7 +948,7 @@ function Stempeluhr({ ctx }) {
       <div><div className="text-lg font-semibold tabular leading-none">{pauseBisher} min</div><div className="text-xs opacity-80 mt-1">Pause{plan?.p ? ` (Plan ${plan.p})` : ""}</div></div>
     </div>
     {zustand !== "aus" && zustand !== "fertig" && netto > pauseAb - 30 && pauseBisher < db.einstellungen.pauseMin &&
-      <div className="mt-4 rounded-xl bg-white/15 px-3 py-2.5 text-[13px]">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({kj ? "§ 15 KJBG" : "§ 11 AZG"}).{db.einstellungen.autoPause ? " Wird keine Pause gestempelt, trägt die App beim Gehen die Pause laut Plan ein." : ""}</div>}
+      <div className="mt-4 rounded-xl bg-white/15 px-3 py-2.5 text-[13px]">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({kj ? "§ 15 KJBG" : "§ 11 AZG"}).{autoPauseAktiv(db.einstellungen) ? " Wird keine Pause gestempelt, trägt die App beim Gehen die Pause laut Plan ein." : " Bitte die Pause stempeln."}</div>}
     <div className="mt-5 flex flex-wrap items-center gap-2 no-print">
       {zustand === "aus" && <button className={`${weiss} bg-white text-gold-700 hover:bg-stone-50`} onClick={() => stempel("kommen")} disabled={gesperrt(db, user.id, d)}>Kommen</button>}
       {kommenVergessen && <button className={`${weiss} bg-white/15 text-white hover:bg-white/25`} onClick={() => stempel("nurGehen")} title={`Beginn wird laut Plan (${plan.b}) eingetragen`}>Gehen (Kommen vergessen)</button>}
@@ -1996,16 +2000,21 @@ function Einstellungen({ ctx }) {
       <div className="grid md:grid-cols-2 gap-x-8 gap-y-3">
         {[
           ["autoGehen", "Vergessenes „Gehen“ ergänzen", "Dienstende laut Plan eintragen"],
-          ["autoPause", "Pause automatisch eintragen", "wenn keine oder zu kurze Pause gestempelt wurde – Dauer laut Plan"],
           ["autoFehltag", "Ganz vergessene Tage ergänzen", "Arbeitstag ohne Stempelung und ohne Abwesenheit = Arbeitszeit laut Plan"],
           ["ueberstunden", "Überstunden / Mehrarbeit vorgesehen", "aus: Auswertungen ohne Überstunden; längere Tage werden als Hinweis markiert"],
         ].map(([k, t, h]) => <label key={k} className="flex items-start gap-3 text-sm">
           <input type="checkbox" className="mt-1" disabled={!admin} checked={!!e[k]} onChange={ev => setE(k, ev.target.checked)} />
           <span><span className="font-medium">{t}</span><span className="block text-xs text-stone-500">{h}</span></span></label>)}
+        <label className="flex items-start gap-3 text-sm">
+          <input type="checkbox" className="mt-1" disabled={!admin} checked={!!e.pausenVereinbarung} onChange={ev => setE("pausenVereinbarung", ev.target.checked)} />
+          <span><span className="font-medium">Schriftliche Pausen-Vereinbarung liegt vor</span><span className="block text-xs text-stone-500">mit jeder Person unterschrieben (§ 26 Abs 5 AZG) – erst dann dürfen Pausen automatisch eingetragen werden</span></span></label>
+        <label className={`flex items-start gap-3 text-sm ${e.pausenVereinbarung ? "" : "opacity-50"}`}>
+          <input type="checkbox" className="mt-1" disabled={!admin || !e.pausenVereinbarung} checked={autoPauseAktiv(e)} onChange={ev => setE("autoPause", ev.target.checked)} />
+          <span><span className="font-medium">Pause automatisch eintragen</span><span className="block text-xs text-stone-500">{e.pausenVereinbarung ? "wenn keine oder zu kurze Pause gestempelt wurde – Dauer laut Plan" : "derzeit aus: Pausen werden gestempelt, fehlende Pausen erscheinen als Hinweis zum Korrigieren"}</span></span></label>
         <Feld label="Hinweis ab (Minuten über Plan)"><input type="number" className={inputCls} disabled={!admin} value={e.planToleranzMin} onChange={ev => setE("planToleranzMin", +ev.target.value)} /></Feld>
       </div>
       <div className="mt-4"><Hinweis>
-        Bei fixer Arbeitszeit reicht nach § 26 AZG, dass der Dienstplan schriftlich festgehalten ist, die Einhaltung jeden Monat bestätigt wird und nur Abweichungen aufgezeichnet werden. Für automatisch eingetragene Pausen braucht es eine schriftliche Vereinbarung über die Pausen (z. B. im Dienstvertrag). Alles Automatische ist mit „auto“ markiert und steht im Protokoll – Mitarbeiter/innen prüfen es beim Monatsabschluss.
+        Bei fixer Arbeitszeit reicht nach § 26 AZG, dass der Dienstplan schriftlich festgehalten ist, die Einhaltung jeden Monat bestätigt wird und nur Abweichungen aufgezeichnet werden. Für automatisch eingetragene Pausen braucht es zusätzlich pro Person eine kurze schriftliche Pausen-Vereinbarung – der Kollektivvertrag allein reicht dafür nicht. Alles Automatische ist mit „auto“ markiert und steht im Protokoll – Mitarbeiter/innen prüfen es beim Monatsabschluss.
       </Hinweis></div>
     </Karte>
 

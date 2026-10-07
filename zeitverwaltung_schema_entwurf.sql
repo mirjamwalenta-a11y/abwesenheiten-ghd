@@ -292,6 +292,12 @@ CREATE TRIGGER zeit_buchungen_sperre BEFORE INSERT OR UPDATE OR DELETE ON zeit_b
 --  Funktionen (RPC) – der einzige Schreibweg für Arbeitszeiten
 -- ════════════════════════════════════════════════════════════
 
+-- Automatische Pausen nur mit schriftlicher Pausen-Vereinbarung je Person
+-- (§ 26 Abs 5 AZG). Derzeit gibt es nur den Kollektivvertrag → AUS.
+-- Sobald die Vereinbarungen unterschrieben sind: Funktion auf "SELECT true" ändern.
+CREATE OR REPLACE FUNCTION zeit_auto_pause_erlaubt() RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $$ SELECT false $$;
+
 -- Stempel-Logik für eine Person. INTERN – nicht für Benutzer freigegeben;
 -- aufgerufen von zeit_stempeln (Handy) und zeit_terminal_stempeln (Tablet).
 -- Uhrzeit immer vom Server (Europe/Vienna).
@@ -338,7 +344,7 @@ BEGIN
       SET pause_min = pause_min + COALESCE((extract(epoch FROM v_zeit - pause_start) / 60)::int, 0),
           pause_start = NULL, ende = v_zeit
       WHERE id = b.id RETURNING * INTO b;
-    IF p_auto_pause AND zeit_pause_noetig(v_person, b) THEN
+    IF p_auto_pause AND zeit_auto_pause_erlaubt() AND zeit_pause_noetig(v_person, b) THEN
       UPDATE zeit_buchungen SET pause_min = greatest(COALESCE(v_plan.pause_min, 0), 30), auto = auto || 'pause'::text
         WHERE id = b.id RETURNING * INTO b;
       INSERT INTO zeit_protokoll (von_person, person_id, datum, aktion, grund)
@@ -594,7 +600,7 @@ BEGIN
         VALUES (p.id, p_datum, 'automatisch ergänzt: Gehen', 'nicht ausgestempelt – Dienstende laut Plan');
       n := n + 1;
     END IF;
-    IF p_auto_pause AND zeit_pause_noetig(p.id, b) THEN
+    IF p_auto_pause AND zeit_auto_pause_erlaubt() AND zeit_pause_noetig(p.id, b) THEN
       UPDATE zeit_buchungen SET pause_min = greatest(v_plan.pause_min, 30), auto = auto || 'pause'::text WHERE id = b.id;
       INSERT INTO zeit_protokoll (person_id, datum, aktion, grund)
         VALUES (p.id, p_datum, 'automatisch ergänzt: Pause', 'keine Pause gestempelt – laut Dienstplan');
