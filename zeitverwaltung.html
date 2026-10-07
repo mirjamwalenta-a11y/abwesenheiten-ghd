@@ -36,6 +36,7 @@
     body { background: #F8F4EA; color: #211D17; font-family: "Poppins", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
     @keyframes einblenden { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     .einblenden { animation: einblenden .18s ease; }
+    .druck-bereich { display: none; }
     .now-card { background: linear-gradient(135deg, #896C32 0%, #6E5527 100%); box-shadow: 0 12px 28px rgba(137,108,50,.30); }
     .tabular { font-variant-numeric: tabular-nums; }
     .streifen { background-image: repeating-linear-gradient(135deg, transparent 0 4px, rgba(0,0,0,.08) 4px 6px); }
@@ -48,6 +49,10 @@
       .print-full { margin: 0 !important; padding: 0 !important; max-width: none !important; }
       .shadow-sm, .shadow, .shadow-lg { box-shadow: none !important; }
       table { font-size: 10px; }
+      body.druck-alle .seite-inhalt, body.druck-alle aside, body.druck-alle header { display: none !important; }
+      body.druck-alle .druck-bereich { display: block !important; }
+      .seitenumbruch { break-after: page; page-break-after: always; }
+      @page { size: A4 portrait; margin: 12mm; }
     }
   </style>
 </head>
@@ -63,7 +68,7 @@ const { useState, useEffect, useMemo } = React;
 //  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
 //  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
 // ═════════════════════════════════════════════════════════════════════════════
-const LS_KEY = "ghd-zeitverwaltung-demo-v4";
+const LS_KEY = "ghd-zeitverwaltung-demo-v5";
 const SESS_KEY = "ghd-zeitverwaltung-demo-user";
 
 // ─── DATUM & ZEIT ─────────────────────────────────────────────────────────────
@@ -201,18 +206,31 @@ function beschaeftigt(ma, d) { return (!ma.eintritt || d >= ma.eintritt) && (!ma
 function abwAm(db, maId, d) { return db.abwesenheiten.find(a => a.maId === maId && wirksam(a) && d >= a.von && d <= (a.bis || heute())); }
 function abwAntragAm(db, maId, d) { return db.abwesenheiten.find(a => a.maId === maId && a.status === "beantragt" && d >= a.von && d <= (a.bis || a.von)); }
 function zeitAm(db, maId, d) { return db.zeiten.find(z => z.maId === maId && z.datum === d); }
-function modellSollMin(db, ma, d) { return Math.round((+modellVon(db, ma).tage[wd(d)] || 0) * 60); }
+function modellSollMin(db, ma, d) { return Math.round(planStunden(planTag(db, ma, d)) * 60); }
 // Dienstplan je Wochentag: { b: Beginn, e: Ende, p: Pause in min } oder null (frei).
 // Ältere Modelle ohne Uhrzeiten bekommen einen Plan aus Stunden + Arbeitsbeginn.
-function planAusModell(m, i) {
-  if (m.plan) return m.plan[i] || null;
+// Mit Datum: es gilt die Plan-Version mit dem letzten „gültig ab“ ≤ Datum, damit
+// eine Änderung vergangene Monate nicht nachträglich verändert.
+function planAusModell(m, i, d) {
+  let plan = m.plan;
+  if (d && m.versionen?.length) { const v = m.versionen.filter(x => x.ab <= d).sort((a, b) => a.ab.localeCompare(b.ab)).pop(); if (v) plan = v.plan; }
+  if (plan) return plan[i] || null;
   const h = +m.tage[i] || 0; if (!h) return null;
   const p = h > 6 ? 30 : 0, b = hm2min(m.beginn || "09:00");
   return { b: min2hm(b), e: min2hm(b + h * 60 + p), p };
 }
 function planStunden(t) { return t && t.b && t.e ? Math.max(0, hm2min(t.e) - hm2min(t.b) - (+t.p || 0)) / 60 : 0; }
 function mitStunden(m) { return { ...m, tage: WT.map((_, i) => planStunden(planAusModell(m, i))) }; }
-function planTag(db, ma, d) { return planAusModell(modellVon(db, ma), wd(d)); }
+function planTag(db, ma, d) { return planAusModell(modellVon(db, ma), wd(d), d); }
+// Dienstplan speichern: neue Version ab Datum „ab“, ältere Versionen davor bleiben erhalten
+function modellUebernehmen(n, m, ab) {
+  const alt = n.modelle.find(x => x.id === m.id);
+  const basis = alt?.versionen || m.versionen || (alt ? [{ ab: "2000-01-01", plan: alt.plan }] : []);
+  const versionen = basis.filter(v => v.ab < ab).concat([{ ab, plan: m.plan }]).sort((a, b) => a.ab.localeCompare(b.ab));
+  const giltHeute = versionen.filter(v => v.ab <= heute()).pop() || versionen[0];
+  const neu = mitStunden({ ...m, versionen, plan: giltHeute.plan });
+  if (alt) Object.assign(alt, neu); else n.modelle.push(neu);
+}
 // KJBG gilt bis zum 18. Geburtstag – mit Geburtsdatum stellt sich das automatisch um
 function jugendlich(ma, d) { return ma.geburtsdatum ? dienstjahre(ma.geburtsdatum, d || heute()) < 18 : !!ma.kjbg; }
 function pauseFehlt(db, ma, z) {
@@ -338,7 +356,7 @@ function hinweiseZeitraum(db, ma, von, bis) {
 function urlaubsTage(db, ma, von, bis) {
   if (!von || !bis || bis < von) return 0;
   const m = modellVon(db, ma);
-  return tageZw(von, bis).filter(d => +m.tage[wd(d)] > 0 && !feiertag(d) && beschaeftigt(ma, d)).length;
+  return tageZw(von, bis).filter(d => modellSollMin(db, ma, d) > 0 && !feiertag(d) && beschaeftigt(ma, d)).length;
 }
 function vorschlagUrlaubstage(db, ma) {
   const basis = dienstjahre(ma.eintritt) >= 25 ? 30 : (db.einstellungen.urlaubBasisTage || 25);
@@ -399,7 +417,7 @@ function bsTermine(db, ma, von, bis, plan, ohneSommer) {
   for (const d of tageZw(von, bis)) {
     const mo = +d.slice(5, 7);
     if (ohneSommer && (mo === 7 || mo === 8)) continue;
-    if (feiertag(d) || !beschaeftigt(ma, d) || !(+modellVon(db, ma).tage[wd(d)])) continue;
+    if (feiertag(d) || !beschaeftigt(ma, d) || !modellSollMin(db, ma, d)) continue;
     const q = bsTageProWoche(db, ma, d);
     let a = 0;
     if (wd(d) === +plan.tag1) a = Math.min(1, q);
@@ -514,8 +532,6 @@ function demoDaten() {
   const modelle = [
     // = Öffnungszeiten: Di+Mi 9–18, Do+Fr 9–19 (je 1 h Pause), Sa 8–14 → 40 h
     { id: "vz40",  name: "Vollzeit 40 h (Öffnungszeiten)",  plan: [null, T("09:00", "18:00", 60), T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "14:00", 0), null] },
-    { id: "tz30",  name: "Teilzeit 30 h · Mi–Sa",           plan: [null, null, T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "12:00", 0), null] },
-    { id: "tz20",  name: "Teilzeit 20 h · vormittags",      plan: [null, T("09:00", "14:00", 0), T("09:00", "14:00", 0), null, T("09:00", "14:00", 0), T("08:00", "13:00", 0), null] },
     // Unter 18 braucht es schon ab 4,5 h eine Pause (KJBG) → Samstag mit 30 min
     { id: "lehre", name: "Lehrling (Sa mit Pause, KJBG)",   plan: [null, T("09:00", "18:00", 60), T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "14:00", 30), null] },
   ].map(mitStunden);
@@ -524,9 +540,9 @@ function demoDaten() {
     { id: "ma1", name: "Sophie Lindner",   personalnr: "P-001", abteilung: "Leitung",    funktion: "Inhaberin",          eintritt: "2012-03-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 3, vorgesetzterId: null,  rolle: "admin",       aktiv: true },
     { id: "ma2", name: "Katharina Moser",  personalnr: "P-002", abteilung: "Styling",    funktion: "Salonleitung",       eintritt: "2016-09-01", modellId: "vz40", urlaubstage: 25, urlaubUebertrag: 5, vorgesetzterId: "ma1", rolle: "vorgesetzt",  aktiv: true },
     { id: "ma3", name: "Julia Pichler",    personalnr: "P-003", abteilung: "Styling",    funktion: "Stylistin",          eintritt: "2019-02-15", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 2, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
-    { id: "ma4", name: "Elena Novak",      personalnr: "P-004", abteilung: "Coloration", funktion: "Coloristin",         eintritt: "2021-05-01", modellId: "tz30",     urlaubstage: 20, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
+    { id: "ma4", name: "Elena Novak",      personalnr: "P-004", abteilung: "Coloration", funktion: "Coloristin",         eintritt: "2021-05-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
     { id: "ma5", name: "Mario Gruber",     personalnr: "P-005", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2023-01-09", modellId: "vz40", urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
-    { id: "ma6", name: "Lisa Wagner",      personalnr: "P-006", abteilung: "Rezeption",  funktion: "Rezeption",          eintritt: "2024-03-01", modellId: "tz20",     urlaubstage: 20, urlaubUebertrag: 1, vorgesetzterId: "ma1", rolle: "mitarbeiter", aktiv: true },
+    { id: "ma6", name: "Lisa Wagner",      personalnr: "P-006", abteilung: "Rezeption",  funktion: "Rezeption",          eintritt: "2024-03-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 1, vorgesetzterId: "ma1", rolle: "mitarbeiter", aktiv: true },
     { id: "ma7", name: "Nina Hofer",       personalnr: "P-007", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: "2025-09-01", modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: "2025-09-01", geburtsdatum: `${parseInt(addTage(h, 40)) - 18}${addTage(h, 40).slice(4)}`, bsTag1: 3 },
     { id: "ma9", name: "Lea Fuchs",        personalnr: "P-009", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: `${m1}-01`,   modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: `${m1}-01`, geburtsdatum: `${parseInt(h) - 15}-03-12`, bsTag1: 1, bsTag2: 4 },
     { id: "ma8", name: "Tobias Reiter",    personalnr: "P-008", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2020-04-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: false, austritt: `${m0}-15` },
@@ -568,7 +584,7 @@ function demoDaten() {
       }
       // Fixer Plan: meist pünktlich, ab und zu ein paar Minuten Abweichung
       const b = hm2min(plan.b) + (r() < 0.7 ? 0 : zw(-1, 1) * 5);
-      const ende = hm2min(plan.e) + (r() < 0.7 || jugendlich(ma, d) ? 0 : zw(0, 2) * 5);
+      const ende = hm2min(plan.e) + (r() < 0.7 || jugendlich(ma, d) || !plan.p ? 0 : zw(0, 2) * 5);
       zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: min2hm(b), ende: min2hm(ende), pause: +plan.p || 0, quelle: "stempel" });
     }
   }
@@ -760,6 +776,16 @@ function Tabelle({ kopf, children, fuss }) {
   </div>;
 }
 
+// Excel-Bibliothek (SheetJS) erst beim ersten Download laden
+function ladeXlsx() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((ok, fehler) => {
+    const s = document.createElement("script");
+    s.src = "https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js";
+    s.onload = () => ok(window.XLSX); s.onerror = () => fehler(new Error("Excel-Bibliothek nicht erreichbar"));
+    document.head.appendChild(s);
+  });
+}
 function csvExport(dateiname, zeilen) {
   const esc = v => { const s = String(v ?? ""); return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const text = "﻿" + zeilen.map(z => z.map(esc).join(";")).join("\r\n");
@@ -944,7 +970,7 @@ function Dashboard({ ctx }) {
           <ul className="divide-y divide-stone-100 text-sm">
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("urlaub")}><span>Urlaubs- & Abwesenheitsanträge</span><b className="tabular">{offenAntraege.length}</b></li>
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Zeitkorrekturen prüfen</span><b className="tabular">{offenKorr.length}</b></li>
-            <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Monatsabschluss {fmtMonat(vormonat)}</span><b className="tabular">{offeneAbschluesse.length} offen</b></li>
+            <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("auswertung")}><span>Monatsabschluss {fmtMonat(vormonat)}</span><b className="tabular">{offeneAbschluesse.length} offen</b></li>
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Automatisch ergänzt (7 Tage) – prüfen</span><b className="tabular">{db.zeiten.filter(z => z.auto?.length && z.datum >= addTage(h, -7) && aktiveTeam.some(m => m.id === z.maId)).length}</b></li>
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("krank")}><span>AU-Bestätigungen ausständig</span><b className="tabular">{db.abwesenheiten.filter(a => KRANK_ARTEN.includes(a.art) && wirksam(a) && !a.au && aktiveTeam.some(m => m.id === a.maId)).length}</b></li>
           </ul>
@@ -1093,6 +1119,7 @@ function Zeiterfassung({ ctx }) {
   const [maId, setMaId] = useState(user.id);
   const [monat, setMonat] = useState(monatKey(heute()));
   const [dialog, setDialog] = useState(null);
+  const [abwDialog, setAbwDialog] = useState(null);
   const [protokollOffen, setProtokollOffen] = useState(false);
   const ma = db.mitarbeiter.find(m => m.id === maId) || user;
   const tage = tageImMonat(monat);
@@ -1160,7 +1187,10 @@ function Zeiterfassung({ ctx }) {
                 </div>
               </td>
               <td className="px-2 py-1.5 text-right no-print">
-                {darfAktion && <button onClick={() => setDialog(d)} className="p-1.5 rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900" title={direkt ? "Bearbeiten" : "Korrektur beantragen"}><Icon n="stift" className="w-4 h-4" /></button>}
+                <div className="flex justify-end gap-0.5">
+                  {direkt && !istGesperrt && beschaeftigt(ma, d) && !t.a && t.soll > 0 && <button onClick={() => setAbwDialog(d)} className="p-1.5 rounded-full text-stone-400 hover:bg-white hover:text-gold-700" title="Urlaub / Krankenstand nachtragen">🌴</button>}
+                  {darfAktion && <button onClick={() => setDialog(d)} className="p-1.5 rounded-full text-stone-500 hover:bg-white hover:text-gold-700" title={direkt ? "Zeiten & Pause bearbeiten" : "Korrektur beantragen"}><Icon n="stift" className="w-4 h-4" /></button>}
+                </div>
               </td>
             </tr>;
           })}
@@ -1196,40 +1226,59 @@ function Zeiterfassung({ ctx }) {
       </div>
     </div>
     {dialog && <ZeitDialog ctx={ctx} ma={ma} datum={dialog} onClose={() => setDialog(null)} />}
+    {abwDialog && <AbwDialog ctx={ctx} modus="alle" vorMa={ma.id} vorDatum={abwDialog} onClose={() => setAbwDialog(null)} />}
   </div>;
 }
 
 // ─── ABWESENHEITS-DIALOG (Urlaub, Krankenstand, sonstige) ────────────────────
-function AbwDialog({ ctx, modus, onClose }) {
+function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
   const { db, user, sichtbar, aendern } = ctx;
-  const auswahl = sichtbar.filter(m => m.aktiv && (m.id === user.id || darfVerwalten(user, m)));
-  const arten = modus === "urlaub" ? ["urlaub"] : Object.keys(ARTEN).filter(a => a !== "urlaub");
-  const [f, setF] = useState({ maId: user.id, art: arten[0], von: heute(), bis: heute(), offen: false, au: false, halb: false, notiz: "" });
+  const auswahl = sichtbar.filter(m => (m.aktiv || m.id === bestand?.maId) && (m.id === user.id || darfVerwalten(user, m)));
+  const arten = bestand || modus === "alle" ? Object.keys(ARTEN) : modus === "urlaub" ? ["urlaub"] : Object.keys(ARTEN).filter(a => a !== "urlaub");
+  const [f, setF] = useState(bestand
+    ? { maId: bestand.maId, art: bestand.art, von: bestand.von, bis: bestand.bis || bestand.von, offen: !bestand.bis, au: !!bestand.au, halb: anteil(bestand) < 1, notiz: bestand.notiz || "" }
+    : { maId: vorMa || user.id, art: arten[0], von: vorDatum || heute(), bis: vorDatum || heute(), offen: false, au: false, halb: false, notiz: "" });
   const ma = db.mitarbeiter.find(m => m.id === f.maId);
   const art = ARTEN[f.art];
   const fuerAndere = f.maId !== user.id;
   const bis = f.offen ? null : f.bis;
   const tage = f.art === "urlaub" ? urlaubsTage(db, ma, f.von, bis || f.von) : tageZw(f.von, bis || f.von).length;
   const uk = urlaubsKonto(db, ma, parseInt(f.von));
-  const ftImZeitraum = tageZw(f.von, bis || f.von).filter(d => feiertag(d) && +modellVon(db, ma).tage[wd(d)] > 0);
-  const ueberschneidung = db.abwesenheiten.filter(a => a.maId === f.maId && (wirksam(a) || a.status === "beantragt") && a.von <= (bis || "9999") && (a.bis || "9999") >= f.von);
+  const ftImZeitraum = tageZw(f.von, bis || f.von).filter(d => feiertag(d) && modellSollMin(db, ma, d) > 0);
+  const ueberschneidung = db.abwesenheiten.filter(a => a.id !== bestand?.id && a.maId === f.maId && (wirksam(a) || a.status === "beantragt") && a.von <= (bis || "9999") && (a.bis || "9999") >= f.von);
   const kollegen = db.abwesenheiten.filter(a => a.maId !== f.maId && wirksam(a) && a.von <= (bis || f.von) && (a.bis || heute()) >= f.von && db.mitarbeiter.find(m => m.id === a.maId)?.aktiv);
   const gesperrtIn = tageZw(f.von, bis || f.von).some(d => gesperrt(db, f.maId, d));
   const fehler = !f.von ? "Beginn angeben." : bis && bis < f.von ? "Ende liegt vor dem Beginn." : ueberschneidung.length ? "Für diesen Zeitraum gibt es bereits einen Eintrag." : gesperrtIn ? "Zeitraum liegt in einem abgeschlossenen Monat." : f.art === "urlaub" && tage === 0 ? "Im Zeitraum liegen keine Arbeitstage." : null;
   const halbMoeglich = !art.meldung && f.art !== "urlaub" && !f.offen && f.von === f.bis;
-  const status = art.meldung ? "gemeldet" : (fuerAndere && darfVerwalten(user, ma)) || (istAdmin(user) && !fuerAndere) ? "genehmigt" : "beantragt";
+  const neuStatus = art.meldung ? "gemeldet" : (fuerAndere && darfVerwalten(user, ma)) || (istAdmin(user) && !fuerAndere) ? "genehmigt" : "beantragt";
+  const status = bestand ? (bestand.status === "beantragt" ? bestand.status : neuStatus) : neuStatus;
+  // Nachgetragene Abwesenheit: automatisch ergänzte Arbeitstage („auto: ganzer Tag“) fallen weg,
+  // gestempelte Tage bleiben und werden nur angezeigt
+  const ganzTag = !(halbMoeglich && f.halb);
+  const zeitraum = f.von ? tageZw(f.von, bis || (f.von > heute() ? f.von : heute())) : [];
+  const autoTage = ganzTag ? zeitraum.filter(d => zeitAm(db, f.maId, d)?.auto?.includes("tag")) : [];
+  const gestempelt = ganzTag ? zeitraum.filter(d => { const z = zeitAm(db, f.maId, d); return z && !z.auto?.includes("tag"); }) : [];
 
   function speichern() {
     aendern(n => {
-      n.abwesenheiten.push({ id: uid(), maId: f.maId, art: f.art, von: f.von, bis, status, anteil: halbMoeglich && f.halb ? 0.5 : undefined, au: art.meldung ? f.au : undefined, notiz: f.notiz, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: status === "genehmigt" ? user.id : undefined });
-    }, status === "beantragt" ? "Antrag gesendet" : "Eintrag gespeichert");
+      const daten = { maId: f.maId, art: f.art, von: f.von, bis, status, anteil: halbMoeglich && f.halb ? 0.5 : undefined, au: art.meldung ? f.au : undefined, notiz: f.notiz };
+      if (bestand) Object.assign(n.abwesenheiten.find(a => a.id === bestand.id), daten, { geaendertVon: user.id, geaendertAm: heute() });
+      else n.abwesenheiten.push({ id: uid(), ...daten, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: status === "genehmigt" ? user.id : undefined });
+      if (status !== "beantragt") autoTage.forEach(d => {
+        const z = n.zeiten.find(q => q.maId === f.maId && q.datum === d);
+        n.zeiten.splice(n.zeiten.indexOf(z), 1);
+        n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: f.maId, datum: d, aktion: "automatischen Eintrag entfernt", alt: { beginn: z.beginn, ende: z.ende, pause: z.pause }, neu: null, grund: `${ARTEN[f.art].label} nachgetragen` });
+      });
+    }, bestand ? "Abwesenheit geändert" : status === "beantragt" ? "Antrag gesendet" : "Eintrag gespeichert");
     onClose();
   }
-  return <Modal titel={modus === "urlaub" ? "Urlaub beantragen" : "Krankmeldung / Abwesenheit erfassen"} onClose={onClose}
-    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>{status === "beantragt" ? "Antrag senden" : status === "gemeldet" ? "Melden" : "Eintragen"}</Knopf></>}>
+  function loeschen() { aendern(n => { Object.assign(n.abwesenheiten.find(a => a.id === bestand.id), { status: "storniert", geaendertVon: user.id, geaendertAm: heute() }); }, "Eintrag storniert"); onClose(); }
+  const titel = bestand ? "Abwesenheit bearbeiten" : modus === "alle" ? "Urlaub / Krankenstand nachtragen" : modus === "urlaub" ? (fuerAndere ? "Urlaub eintragen" : "Urlaub beantragen") : "Krankmeldung / Abwesenheit erfassen";
+  return <Modal titel={titel} onClose={onClose}
+    fuss={<>{bestand && <Knopf art="rot" onClick={loeschen}>Stornieren</Knopf>}<span className="flex-1" /><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>{bestand ? "Speichern" : status === "beantragt" ? "Antrag senden" : status === "gemeldet" ? "Melden" : "Eintragen"}</Knopf></>}>
     <div className="grid sm:grid-cols-2 gap-4">
       {auswahl.length > 1 && <Feld label="Mitarbeiter/in" breit><select className={inputCls} value={f.maId} onChange={e => setF({ ...f, maId: e.target.value })}>{auswahl.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>}
-      {modus !== "urlaub" && <Feld label="Art der Abwesenheit" breit><select className={inputCls} value={f.art} onChange={e => setF({ ...f, art: e.target.value })}>{arten.map(a => <option key={a} value={a}>{ARTEN[a].label}</option>)}</select></Feld>}
+      {arten.length > 1 && <Feld label="Art der Abwesenheit" breit><select className={inputCls} value={f.art} onChange={e => setF({ ...f, art: e.target.value })}>{arten.map(a => <option key={a} value={a}>{ARTEN[a].label}</option>)}</select></Feld>}
       <Feld label="Von"><input type="date" className={inputCls} value={f.von} onChange={e => setF({ ...f, von: e.target.value, bis: f.bis < e.target.value ? e.target.value : f.bis })} /></Feld>
       <Feld label="Bis">
         <input type="date" className={inputCls} value={f.offen ? "" : f.bis} disabled={f.offen} min={f.von} onChange={e => setF({ ...f, bis: e.target.value })} />
@@ -1251,7 +1300,9 @@ function AbwDialog({ ctx, modus, onClose }) {
       {ftImZeitraum.length > 0 && <Hinweis>Feiertage im Zeitraum (nicht abgezogen): {ftImZeitraum.map(d => feiertag(d).name).join(", ")}</Hinweis>}
       {f.art === "urlaub" && uk.rest - tage < 0 && <Hinweis ton="warn">Der Antrag übersteigt den Resturlaub. Vorgriff nur nach Vereinbarung.</Hinweis>}
       {kollegen.length > 0 && <Hinweis ton="warn">Gleichzeitig abwesend: {[...new Set(kollegen.map(a => nameVon(db, a.maId)))].join(", ")}</Hinweis>}
-      {status === "genehmigt" && fuerAndere && <Hinweis>Du trägst als Vorgesetzte/r ein – der Eintrag gilt sofort als genehmigt.</Hinweis>}
+      {status === "genehmigt" && fuerAndere && !bestand && <Hinweis>Du trägst als Vorgesetzte/r ein – der Eintrag gilt sofort als genehmigt.</Hinweis>}
+      {autoTage.length > 0 && status !== "beantragt" && <Hinweis>{autoTage.length} automatisch ergänzte Arbeitstag{autoTage.length === 1 ? "" : "e"} ({autoTage.map(fmtDk).join(", ")}) {autoTage.length === 1 ? "wird" : "werden"} dafür entfernt.</Hinweis>}
+      {gestempelt.length > 0 && <Hinweis ton="warn">An {gestempelt.map(fmtDk).join(", ")} gibt es gestempelte Zeiten. Falls die Person da nicht gearbeitet hat, bitte in der Zeiterfassung löschen.</Hinweis>}
       {fehler && <p className="text-xs text-rose-700">{fehler}</p>}
     </div>
   </Modal>;
@@ -1285,6 +1336,7 @@ function Urlaub({ ctx }) {
   const { db, user, sichtbar, aendern } = ctx;
   const [jahr, setJahr] = useState(new Date().getFullYear());
   const [dialog, setDialog] = useState(false);
+  const [bearbeiten, setBearbeiten] = useState(null);
   const uk = urlaubsKonto(db, user, jahr);
   const offen = db.abwesenheiten.filter(a => a.art === "urlaub" && a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)));
   const liste = db.abwesenheiten.filter(a => a.art === "urlaub" && sichtbar.some(m => m.id === a.maId) && (a.von.startsWith(jahr) || (a.bis || "").startsWith(jahr))).sort((a, b) => b.von.localeCompare(a.von));
@@ -1294,7 +1346,7 @@ function Urlaub({ ctx }) {
   return <div className="space-y-5">
     <Seitenkopf titel="Urlaub" sub="Anträge, Genehmigung und Urlaubskonto (Urlaubsjahr = Kalenderjahr)">
       <select className={`${inputKlein}`} value={jahr} onChange={e => setJahr(+e.target.value)}>{[jahr - 1, jahr, jahr + 1].map(j => <option key={j}>{j}</option>)}</select>
-      <Knopf icon="plus" onClick={() => setDialog(true)}>Urlaub beantragen</Knopf>
+      <Knopf icon="plus" onClick={() => setDialog(true)}>{leitung ? "Urlaub eintragen" : "Urlaub beantragen"}</Knopf>
     </Seitenkopf>
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
       <Kpi label="Anspruch" wert={uk.anspruch} sub="Tage" />
@@ -1314,7 +1366,7 @@ function Urlaub({ ctx }) {
             <td className="px-3 py-2.5 whitespace-nowrap tabular">{fmtZr(a.von, a.bis)}</td>
             <td className="px-3 py-2.5 text-right tabular">{urlaubsTage(db, ma, a.von, a.bis)}</td>
             <td className="px-3 py-2.5"><Badge status={a.status} />{a.entschiedenVon && a.status !== "beantragt" && <span className="block text-[11px] text-stone-500 mt-0.5">von {nameVon(db, a.entschiedenVon)}</span>}</td>
-            <td className="px-3 py-2.5 text-right">{darf && <Knopf klein art="geist" onClick={() => stornieren(a)}>Stornieren</Knopf>}</td>
+            <td className="px-3 py-2.5 text-right whitespace-nowrap">{darfVerwalten(user, ma) && a.status !== "storniert" && !gesperrt(db, a.maId, a.von) ? <Knopf klein art="geist" icon="stift" onClick={() => setBearbeiten(a)}>Bearbeiten</Knopf> : darf && <Knopf klein art="geist" onClick={() => stornieren(a)}>Stornieren</Knopf>}</td>
           </tr>; })}
         </Tabelle>}
       </Karte>
@@ -1332,6 +1384,7 @@ function Urlaub({ ctx }) {
       </Karte>}
     </div>
     {dialog && <AbwDialog ctx={ctx} modus="urlaub" onClose={() => setDialog(false)} />}
+    {bearbeiten && <AbwDialog ctx={ctx} bestand={bearbeiten} onClose={() => setBearbeiten(null)} />}
   </div>;
 }
 
@@ -1348,6 +1401,7 @@ function Krankenstand({ ctx }) {
   const offen = alle.filter(a => a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)));
   const liste = alle.filter(a => (!filterArt || a.art === filterArt) && a.art !== "berufsschule" || (filterArt === "berufsschule" && a.art === "berufsschule")).sort((a, b) => b.von.localeCompare(a.von));
   const [bsPlaner, setBsPlaner] = useState(false);
+  const [bearbeiten, setBearbeiten] = useState(null);
   const lehrlinge = sichtbar.filter(m => m.aktiv && m.lehrbeginn);
   const darfBearbeiten = a => a.maId === user.id || darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId));
 
@@ -1358,7 +1412,7 @@ function Krankenstand({ ctx }) {
   return <div className="space-y-5">
     <Seitenkopf titel="Krankenstand & Abwesenheiten" sub="Krankmeldungen, Pflegefreistellung, Zeitausgleich, Berufsschule und mehr">
       {leitung && lehrlinge.length > 0 && <Knopf art="sekundaer" icon="kalender" onClick={() => setBsPlaner(true)}>Berufsschule planen</Knopf>}
-      <Knopf icon="plus" onClick={() => setDialog(true)}>Krankmeldung / Abwesenheit</Knopf>
+      <Knopf icon="plus" onClick={() => setDialog(true)}>{leitung ? "Krankenstand / Urlaub eintragen" : "Krankmeldung / Abwesenheit"}</Knopf>
     </Seitenkopf>
     <div className="grid lg:grid-cols-2 gap-5">
       <Karte titel="Derzeit abwesend" innen="p-0">
@@ -1434,11 +1488,12 @@ function Krankenstand({ ctx }) {
           <td className="px-3 py-2.5 text-right tabular">{tageZw(a.von, a.bis || heute()).length}</td>
           <td className="px-3 py-2.5 text-xs">{KRANK_ARTEN.includes(a.art) ? (a.au ? "✓" : <span className="text-amber-700">fehlt</span>) : ""}</td>
           <td className="px-3 py-2.5"><Badge status={a.status} /></td>
-          <td className="px-3 py-2.5 text-right">{darfBearbeiten(a) && (a.status === "beantragt" || (darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)) && a.status !== "storniert" && !gesperrt(db, a.maId, a.von))) && <Knopf klein art="geist" onClick={() => stornieren(a)}>Stornieren</Knopf>}</td>
+          <td className="px-3 py-2.5 text-right whitespace-nowrap">{darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)) && a.status !== "storniert" && !gesperrt(db, a.maId, a.von) ? <Knopf klein art="geist" icon="stift" onClick={() => setBearbeiten(a)}>Bearbeiten</Knopf> : darfBearbeiten(a) && a.status === "beantragt" && <Knopf klein art="geist" onClick={() => stornieren(a)}>Stornieren</Knopf>}</td>
         </tr>)}
       </Tabelle>}
     </Karte>
-    {dialog && <AbwDialog ctx={ctx} modus="abw" onClose={() => setDialog(false)} />}
+    {dialog && <AbwDialog ctx={ctx} modus={leitung ? "alle" : "abw"} onClose={() => setDialog(false)} />}
+    {bearbeiten && <AbwDialog ctx={ctx} bestand={bearbeiten} onClose={() => setBearbeiten(null)} />}
     {bsPlaner && <BsPlaner ctx={ctx} lehrlinge={lehrlinge.filter(m => darfVerwalten(user, m))} onClose={() => setBsPlaner(false)} />}
   </div>;
 }
@@ -1508,6 +1563,12 @@ function MaDialog({ ctx, ma, onClose }) {
   const [f, setF] = useState(ma ? { ...ma } : { id: uid(), name: "", personalnr: `P-${pad(db.mitarbeiter.length + 1).padStart(3, "0")}`, abteilung: "", funktion: "", eintritt: heute(), modellId: db.modelle[0].id, urlaubstage: 25, urlaubUebertrag: 0, saldoStart: 0, vorgesetzterId: user.id, rolle: "mitarbeiter", aktiv: true, kjbg: false });
   const set = (k, v) => setF({ ...f, [k]: v });
   const vorschlag = vorschlagUrlaubstage(db, f);
+  const [planDlg, setPlanDlg] = useState(null);
+  function planSpeichern(m, ab) {
+    aendern(n => { modellUebernehmen(n, m, ab); if (planDlg.kopie) { const x = n.mitarbeiter.find(q => q.id === f.id); if (x) x.modellId = m.id; } }, `Dienstplan gespeichert${ab > "2000-01-01" ? ` (gültig ab ${fmtD(ab)})` : ""}`);
+    if (planDlg.kopie) set("modellId", m.id);
+    setPlanDlg(null);
+  }
   const fehler = !f.name.trim() ? "Name fehlt." : db.mitarbeiter.some(m => m.id !== f.id && m.personalnr === f.personalnr) ? "Personalnummer bereits vergeben." : null;
   function speichern() {
     aendern(n => { const i = n.mitarbeiter.findIndex(m => m.id === f.id); const d = { ...f, urlaubstage: +f.urlaubstage || 0, urlaubUebertrag: +f.urlaubUebertrag || 0, saldoStart: +f.saldoStart || 0 }; if (i >= 0) n.mitarbeiter[i] = d; else n.mitarbeiter.push(d); }, neu ? "Mitarbeiter/in angelegt" : "Änderungen gespeichert");
@@ -1523,8 +1584,13 @@ function MaDialog({ ctx, ma, onClose }) {
       <Feld label="Funktion"><input className={inputCls} value={f.funktion} onChange={e => set("funktion", e.target.value)} /></Feld>
       <Feld label="Eintrittsdatum"><input type="date" className={inputCls} value={f.eintritt || ""} onChange={e => set("eintritt", e.target.value)} /></Feld>
       <Feld label="Austrittsdatum" hilfe="Leer lassen, solange beschäftigt."><input type="date" className={inputCls} value={f.austritt || ""} onChange={e => set("austritt", e.target.value || undefined)} /></Feld>
-      <Feld label="Arbeitszeitmodell" breit hilfe={`${wochenStd(modellVon(db, f))} Wochenstunden · ${modellVon(db, f).tage.map((h, i) => +h ? `${WT[i]} ${h}` : null).filter(Boolean).join(" · ")}`}>
-        <select className={inputCls} value={f.modellId} onChange={e => set("modellId", e.target.value)}>{db.modelle.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
+      <Feld label="Dienstplan" breit hilfe={`${fmtTage(wochenStd(modellVon(db, f)))} Wochenstunden · ${WT.map((t, i) => { const x = planAusModell(modellVon(db, f), i); return x ? `${t} ${x.b}–${x.e}${x.p ? ` (${x.p}′ Pause)` : ""}` : null; }).filter(Boolean).join(" · ")}`}>
+        <select className={inputCls} value={f.modellId} onChange={e => set("modellId", e.target.value)}>{db.modelle.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Knopf klein art="sekundaer" icon="stift" onClick={() => { const m = modellVon(db, f); setPlanDlg({ modell: { ...m, plan: WT.map((_, i) => planAusModell(m, i)) } }); }}>Dienstplan & Pausen bearbeiten</Knopf>
+          <Knopf klein art="geist" icon="plus" onClick={() => { const m = modellVon(db, f); setPlanDlg({ kopie: true, modell: { ...m, id: uid(), name: `Dienstplan ${f.name.split(" ")[0] || "neu"}`, plan: WT.map((_, i) => planAusModell(m, i)), versionen: JSON.parse(JSON.stringify(m.versionen || [{ ab: "2000-01-01", plan: m.plan }])) } }); }}>Eigener Plan für diese Person</Knopf>
+        </div>
+      </Feld>
       <Feld label="Urlaubstage / Jahr" hilfe={`Vorschlag nach UrlG: ${vorschlag} (aliquot zu ${tageProWoche(modellVon(db, f))} Arbeitstagen/Woche${dienstjahre(f.eintritt) >= 25 ? ", 6. Urlaubswoche" : ""})`}>
         <div className="flex gap-2"><input type="number" className={inputCls} value={f.urlaubstage} onChange={e => set("urlaubstage", e.target.value)} />{+f.urlaubstage !== vorschlag && <Knopf art="sekundaer" klein onClick={() => set("urlaubstage", vorschlag)}>übernehmen</Knopf>}</div></Feld>
       <Feld label="Resturlaub Vorjahr"><input type="number" className={inputCls} value={f.urlaubUebertrag} onChange={e => set("urlaubUebertrag", e.target.value)} /></Feld>
@@ -1547,6 +1613,7 @@ function MaDialog({ ctx, ma, onClose }) {
       </div>
     </div>
     {fehler && <p className="mt-3 text-xs text-rose-700">{fehler}</p>}
+    {planDlg && <ModellDialog db={db} modell={planDlg.modell} oz={db.einstellungen.oeffnungszeiten} neu={false} onSave={planSpeichern} onClose={() => setPlanDlg(null)} />}
   </Modal>;
 }
 function Mitarbeiter({ ctx }) {
@@ -1595,7 +1662,7 @@ function Kalender({ ctx }) {
   const zelle = (m, d) => {
     if (!beschaeftigt(m, d)) return { cls: "bg-stone-100", t: "" };
     const a = abwAm(db, m.id, d), b = abwAntragAm(db, m.id, d);
-    const frei = !(+modellVon(db, m).tage[wd(d)]) || feiertag(d);
+    const frei = !modellSollMin(db, m, d) || feiertag(d);
     if (a) {
       // Datensparsam: Kolleg/innen sehen nur „abwesend“, nicht ob krank
       const zeigen = leitung || m.id === user.id || a.art === "urlaub";
@@ -1625,7 +1692,7 @@ function Kalender({ ctx }) {
                 <div title={z.title} className={`h-7 rounded flex items-center justify-center font-semibold ${z.cls}`}>{z.t}</div></td>; })}
             </tr>)}
             <tr><td className="sticky left-0 bg-white px-3 py-1.5 text-stone-500">Abwesend</td>
-              {tage.map(d => { const n = team.filter(m => abwAm(db, m.id, d) && +modellVon(db, m).tage[wd(d)] && !feiertag(d)).length; return <td key={d} className={`text-center py-1.5 tabular font-medium ${n >= 3 ? "text-rose-700" : "text-stone-500"}`}>{n || ""}</td>; })}</tr>
+              {tage.map(d => { const n = team.filter(m => abwAm(db, m.id, d) && modellSollMin(db, m, d) && !feiertag(d)).length; return <td key={d} className={`text-center py-1.5 tabular font-medium ${n >= 3 ? "text-rose-700" : "text-stone-500"}`}>{n || ""}</td>; })}</tr>
           </tbody>
         </table>
       </div>
@@ -1685,20 +1752,92 @@ function Auswertungen({ ctx }) {
     }));
     csvExport(`arbeitszeiten_${ansicht === "monat" ? monat : jahr}.csv`, zz);
   }
+  const [druck, setDruck] = useState(false);
+  const [laedt, setLaedt] = useState(false);
+  useEffect(() => {
+    if (!druck) return;
+    document.body.classList.add("druck-alle");
+    const fertig = () => { document.body.classList.remove("druck-alle"); setDruck(false); };
+    window.addEventListener("afterprint", fertig);
+    const t = setTimeout(() => window.print(), 300);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", fertig); document.body.classList.remove("druck-alle"); };
+  }, [druck]);
+  const vorbei = monat < monatKey(heute());
+  const abschliessbar = zeilen.filter(z => !z.ab?.abgeschlossenAm && (darfVerwalten(user, z.m) || (istAdmin(user) && z.m.id === user.id)));
+  const blockiert = z => db.korrekturen.some(k => k.maId === z.m.id && k.status === "offen" && monatKey(k.datum) === monat) || db.zeiten.some(q => q.maId === z.m.id && monatKey(q.datum) === monat && !q.ende);
+  const autoImMonat = db.zeiten.filter(q => q.auto?.length && monatKey(q.datum) === monat && liste.some(m => m.id === q.maId)).length;
+  function alleAbschliessen() {
+    const ok = abschliessbar.filter(z => !blockiert(z));
+    ctx.aendern(n => ok.forEach(z => {
+      let x = n.abschluesse.find(a => a.maId === z.m.id && a.monat === monat);
+      if (!x) { x = { maId: z.m.id, monat }; n.abschluesse.push(x); }
+      Object.assign(x, { abgeschlossenAm: heute(), abgeschlossenVon: user.id, saldoMonat: z.s.saldo, kontoStand: z.konto });
+    }), `${ok.length} abgeschlossen${abschliessbar.length > ok.length ? ` · ${abschliessbar.length - ok.length} offen (Korrektur/fehlendes Gehen)` : ""}`);
+  }
+  async function excelHerunterladen() {
+    setLaedt(true);
+    let X;
+    try { X = await ladeXlsx(); } catch (e) { setLaedt(false); alert("Excel konnte nicht geladen werden (keine Internetverbindung?). Es wird stattdessen eine CSV-Datei erstellt."); exportieren(); return; }
+    const h2 = m => Math.round((m || 0) / 60 * 100) / 100;
+    const zr = ansicht === "monat" ? fmtMonat(monat) : String(jahr);
+    const uebersicht = [[`${db.einstellungen.firmenname} · Zeitverwaltung`], [`Zeitraum: ${zr}`], [`Erstellt am ${new Date().toLocaleString("de-AT")} von ${user.name}`], [],
+      ["Personalnr", "Name", "Dienstplan", "Soll (h)", "Ist (h)", "Abwesenheit angerechnet (h)", "Saldo (h)", "Zeitkonto (h)", "Urlaubstage", "Resturlaub", "Krankenstand (Kalendertage)", "Sonstige Abwesenheit (Kalendertage)", "Automatisch ergänzte Tage", ...(ansicht === "monat" ? ["Monatsabschluss"] : [])],
+      ...zeilen.map(z => [z.m.personalnr, z.m.name, modellVon(db, z.m).name, h2(z.s.soll), h2(z.s.ist), h2(z.s.gut), h2(z.s.saldo), h2(z.konto), z.urlaubZr, z.uk.rest, z.krank, z.sonst,
+        db.zeiten.filter(q => q.maId === z.m.id && q.datum >= von && q.datum <= bis && q.auto?.length).length,
+        ...(ansicht === "monat" ? [z.ab?.abgeschlossenAm ? `abgeschlossen am ${fmtD(z.ab.abgeschlossenAm)}` : z.ab?.bestaetigtAm ? "bestätigt" : "offen"] : [])])];
+    const tageZ = [["Personalnr", "Name", "Datum", "Wochentag", "Beginn", "Ende", "Pause (min)", "Ist (h)", "Soll (h)", "Saldo (h)", "Abwesenheit", "Feiertag", "Automatisch ergänzt", "Hinweise AZG/KJBG"]];
+    liste.forEach(m => tageZw(von, bisKonto).forEach(d => {
+      if (!beschaeftigt(m, d)) return;
+      const t = tagInfo(db, m, d); if (!t.z && !t.a && !t.soll) return;
+      tageZ.push([m.personalnr, m.name, fmtD(d), WT[wd(d)], t.z?.beginn || "", t.z?.ende || "", t.z ? t.z.pause : "", h2(t.ist), h2(t.soll), h2(t.saldo), t.a ? ARTEN[t.a.art].label + (anteil(t.a) < 1 ? " (½ Tag)" : "") : "", t.ft?.name || "", (t.z?.auto || []).map(x => AUTO_TEXT[x]).join(", "), pruefeTag(db, m, d).map(x => x.text).join(" | ")]);
+    }));
+    const abwZ = [["Personalnr", "Name", "Art", "Von", "Bis", "Kalendertage", "Urlaubstage", "Status", "AU-Bestätigung", "Notiz"],
+      ...db.abwesenheiten.filter(a => a.status !== "storniert" && liste.some(m => m.id === a.maId) && a.von <= bis && (a.bis || heute()) >= von).sort((a, b) => a.von.localeCompare(b.von)).map(a => {
+        const m = db.mitarbeiter.find(x => x.id === a.maId);
+        return [m.personalnr, m.name, ARTEN[a.art].label + (anteil(a) < 1 ? " (½ Tag)" : ""), fmtD(a.von), a.bis ? fmtD(a.bis) : "offen", tageZw(a.von, a.bis || heute()).length, a.art === "urlaub" ? urlaubsTage(db, m, a.von, a.bis || a.von) : "", STATUS[a.status]?.label || a.status, KRANK_ARTEN.includes(a.art) ? (a.au ? "ja" : "nein") : "", a.notiz || ""];
+      })];
+    const protZ = [["Zeitpunkt", "Mitarbeiter/in", "Datum", "Aktion", "Vorher", "Nachher", "Grund", "Durch"],
+      ...db.protokoll.filter(q => liste.some(m => m.id === q.maId) && q.datum >= von && q.datum <= bis).map(q => [new Date(q.am).toLocaleString("de-AT"), nameVon(db, q.maId), fmtD(q.datum), q.aktion,
+        q.alt ? `${q.alt.beginn}–${q.alt.ende || "…"} (${q.alt.pause} min)` : "", q.neu ? `${q.neu.beginn}–${q.neu.ende} (${q.neu.pause} min)` : "", q.grund || "", nameVon(db, q.von)])];
+    const wb = X.utils.book_new();
+    const blatt = (rows, name, breiten) => { const ws = X.utils.aoa_to_sheet(rows); ws["!cols"] = breiten.map(w => ({ wch: w })); X.utils.book_append_sheet(wb, ws, name); };
+    blatt(uebersicht, "Übersicht", [11, 20, 30, 9, 9, 14, 9, 12, 11, 10, 14, 14, 14, 22]);
+    blatt(tageZ, "Arbeitszeiten", [11, 20, 11, 9, 8, 8, 10, 8, 8, 9, 22, 18, 18, 60]);
+    blatt(abwZ, "Abwesenheiten", [11, 20, 26, 11, 11, 12, 11, 11, 14, 30]);
+    blatt(protZ, "Änderungen", [18, 20, 11, 34, 22, 22, 40, 18]);
+    X.writeFile(wb, `Zeitverwaltung_${ansicht === "monat" ? monat : jahr}.xlsx`);
+    setLaedt(false);
+  }
   const mitUS = db.einstellungen.ueberstunden;
   const zt = (v, vz) => <span className={vz ? (v > 0 ? "text-emerald-700" : v < 0 ? "text-rose-700" : "") : ""}>{fmtH(v, vz)}</span>;
 
-  return <div className="space-y-5 print-full">
+  return <><div className="space-y-5 print-full seite-inhalt">
     <Seitenkopf titel="Auswertungen" sub="Arbeitszeitkonto, Überstunden, Urlaub und Krankenstand">
       <div className="inline-flex rounded-full ring-1 ring-inset ring-stone-200 bg-white p-0.5">
         {[["monat", "Monat"], ["jahr", "Jahr"]].map(([k, l]) => <button key={k} onClick={() => setAnsicht(k)} className={`px-3.5 py-1.5 text-[13px] font-semibold rounded-full ${ansicht === k ? "bg-gold-500 text-white" : "text-stone-600"}`}>{l}</button>)}
       </div>
       {ansicht === "monat" ? <MonatWahl monat={monat} setMonat={setMonat} /> :
         <select className={`${inputKlein}`} value={jahr} onChange={e => setJahr(+e.target.value)}>{[jahr - 1, jahr, jahr + 1].map(j => <option key={j}>{j}</option>)}</select>}
-      <Knopf art="sekundaer" icon="download" onClick={exportieren}>Excel (CSV)</Knopf>
-      <Knopf art="sekundaer" icon="download" onClick={exportZeiten}>Tageswerte (CSV)</Knopf>
-      <Knopf art="sekundaer" icon="drucker" onClick={() => window.print()}>PDF</Knopf>
+      <Knopf art="sekundaer" icon="download" onClick={excelHerunterladen} disabled={laedt}>{laedt ? "Wird erstellt …" : "Excel"}</Knopf>
+      <Knopf art="sekundaer" icon="drucker" onClick={() => window.print()}>Übersicht drucken</Knopf>
     </Seitenkopf>
+
+    {ansicht === "monat" && <section className="now-card rounded-[14px] text-white p-5 no-print">
+      <div className="text-[11px] tracking-[.14em] font-bold opacity-90 uppercase">📦 Monatsabschluss {fmtMonat(monat)}</div>
+      <div className="mt-2 text-[19px] font-bold">{zeilen.filter(z => z.ab?.abgeschlossenAm).length} von {zeilen.length} abgeschlossen</div>
+      <ol className="mt-2 text-[13px] opacity-90 space-y-0.5 list-decimal list-inside">
+        <li>Automatisch ergänzte Tage prüfen{autoImMonat ? ` (${autoImMonat} im Monat)` : " – keine"}</li>
+        <li>Alle abschließen – danach ist der Monat gesperrt</li>
+        <li>Herunterladen und an die Lohnverrechnung schicken</li>
+      </ol>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {istLeitung(user) && <button disabled={!vorbei || !abschliessbar.length} onClick={alleAbschliessen} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25 disabled:opacity-40">🔒 Alle abschließen{abschliessbar.length ? ` (${abschliessbar.length})` : ""}</button>}
+        <button onClick={excelHerunterladen} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">⬇️ Excel herunterladen</button>
+        <button onClick={() => setDruck(true)} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50">🖨️ Arbeitszeitnachweise (PDF)</button>
+      </div>
+      {!vorbei && <p className="mt-3 text-xs opacity-80">Abschließen geht ab dem 1. des Folgemonats.</p>}
+      <p className="mt-3 text-xs opacity-80">Excel: Übersicht, alle Arbeitszeiten pro Tag, Abwesenheiten und Änderungsprotokoll. PDF: pro Person ein Arbeitszeitnachweis mit Unterschriftszeilen – im Druckdialog „Als PDF speichern“ wählen.</p>
+    </section>}
     <div className="print-only text-lg font-semibold mb-2">{db.einstellungen.firmenname} · Auswertung {ansicht === "monat" ? fmtMonat(monat) : jahr}</div>
 
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1738,6 +1877,40 @@ function Auswertungen({ ctx }) {
     <p className="text-xs text-stone-500">
       Saldo = Ist + angerechnete Abwesenheit − Soll.{!mitUS && " Überstunden sind laut Einstellungen nicht vorgesehen (fixer Dienstplan) – ein positiver Saldo heißt: länger gearbeitet als geplant, bitte ausgleichen."}{mitUS && <> Mehrarbeit/Überstunden sind vereinfacht aus positiven Wochensalden berechnet: bei Teilzeit bis zur Normalarbeitszeit ({db.einstellungen.vollzeitWoche} h) Mehrarbeit (Zuschlag {db.einstellungen.zuschlagMehrarbeit} %, entfällt bei Ausgleich im Quartal), darüber Überstunden ({db.einstellungen.zuschlagUeberstunden} %). Durchrechnungszeiträume und KV-Sonderregeln müssen mit der Lohnverrechnung abgestimmt werden.</>}
     </p>
+  </div>
+  {druck && <DruckNachweise db={db} liste={liste} monat={monat} />}
+  </>;
+}
+
+// Arbeitszeitnachweise aller Personen eines Monats – je Person eine Seite
+function DruckNachweise({ db, liste, monat }) {
+  const tage = tageImMonat(monat), bisD = tage[tage.length - 1] < heute() ? tage[tage.length - 1] : heute();
+  return <div className="druck-bereich">
+    {liste.map((m, idx) => { const sm = summe(db, m, tage[0], tage[tage.length - 1]); const ab = abschlussVon(db, m.id, monat);
+      return <div key={m.id} className={idx < liste.length - 1 ? "seitenumbruch" : ""} style={{ fontSize: 10 }}>
+        <div className="flex justify-between items-end border-b border-stone-400 pb-1 mb-2">
+          <div><div className="text-[9px] uppercase tracking-widest text-stone-500">{db.einstellungen.firmenname} · Arbeitszeitnachweis gem. § 26 AZG</div>
+            <div className="text-base font-bold">{m.name} <span className="font-normal text-stone-600">({m.personalnr})</span></div></div>
+          <div className="text-right"><div className="text-base font-bold capitalize">{fmtMonat(monat)}</div><div className="text-stone-600">{modellVon(db, m).name}</div></div>
+        </div>
+        <table className="w-full" style={{ fontSize: 9.5 }}>
+          <thead><tr className="text-left border-b border-stone-300"><th className="py-0.5">Tag</th><th>Beginn</th><th>Ende</th><th className="text-right">Pause</th><th className="text-right">Ist</th><th className="text-right">Soll</th><th className="text-right">Saldo</th><th className="pl-3">Vermerk</th></tr></thead>
+          <tbody>{tage.map(d => { const t = tagInfo(db, m, d); if (!beschaeftigt(m, d)) return null;
+            const vermerk = [t.ft?.name, t.a ? ARTEN[t.a.art].label + (anteil(t.a) < 1 ? " (½)" : "") : null, t.z?.auto?.length ? `auto: ${t.z.auto.map(x => AUTO_TEXT[x]).join(", ")}` : null, t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? "korrigiert" : null].filter(Boolean).join(" · ");
+            return <tr key={d} className="border-b border-stone-100" style={{ color: !t.soll && !t.z ? "#A59C88" : undefined }}>
+              <td className="py-[1px]">{fmtDk(d)}</td><td>{t.z?.beginn || ""}</td><td>{t.z?.ende || ""}</td><td className="text-right">{t.z ? `${t.z.pause}′` : ""}</td>
+              <td className="text-right">{t.z ? fmtH(t.ist) : t.gut ? fmtH(t.gut) : ""}</td><td className="text-right">{t.soll ? fmtH(t.soll) : ""}</td>
+              <td className="text-right">{t.zaehlt && (t.soll || t.ist) ? fmtH(t.saldo, true) : ""}</td><td className="pl-3">{vermerk}</td></tr>; })}</tbody>
+        </table>
+        <div className="mt-2 flex gap-6 font-semibold">
+          <span>Soll {fmtH(sm.soll)} h</span><span>Ist {fmtH(sm.ist)} h</span><span>Abwesenheit {fmtH(sm.gut)} h</span><span>Saldo {fmtH(sm.saldo, true)} h</span><span>Zeitkonto {fmtH(zeitkonto(db, m, bisD), true)} h</span>
+        </div>
+        <div className="mt-1 text-stone-600">{ab?.bestaetigtAm ? `Von Mitarbeiter/in bestätigt am ${fmtD(ab.bestaetigtAm)}. ` : ""}{ab?.abgeschlossenAm ? `Abgeschlossen am ${fmtD(ab.abgeschlossenAm)} von ${nameVon(db, ab.abgeschlossenVon)}.` : "Monat noch nicht abgeschlossen."}</div>
+        <div className="flex justify-between gap-10 mt-10">
+          <div className="flex-1 border-t border-stone-500 pt-1">Datum, Unterschrift Mitarbeiter/in</div>
+          <div className="flex-1 border-t border-stone-500 pt-1">Datum, Unterschrift Arbeitgeber/in</div>
+        </div>
+      </div>; })}
   </div>;
 }
 
@@ -1750,7 +1923,7 @@ function Einstellungen({ ctx }) {
   const minFeld = (k, label, hilfe) => <Feld label={label} hilfe={hilfe}>
     <div className="flex items-center gap-2"><input type="number" className={inputCls} disabled={!admin} value={e[k] / 60} step="0.5" onChange={ev => setE(k, Math.round(+ev.target.value * 60))} /><span className="text-xs text-stone-500">h</span></div></Feld>;
   const [modellNeu, setModellNeu] = useState(null);
-  function modellSpeichern(m) { aendern(n => { const i = n.modelle.findIndex(x => x.id === m.id); if (i >= 0) n.modelle[i] = m; else n.modelle.push(m); }, "Arbeitszeitmodell gespeichert"); setModellNeu(null); }
+  function modellSpeichern(m, ab) { aendern(n => modellUebernehmen(n, m, ab), `Dienstplan gespeichert${ab > "2000-01-01" ? ` (gültig ab ${fmtD(ab)})` : ""}`); setModellNeu(null); }
 
   return <div className="space-y-5">
     <Seitenkopf titel="Einstellungen" sub={admin ? "Arbeitszeitmodelle, gesetzliche Grenzen und Firmenregeln" : "Nur lesend – Änderungen durch die Administration"} />
@@ -1764,7 +1937,7 @@ function Einstellungen({ ctx }) {
           <td className="px-3 py-2.5 text-right">{admin && <button onClick={() => setModellNeu({ ...m, plan: WT.map((_, i) => planAusModell(m, i)) })} className="p-1.5 rounded-md text-stone-500 hover:bg-stone-100"><Icon n="stift" className="w-4 h-4" /></button>}</td>
         </tr>)}
       </Tabelle>
-      <p className="px-5 py-3 text-xs text-stone-500">Änderungen an einem Modell wirken rückwirkend auf alle offenen Monate. In der Live-Version bekommt jede Zuordnung ein „gültig ab“-Datum. Für individuelle Pläne einfach je Person einen eigenen Dienstplan anlegen.</p>
+      <p className="px-5 py-3 text-xs text-stone-500">Jede Änderung gilt ab einem Datum – vergangene Tage behalten den alten Plan. Einen eigenen Plan für eine Person legst du unter „Mitarbeiter“ an.</p>
     </Karte>
 
     <Karte titel="Öffnungszeiten Salon">
@@ -1856,19 +2029,27 @@ function Einstellungen({ ctx }) {
         <Knopf art="rot" onClick={() => { if (confirm("Alle Demo-Daten in diesem Browser zurücksetzen?")) setDb(demoDaten()); }}>Zurücksetzen</Knopf>
       </div>
     </Karte>}
-    {modellNeu && <ModellDialog modell={modellNeu} oz={e.oeffnungszeiten} onSave={modellSpeichern} onClose={() => setModellNeu(null)} />}
+    {modellNeu && <ModellDialog db={db} neu={!db.modelle.some(x => x.id === modellNeu.id)} modell={modellNeu} oz={e.oeffnungszeiten} onSave={modellSpeichern} onClose={() => setModellNeu(null)} />}
   </div>;
 }
-function ModellDialog({ modell, oz, onSave, onClose }) {
+function ModellDialog({ db, modell, oz, neu, onSave, onClose }) {
   const [m, setM] = useState(modell);
+  const [ab, setAb] = useState(`${monatKey(heute())}-01`);
   const setTag = (i, t) => { const plan = [...m.plan]; plan[i] = t; setM({ ...m, plan }); };
   const summe = m.plan.reduce((s, t) => s + planStunden(t), 0);
-  return <Modal breit titel="Dienstplan" onClose={onClose} fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={() => onSave(mitStunden(m))} disabled={!m.name.trim()}>Speichern</Knopf></>}>
+  const nutzer = db.mitarbeiter.filter(x => x.modellId === modell.id);
+  // Änderungen dürfen nicht in schon abgeschlossene Monate hineinreichen
+  const gesperrtAb = !neu && db.abschluesse.some(a => a.abgeschlossenAm && a.monat >= monatKey(ab || "0000") && nutzer.some(x => x.id === a.maId));
+  const fehler = !m.name.trim() ? "Bezeichnung fehlt." : !neu && !ab ? "Gültig-ab-Datum fehlt." : gesperrtAb ? "Ab diesem Datum sind schon Monate abgeschlossen – bitte ein späteres Datum wählen (oder den Monat zuerst wieder öffnen)." : null;
+  return <Modal breit titel={neu ? "Neuer Dienstplan" : "Dienstplan & Pausen bearbeiten"} onClose={onClose} fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={() => onSave(mitStunden(m), neu ? "2000-01-01" : ab)} disabled={!!fehler}>Speichern</Knopf></>}>
     <div className="space-y-4">
-      <Feld label="Bezeichnung"><input className={inputCls} value={m.name} onChange={e => setM({ ...m, name: e.target.value })} /></Feld>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <Feld label="Bezeichnung"><input className={inputCls} value={m.name} onChange={e => setM({ ...m, name: e.target.value })} /></Feld>
+        {!neu && <Feld label="Gültig ab" hilfe="Tage davor bleiben beim alten Plan"><input type="date" className={inputCls} value={ab} onChange={e => setAb(e.target.value)} /></Feld>}
+      </div>
       <div className="space-y-1.5">
         {WT_LANG.map((t, i) => { const p = m.plan[i]; return <div key={i} className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 w-32 text-sm"><input type="checkbox" checked={!!p} onChange={e => setTag(i, e.target.checked ? (oz?.[i] ? { b: oz[i].b, e: oz[i].e, p: 60 } : { b: "09:00", e: "18:00", p: 60 }) : null)} />{t}</label>
+          <label className="flex items-center gap-2 w-32 text-sm font-semibold"><input type="checkbox" checked={!!p} onChange={e => setTag(i, e.target.checked ? (oz?.[i] ? { b: oz[i].b, e: oz[i].e, p: 60 } : { b: "09:00", e: "18:00", p: 60 }) : null)} />{t}</label>
           {p ? <>
             <input type="time" className={`${inputKlein} py-1.5`} value={p.b} onChange={e => setTag(i, { ...p, b: e.target.value })} />
             <span className="text-stone-400">–</span>
@@ -1880,7 +2061,9 @@ function ModellDialog({ modell, oz, onSave, onClose }) {
           </> : <span className="text-xs text-stone-400">frei</span>}
         </div>; })}
       </div>
-      <div className="text-sm">Summe: <b>{fmtTage(summe)} h/Woche</b></div>
+      <div className="text-sm">Summe: <b>{fmtTage(summe)} h/Woche</b>{nutzer.length > 0 && <span className="text-stone-500"> · gilt für {nutzer.map(x => x.name.split(" ")[0]).join(", ")}</span>}</div>
+      {modell.versionen?.length > 1 && <div className="text-xs text-stone-500">Bisherige Versionen: {modell.versionen.map(v => `ab ${fmtD(v.ab)} (${fmtTage(v.plan.reduce((s, t) => s + planStunden(t), 0))} h)`).join(" · ")}</div>}
+      {fehler && <p className="text-xs text-rose-700">{fehler}</p>}
     </div>
   </Modal>;
 }

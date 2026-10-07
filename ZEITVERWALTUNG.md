@@ -17,6 +17,8 @@ Navigation: **Dashboard → Zeiterfassung → Urlaub → Krankenstand → Mitarb
 
 - **Stempeln** – am eigenen Handy (Stempeluhr im Dashboard) oder am **Stempel-Tablet im Salon**: Name antippen → Kommen / Pause / Gehen. Hat jemand das Kommen vergessen, gibt es „Gehen (Kommen vergessen)“ – der Beginn kommt aus dem Dienstplan.
 - **Fixer Dienstplan & Automatik** – Dienstplan mit Beginn, Ende und Pause je Wochentag. Vergessenes Gehen, fehlende Pausen und ganz vergessene Tage werden automatisch laut Plan ergänzt (live: jede Nacht per Server-Job). Alles Automatische ist mit „auto“ markiert, steht im Protokoll und wird beim Monatsabschluss geprüft. Überstunden lassen sich abschalten; längere Tage erscheinen dann als Hinweis.
+- **Bearbeiten durch die Leitung** – Dienstplan & Pausen (mit „gültig ab“, vergangene Tage behalten den alten Plan; auch eigener Plan pro Person), einzelne Tage (Zeiten, Pause), vergessenen Urlaub oder Krankenstand nachtragen (🌴 in der Zeiterfassung) und bestehende Einträge bearbeiten. Automatisch ergänzte Arbeitstage werden dabei ersetzt.
+- **Monatsabschluss & Download** – unter *Auswertungen*: alle abschließen, **Excel** (Übersicht, Arbeitszeiten pro Tag, Abwesenheiten, Änderungsprotokoll) und **Arbeitszeitnachweise als PDF** (eine Seite pro Person mit Unterschriftszeilen).
 - **Login** – Demo-Auswahl einer Person; Rolle Administrator / Vorgesetzte / Mitarbeiter.
 - **Dashboard** – Stempeluhr, Zeitkonto, Resturlaub; für die Leitung: wer heute im Dienst ist, wer fehlt, offene Anträge, offene Monatsabschlüsse, ausständige AU-Bestätigungen, Verstöße gegen das Arbeitszeitgesetz.
 - **Zeiterfassung** – Kommen / Pause / Gehen, Monatsliste mit Beginn, Ende, Pause, Ist, Soll, Saldo; Zeitkonto kumuliert; Korrekturen (Mitarbeiter beantragt, Vorgesetzte genehmigt bzw. ändert direkt – immer mit Grund und Änderungsprotokoll); Monatsabschluss in zwei Schritten (Mitarbeiter bestätigt → Leitung schließt ab → Monat gesperrt; nur Admin öffnet wieder, mit Grund); Arbeitszeitnachweis zum Drucken mit Unterschriftszeilen.
@@ -88,7 +90,7 @@ Das Skript wurde lokal gegen eine nachgebaute Supabase-Umgebung getestet (zweima
 ## 5. Offene Fragen an dich
 
 1. **Vorgesetzte:** Gibt es neben dir eine Salonleitung, die Urlaub genehmigen soll? Dafür muss eine bestehende Policy von `abw_anfragen` erweitert werden (im SQL auskommentiert vorbereitet).
-2. **Dienstpläne:** geklärt – fixer Plan, keine Überstunden. Öffnungszeiten: So + Mo geschlossen, Di + Mi 9–18, Do + Fr 9–19, Sa 8–14, Di–Fr je 1 h Pause (= 40 h). Offen: abweichende Pläne einzelner Personen (Teilzeit).
+2. **Dienstpläne:** geklärt – fixer Plan, keine Überstunden. Öffnungszeiten: So + Mo geschlossen, Di + Mi 9–18, Do + Fr 9–19, Sa 8–14, Di–Fr je 1 h Pause (= 40 h). Derzeit keine Teilzeit; eigene Pläne pro Person sind möglich.
 3. **Pausen-Vereinbarung:** Steht die Pause (Dauer, Zeitfenster) schriftlich im Dienstvertrag? Das ist die Voraussetzung, dass Pausen automatisch eingetragen werden dürfen.
 4. **Lehrlinge:** geklärt – Wien 1. Lj. 1,5 Tage, 2./3. Lj. 1 Tag; Schultage fix je Lehrling; unter/über 18 automatisch über das Geburtsdatum.
 5. **Krankenstand mit offenem Ende:** In `abw_anfragen` ist `bis` heute Pflicht. Offenes Ende erlauben (dann muss die Abwesenheiten-App damit umgehen) oder „voraussichtliches Ende“ eintragen?

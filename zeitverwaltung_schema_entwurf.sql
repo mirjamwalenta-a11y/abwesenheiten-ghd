@@ -29,13 +29,15 @@ ALTER TABLE zeit_arbeitsmodelle ENABLE ROW LEVEL SECURITY;
 
 -- Fixer Dienstplan: Beginn, Ende, Pause je Wochentag (0 = Montag … 6 = Sonntag).
 -- Kein Eintrag = frei. Sollstunden = Ende − Beginn − Pause.
+-- gueltig_ab: jede Änderung ist eine neue Version, vergangene Tage behalten ihren Plan.
 CREATE TABLE IF NOT EXISTS zeit_modell_tage (
   modell_id  uuid NOT NULL REFERENCES zeit_arbeitsmodelle(id) ON DELETE CASCADE,
+  gueltig_ab date NOT NULL DEFAULT '2000-01-01',
   wochentag  smallint NOT NULL CHECK (wochentag BETWEEN 0 AND 6),
   beginn     time NOT NULL,
   ende       time NOT NULL,
   pause_min  integer NOT NULL DEFAULT 0 CHECK (pause_min >= 0),
-  PRIMARY KEY (modell_id, wochentag),
+  PRIMARY KEY (modell_id, gueltig_ab, wochentag),
   CHECK (ende > beginn)
 );
 ALTER TABLE zeit_modell_tage ENABLE ROW LEVEL SECURITY;
@@ -192,6 +194,7 @@ CREATE OR REPLACE FUNCTION zeit_plan_am(p_person text, p_datum date) RETURNS zei
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   SELECT t.* FROM zeit_modell_zuordnung z
   JOIN zeit_modell_tage t ON t.modell_id = z.modell_id AND t.wochentag = extract(isodow FROM p_datum)::int - 1
+   AND t.gueltig_ab = (SELECT max(gueltig_ab) FROM zeit_modell_tage WHERE modell_id = z.modell_id AND gueltig_ab <= p_datum)
   WHERE z.person_id = p_person AND z.gueltig_ab <= p_datum
     AND z.gueltig_ab = (SELECT max(gueltig_ab) FROM zeit_modell_zuordnung WHERE person_id = p_person AND gueltig_ab <= p_datum);
 $$;
