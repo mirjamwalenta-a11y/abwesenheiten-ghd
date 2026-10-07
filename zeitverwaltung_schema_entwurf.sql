@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS zeit_profil (
   funktion         text,
   vorgesetzter_id  text REFERENCES abw_team(id),
   kjbg             boolean NOT NULL DEFAULT false,   -- Jugendliche unter 18
+  lehrbeginn       date,                             -- nur Lehrlinge; Lehrjahr wird daraus berechnet
   saldo_start_min  integer NOT NULL DEFAULT 0,       -- Übertrag Zeitkonto beim Start
   urlaub_uebertrag numeric(4,1) NOT NULL DEFAULT 0,
   CHECK (vorgesetzter_id IS NULL OR vorgesetzter_id <> person_id)
@@ -126,6 +127,12 @@ ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS au_bestaetigung boolean;
 ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS notiz text;
 ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS entschieden_von text REFERENCES abw_team(id);
 ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS entschieden_am timestamptz;
+-- Halbe Tage (z. B. halber Berufsschultag im 1. Lehrjahr): 1 = ganzer Tag
+ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS anteil numeric(3,2) NOT NULL DEFAULT 1;
+ALTER TABLE abw_anfragen DROP CONSTRAINT IF EXISTS abw_anfragen_anteil_check;
+ALTER TABLE abw_anfragen ADD CONSTRAINT abw_anfragen_anteil_check CHECK (anteil IN (0.5, 1));
+-- Berufsschultage je Lehrjahr kommen in die bestehende abw_einstellungen,
+-- Schlüssel 'bs_tage_je_lehrjahr', z. B. {"1":1.5,"2":1,"3":1,"4":1} (Wien).
 
 -- Nicht-anonym, sonst nichts: anon hat auf keiner Zeit-Tabelle etwas verloren
 REVOKE ALL ON zeit_arbeitsmodelle, zeit_profil, zeit_modell_zuordnung, zeit_buchungen,

@@ -42,7 +42,7 @@ const { useState, useEffect, useMemo } = React;
 //  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
 //  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
 // ═════════════════════════════════════════════════════════════════════════════
-const LS_KEY = "ghd-zeitverwaltung-demo-v1";
+const LS_KEY = "ghd-zeitverwaltung-demo-v2";
 const SESS_KEY = "ghd-zeitverwaltung-demo-user";
 
 // ─── DATUM & ZEIT ─────────────────────────────────────────────────────────────
@@ -159,6 +159,7 @@ const STANDARD_EINSTELLUNGEN = {
   zuschlagUeberstunden: 50,    // § 10 AZG
   zuschlagMehrarbeit: 25,      // § 19d AZG (Teilzeit)
   urlaubBasisTage: 25,         // UrlG: 5 Wochen = 25 Arbeitstage bei 5-Tage-Woche
+  bsTageJeLehrjahr: { 1: 1.5, 2: 1, 3: 1, 4: 1 }, // Berufsschule Wien: Tage pro Woche je Lehrjahr
   auAbTag: 4,                  // Firmenregel: AU-Bestätigung ab dem x. Krankenstandstag
   schliesstage: [0, 6],        // Mo, So
   kontoStart: null,
@@ -191,7 +192,7 @@ function tagInfo(db, ma, d) {
   const z = zeitAm(db, ma.id, d), a = abwAm(db, ma.id, d), ft = feiertag(d);
   const soll = sollMin(db, ma, d);
   const ist = nettoMin(z);
-  const gut = a && ARTEN[a.art]?.gutschrift ? soll : 0;
+  const gut = a && ARTEN[a.art]?.gutschrift ? Math.round(soll * anteil(a)) : 0;
   // Ein Tag zählt erst ins Konto, wenn er vorbei ist oder heute bereits ausgestempelt wurde
   const abgeschlossen = d < heute() || (d === heute() && z && z.ende);
   return { d, z, a, ft, soll, ist, gut, saldo: ist + gut - soll, zaehlt: abgeschlossen && beschaeftigt(ma, d) };
@@ -236,7 +237,10 @@ function zeitkonto(db, ma, bis) {
 function pruefeTag(db, ma, d) {
   const e = db.einstellungen, z = zeitAm(db, ma.id, d), h = [];
   if (!z || !z.beginn || !z.ende) return h;
-  const kj = !!ma.kjbg, netto = nettoMin(z), pause = z.pause || 0;
+  const kj = !!ma.kjbg, pause = z.pause || 0;
+  const abwTag = abwAm(db, ma.id, d);
+  // Berufsschulzeit wird auf die Arbeitszeit angerechnet (halber Schultag + Salon)
+  const netto = nettoMin(z) + (abwTag && abwTag.art === "berufsschule" ? Math.round(modellSollMin(db, ma, d) * anteil(abwTag)) : 0);
   const pauseAb = kj ? e.kjbgPauseAbMin : e.pauseAbMin;
   if (netto > pauseAb && pause < e.pauseMin)
     h.push({ stufe: "fehler", text: `Ruhepause zu kurz: ${pause} min bei ${fmtH(netto)} h (${kj ? "§ 15 KJBG" : "§ 11 AZG"}: mind. ${e.pauseMin} min)` });
@@ -310,6 +314,44 @@ function abwKalendertage(db, ma, arten, von, bis) {
   });
   return n;
 }
+// ─── LEHRLINGE & BERUFSSCHULE ─────────────────────────────────────────────────
+// Halbe Tage: Abwesenheiten können anteil 0.5 haben (z. B. Berufsschule am Vormittag)
+function anteil(a) { return a && a.anteil ? +a.anteil : 1; }
+function lehrjahr(ma, d) {
+  if (!ma.lehrbeginn) return null;
+  const e = parseD(ma.lehrbeginn), s = parseD(d || heute());
+  let m = (s.getFullYear() - e.getFullYear()) * 12 + s.getMonth() - e.getMonth();
+  if (s.getDate() < e.getDate()) m--;
+  return m < 0 ? null : Math.floor(m / 12) + 1;
+}
+// Berufsschultage pro Woche laut Einstellung (Wien: 1. Lj. 1,5 Tage, ab 2. Lj. 1 Tag)
+function bsTageProWoche(db, ma, d) {
+  const lj = lehrjahr(ma, d); if (!lj) return 0;
+  const r = db.einstellungen.bsTageJeLehrjahr || {};
+  return +(r[lj] ?? r[Math.max(...Object.keys(r).map(Number))] ?? 1);
+}
+// Vorschlag: erster und zweiter Arbeitstag des Modells (bei Di–Sa also Di ganz, Mi ggf. halb)
+function bsWochentage(db, ma) {
+  const t = modellVon(db, ma).tage.map((h, i) => +h > 0 ? i : null).filter(i => i !== null);
+  return { tag1: t[0] ?? 1, tag2: t[1] ?? 2 };
+}
+// Termine im Zeitraum; das Lehrjahr wird pro Datum bestimmt, ein Wechsel (z. B. 1. → 2. Lj.) greift automatisch
+function bsTermine(db, ma, von, bis, plan, ohneSommer) {
+  const out = [];
+  for (const d of tageZw(von, bis)) {
+    const mo = +d.slice(5, 7);
+    if (ohneSommer && (mo === 7 || mo === 8)) continue;
+    if (feiertag(d) || !beschaeftigt(ma, d) || !(+modellVon(db, ma).tage[wd(d)])) continue;
+    const q = bsTageProWoche(db, ma, d);
+    let a = 0;
+    if (wd(d) === +plan.tag1) a = Math.min(1, q);
+    else if (wd(d) === +plan.tag2) a = Math.min(1, Math.max(0, q - 1));
+    if (a > 0) out.push({ d, anteil: a });
+  }
+  return out;
+}
+function fmtTage(n) { return String(n).replace(".", ","); }
+
 // Entgeltfortzahlung bei Krankheit (§ 8 AngG / EFZG, seit 2018 vereinheitlicht)
 function efzWochen(ma) {
   const j = dienstjahre(ma.eintritt);
@@ -356,7 +398,8 @@ function demoDaten() {
     { id: "ma4", name: "Elena Novak",      personalnr: "P-004", abteilung: "Coloration", funktion: "Coloristin",         eintritt: "2021-05-01", modellId: "tz30",     urlaubstage: 20, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
     { id: "ma5", name: "Mario Gruber",     personalnr: "P-005", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2023-01-09", modellId: "vz40lang", urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
     { id: "ma6", name: "Lisa Wagner",      personalnr: "P-006", abteilung: "Rezeption",  funktion: "Rezeption",          eintritt: "2024-03-01", modellId: "tz20",     urlaubstage: 15, urlaubUebertrag: 1, vorgesetzterId: "ma1", rolle: "mitarbeiter", aktiv: true },
-    { id: "ma7", name: "Nina Hofer",       personalnr: "P-007", abteilung: "Ausbildung", funktion: "Lehrling 2. Lj.",    eintritt: "2025-09-01", modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, kjbg: true },
+    { id: "ma7", name: "Nina Hofer",       personalnr: "P-007", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: "2025-09-01", modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, kjbg: true, lehrbeginn: "2025-09-01" },
+    { id: "ma9", name: "Lea Fuchs",        personalnr: "P-009", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: `${m1}-01`,   modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, kjbg: true, lehrbeginn: `${m1}-01` },
     { id: "ma8", name: "Tobias Reiter",    personalnr: "P-008", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2020-04-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: false, austritt: `${m0}-15` },
   ].map(m => ({ saldoStart: 0, kjbg: false, ...m }));
 
@@ -374,19 +417,25 @@ function demoDaten() {
     abw("ma4", "za",     addTage(h, 7),  addTage(h, 7),  "beantragt", { beantragtAm: h, notiz: "Zeitausgleich Überstunden" }),
     abw("ma2", "fortbildung", `${m1}-28`, `${m1}-28`, "genehmigt", { entschiedenVon: "ma1", notiz: "Coloration-Seminar" }),
   ];
-  // Lehrling: Berufsschule jeden Dienstag
-  for (let d = start; d <= addTage(h, 60); d = addTage(d, 1))
-    if (wd(d) === 1 && !feiertag(d)) abwesenheiten.push(abw("ma7", "berufsschule", d, d, "genehmigt", { entschiedenVon: "ma2" }));
-
   const db0 = { modelle, mitarbeiter, abwesenheiten, zeiten: [], korrekturen: [], abschluesse: [], protokoll: [],
     einstellungen: { ...STANDARD_EINSTELLUNGEN, kontoStart: start } };
+  // Lehrlinge: Berufsschule nach Lehrjahr (Sommerferien Juli/August schulfrei)
+  for (const ma of mitarbeiter.filter(m => m.lehrbeginn))
+    bsTermine(db0, ma, start, addTage(h, 60), bsWochentage(db0, ma), true)
+      .forEach(t => abwesenheiten.push(abw(ma.id, "berufsschule", t.d, t.d, "genehmigt", { entschiedenVon: "ma2", anteil: t.anteil < 1 ? t.anteil : undefined, notiz: t.anteil < 1 ? "Vormittag" : "" })));
 
   const zeiten = [];
   for (const ma of mitarbeiter) {
     const mod = modellVon(db0, ma);
     for (let d = start; d < h; d = addTage(d, 1)) {
       const soll = Math.round((+mod.tage[wd(d)] || 0) * 60);
-      if (!soll || feiertag(d) || !beschaeftigt(ma, d) || abwAm(db0, ma.id, d)) continue;
+      const a = abwAm(db0, ma.id, d);
+      if (!soll || feiertag(d) || !beschaeftigt(ma, d) || (a && anteil(a) >= 1)) continue;
+      if (a) { // halber Schultag: nachmittags im Salon
+        const rest = Math.round(soll * (1 - anteil(a)));
+        zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: "13:30", ende: min2hm(810 + rest), pause: 0, quelle: "stempel" });
+        continue;
+      }
       const b = hm2min(mod.beginn) + zw(-3, 2) * 5;
       let netto = soll + zw(-4, 9) * 5;
       let pause = soll >= 360 ? [30, 30, 45, 60][zw(0, 3)] : 0;
@@ -493,10 +542,10 @@ function Badge({ status, children }) {
   const s = STATUS[status];
   return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset whitespace-nowrap ${s ? s.cls : "bg-stone-100 text-stone-700 ring-stone-200"}`}>{children || s?.label || status}</span>;
 }
-function ArtChip({ art }) {
+function ArtChip({ art, halb }) {
   const a = ARTEN[art];
   return <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap ${a?.hell || "bg-stone-100"}`}>
-    <span className={`w-1.5 h-1.5 rounded-full ${a?.punkt || "bg-stone-400"}`} />{a?.label || art}
+    <span className={`w-1.5 h-1.5 rounded-full ${a?.punkt || "bg-stone-400"}`} />{a?.label || art}{halb ? " · ½ Tag" : ""}
   </span>;
 }
 function Kpi({ label, wert, sub, ton }) {
@@ -911,7 +960,7 @@ function Zeiterfassung({ ctx }) {
               <td className="px-3 py-2">
                 <div className="flex flex-wrap items-center gap-1">
                   {t.ft && <span className="text-xs text-rose-700 font-medium">{t.ft.name}</span>}
-                  {t.a && <ArtChip art={t.a.art} />}
+                  {t.a && <ArtChip art={t.a.art} halb={anteil(t.a) < 1} />}
                   {beantragt && !t.a && <span className="text-xs text-amber-700">{ARTEN[beantragt.art].label} beantragt</span>}
                   {korr && <Badge status="offen">Korrektur offen</Badge>}
                   {t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? <span className="text-[11px] text-stone-500" title="Manuell erfasst oder korrigiert – siehe Protokoll">✎</span> : null}
@@ -964,7 +1013,7 @@ function AbwDialog({ ctx, modus, onClose }) {
   const { db, user, sichtbar, aendern } = ctx;
   const auswahl = sichtbar.filter(m => m.aktiv && (m.id === user.id || darfVerwalten(user, m)));
   const arten = modus === "urlaub" ? ["urlaub"] : Object.keys(ARTEN).filter(a => a !== "urlaub");
-  const [f, setF] = useState({ maId: user.id, art: arten[0], von: heute(), bis: heute(), offen: false, au: false, notiz: "" });
+  const [f, setF] = useState({ maId: user.id, art: arten[0], von: heute(), bis: heute(), offen: false, au: false, halb: false, notiz: "" });
   const ma = db.mitarbeiter.find(m => m.id === f.maId);
   const art = ARTEN[f.art];
   const fuerAndere = f.maId !== user.id;
@@ -976,11 +1025,12 @@ function AbwDialog({ ctx, modus, onClose }) {
   const kollegen = db.abwesenheiten.filter(a => a.maId !== f.maId && wirksam(a) && a.von <= (bis || f.von) && (a.bis || heute()) >= f.von && db.mitarbeiter.find(m => m.id === a.maId)?.aktiv);
   const gesperrtIn = tageZw(f.von, bis || f.von).some(d => gesperrt(db, f.maId, d));
   const fehler = !f.von ? "Beginn angeben." : bis && bis < f.von ? "Ende liegt vor dem Beginn." : ueberschneidung.length ? "Für diesen Zeitraum gibt es bereits einen Eintrag." : gesperrtIn ? "Zeitraum liegt in einem abgeschlossenen Monat." : f.art === "urlaub" && tage === 0 ? "Im Zeitraum liegen keine Arbeitstage." : null;
+  const halbMoeglich = !art.meldung && f.art !== "urlaub" && !f.offen && f.von === f.bis;
   const status = art.meldung ? "gemeldet" : (fuerAndere && darfVerwalten(user, ma)) || (istAdmin(user) && !fuerAndere) ? "genehmigt" : "beantragt";
 
   function speichern() {
     aendern(n => {
-      n.abwesenheiten.push({ id: uid(), maId: f.maId, art: f.art, von: f.von, bis, status, au: art.meldung ? f.au : undefined, notiz: f.notiz, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: status === "genehmigt" ? user.id : undefined });
+      n.abwesenheiten.push({ id: uid(), maId: f.maId, art: f.art, von: f.von, bis, status, anteil: halbMoeglich && f.halb ? 0.5 : undefined, au: art.meldung ? f.au : undefined, notiz: f.notiz, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: status === "genehmigt" ? user.id : undefined });
     }, status === "beantragt" ? "Antrag gesendet" : "Eintrag gespeichert");
     onClose();
   }
@@ -993,6 +1043,7 @@ function AbwDialog({ ctx, modus, onClose }) {
       <Feld label="Bis">
         <input type="date" className={inputCls} value={f.offen ? "" : f.bis} disabled={f.offen} min={f.von} onChange={e => setF({ ...f, bis: e.target.value })} />
         {art.meldung && <label className="flex items-center gap-2 mt-1.5 text-xs text-stone-600"><input type="checkbox" checked={f.offen} onChange={e => setF({ ...f, offen: e.target.checked })} />Ende noch offen</label>}
+        {halbMoeglich && <label className="flex items-center gap-2 mt-1.5 text-xs text-stone-600"><input type="checkbox" checked={f.halb} onChange={e => setF({ ...f, halb: e.target.checked })} />nur halber Tag</label>}
       </Feld>
       {art.meldung && <Feld label="Arbeitsunfähigkeitsbestätigung" breit hilfe={`Firmenregel: Bestätigung ab dem ${db.einstellungen.auAbTag}. Kalendertag vorlegen (änderbar unter Einstellungen).`}>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.au} onChange={e => setF({ ...f, au: e.target.checked })} />AU-Bestätigung liegt vor</label>
@@ -1105,6 +1156,8 @@ function Krankenstand({ ctx }) {
   const laufend = alle.filter(a => wirksam(a) && a.von <= h && (!a.bis || a.bis >= h));
   const offen = alle.filter(a => a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)));
   const liste = alle.filter(a => (!filterArt || a.art === filterArt) && a.art !== "berufsschule" || (filterArt === "berufsschule" && a.art === "berufsschule")).sort((a, b) => b.von.localeCompare(a.von));
+  const [bsPlaner, setBsPlaner] = useState(false);
+  const lehrlinge = sichtbar.filter(m => m.aktiv && m.lehrbeginn);
   const darfBearbeiten = a => a.maId === user.id || darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId));
 
   function gesundMelden(a, bis) { aendern(n => { n.abwesenheiten.find(q => q.id === a.id).bis = bis; }, "Gesundmeldung eingetragen"); setGesund(null); }
@@ -1113,6 +1166,7 @@ function Krankenstand({ ctx }) {
 
   return <div className="space-y-5">
     <Seitenkopf titel="Krankenstand & Abwesenheiten" sub="Krankmeldungen, Pflegefreistellung, Zeitausgleich, Berufsschule und mehr">
+      {leitung && lehrlinge.length > 0 && <Knopf art="sekundaer" icon="kalender" onClick={() => setBsPlaner(true)}>Berufsschule planen</Knopf>}
       <Knopf icon="plus" onClick={() => setDialog(true)}>Krankmeldung / Abwesenheit</Knopf>
     </Seitenkopf>
     <div className="grid lg:grid-cols-2 gap-5">
@@ -1138,6 +1192,26 @@ function Krankenstand({ ctx }) {
           <p><b>Pflegefreistellung:</b> bis zu einer Woche pro Arbeitsjahr (§ 16 UrlG).</p>
         </Karte>}
     </div>
+
+    {lehrlinge.length > 0 && <Karte titel="Lehrlinge & Berufsschule" innen="p-0">
+      <Tabelle kopf={["Name", "Lehrbeginn", "Lehrjahr", { t: "BS-Tage/Woche", cls: "text-right" }, "Geplant bis", "Nächster Schultag"]}>
+        {lehrlinge.map(m => {
+          const bs = db.abwesenheiten.filter(a => a.maId === m.id && a.art === "berufsschule" && wirksam(a));
+          const bisD = bs.reduce((x, a) => a.von > x ? a.von : x, "");
+          const naechster = bs.filter(a => a.von >= h).sort((a, b) => a.von.localeCompare(b.von))[0];
+          const ljJetzt = lehrjahr(m, h), ljBis = bisD ? lehrjahr(m, bisD) : ljJetzt;
+          return <tr key={m.id}>
+            <td className="px-3 py-2.5 font-medium whitespace-nowrap">{m.name}</td>
+            <td className="px-3 py-2.5 tabular">{fmtD(m.lehrbeginn)}</td>
+            <td className="px-3 py-2.5">{ljJetzt ? `${ljJetzt}. Lehrjahr` : "–"}{ljBis && ljBis !== ljJetzt ? <span className="text-xs text-stone-500"> → {ljBis}. im Planzeitraum</span> : ""}</td>
+            <td className="px-3 py-2.5 text-right tabular">{fmtTage(bsTageProWoche(db, m, h))}</td>
+            <td className="px-3 py-2.5 tabular">{bisD ? fmtD(bisD) : <span className="text-amber-700">nichts geplant</span>}</td>
+            <td className="px-3 py-2.5 tabular">{naechster ? `${fmtDk(naechster.von)}${anteil(naechster) < 1 ? " (½)" : ""}` : "–"}</td>
+          </tr>;
+        })}
+      </Tabelle>
+      <p className="px-5 py-3 text-xs text-stone-500">Berufsschulzeit gilt als Arbeitszeit und wird im Zeitkonto voll angerechnet, ein halber Schultag zur Hälfte – den Rest des Tages arbeitet der Lehrling im Salon.</p>
+    </Karte>}
 
     {leitung && <Karte titel={`Krankenstandstage ${jahr}`} innen="p-0">
       <Tabelle kopf={["Name", { t: "Kalendertage", cls: "text-right" }, { t: "Fälle", cls: "text-right" }, { t: "Pflegefr.", cls: "text-right" }, { t: "Dienstjahre", cls: "text-right" }, { t: "EFZ voll", cls: "text-right" }]}>
@@ -1174,7 +1248,56 @@ function Krankenstand({ ctx }) {
       </Tabelle>}
     </Karte>
     {dialog && <AbwDialog ctx={ctx} modus="abw" onClose={() => setDialog(false)} />}
+    {bsPlaner && <BsPlaner ctx={ctx} lehrlinge={lehrlinge.filter(m => darfVerwalten(user, m))} onClose={() => setBsPlaner(false)} />}
   </div>;
+}
+function BsPlaner({ ctx, lehrlinge, onClose }) {
+  const { db, user, aendern } = ctx;
+  const h = heute();
+  const schuljahrEnde = `${+h.slice(5, 7) >= 7 ? parseInt(h) + 1 : parseInt(h)}-06-30`;
+  const [maId, setMaId] = useState(lehrlinge[0]?.id || "");
+  const ma = db.mitarbeiter.find(m => m.id === maId);
+  const [plan, setPlan] = useState(() => ma ? bsWochentage(db, ma) : { tag1: 1, tag2: 2 });
+  const [von, setVon] = useState(h);
+  const [bis, setBis] = useState(schuljahrEnde);
+  const [ohneSommer, setOhneSommer] = useState(true);
+  const [ersetzen, setErsetzen] = useState(true);
+  if (!ma) return <Modal titel="Berufsschule planen" onClose={onClose}><Leer text="Keine Lehrlinge, für die du zuständig bist." /></Modal>;
+  const termine = bis >= von ? bsTermine(db, ma, von, bis, plan, ohneSommer) : [];
+  const bestehend = db.abwesenheiten.filter(a => a.maId === ma.id && a.art === "berufsschule" && a.status !== "storniert" && a.von >= von && a.von <= bis && !gesperrt(db, ma.id, a.von));
+  const konflikt = termine.filter(t => db.abwesenheiten.some(a => a.maId === ma.id && a.art !== "berufsschule" && (wirksam(a) || a.status === "beantragt") && t.d >= a.von && t.d <= (a.bis || a.von)));
+  const neu = termine.filter(t => !konflikt.includes(t) && !gesperrt(db, ma.id, t.d) && (ersetzen || !bestehend.some(a => a.von === t.d)));
+  const ljListe = [...new Set(termine.map(t => lehrjahr(ma, t.d)))];
+  function speichern() {
+    aendern(n => {
+      if (ersetzen) { const ids = new Set(bestehend.map(a => a.id)); n.abwesenheiten = n.abwesenheiten.filter(a => !ids.has(a.id)); }
+      neu.forEach(t => n.abwesenheiten.push({ id: uid(), maId: ma.id, art: "berufsschule", von: t.d, bis: t.d, status: "genehmigt", anteil: t.anteil < 1 ? t.anteil : undefined, notiz: t.anteil < 1 ? "halber Schultag" : "", beantragtAm: h, erfasstVon: user.id, entschiedenVon: user.id }));
+    }, `${neu.length} Berufsschultage eingetragen`);
+    onClose();
+  }
+  const tagWahl = (k, label) => <Feld label={label}><select className={inputCls} value={plan[k]} onChange={e => setPlan({ ...plan, [k]: +e.target.value })}>
+    {modellVon(db, ma).tage.map((x, i) => +x > 0 ? <option key={i} value={i}>{WT_LANG[i]}</option> : null)}</select></Feld>;
+  return <Modal breit titel="Berufsschule planen" onClose={onClose}
+    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!neu.length && !(ersetzen && bestehend.length)}>{neu.length} Tage eintragen</Knopf></>}>
+    <div className="grid sm:grid-cols-2 gap-4">
+      <Feld label="Lehrling" breit><select className={inputCls} value={maId} onChange={e => { setMaId(e.target.value); const m = db.mitarbeiter.find(x => x.id === e.target.value); setPlan(bsWochentage(db, m)); }}>
+        {lehrlinge.map(m => <option key={m.id} value={m.id}>{m.name} · {lehrjahr(m, h) || "–"}. Lehrjahr</option>)}</select></Feld>
+      <Feld label="Von"><input type="date" className={inputCls} value={von} onChange={e => setVon(e.target.value)} /></Feld>
+      <Feld label="Bis" hilfe="Standard: Ende des Schuljahres"><input type="date" className={inputCls} value={bis} min={von} onChange={e => setBis(e.target.value)} /></Feld>
+      {tagWahl("tag1", "Schultag (ganzer Tag)")}
+      {tagWahl("tag2", "Zusätzlicher halber Tag (1. Lehrjahr)")}
+      <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ohneSommer} onChange={e => setOhneSommer(e.target.checked)} />Sommerferien (Juli/August) auslassen</label>
+      <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ersetzen} onChange={e => setErsetzen(e.target.checked)} />Bereits geplante Berufsschultage in diesem Zeitraum ersetzen ({bestehend.length})</label>
+    </div>
+    <div className="mt-4 space-y-2">
+      <div className="rounded-lg bg-stone-50 ring-1 ring-inset ring-stone-200 p-3 text-sm">
+        <b>{neu.length} Schultage</b> ({fmtTage(neu.reduce((s, t) => s + t.anteil, 0))} Tage gerechnet, davon {neu.filter(t => t.anteil < 1).length} halbe) · Lehrjahr {ljListe.join(" → ") || "–"}
+        <div className="text-xs text-stone-500 mt-1">Regel: {Object.entries(db.einstellungen.bsTageJeLehrjahr).map(([lj, t]) => `${lj}. Lj. ${fmtTage(t)} Tag${+t === 1 ? "" : "e"}`).join(" · ")} pro Woche (änderbar unter Einstellungen). Feiertage werden übersprungen, ein Lehrjahreswechsel im Zeitraum wird automatisch berücksichtigt.</div>
+      </div>
+      {konflikt.length > 0 && <Hinweis ton="warn">{konflikt.length} Tage übersprungen, weil schon Urlaub oder eine andere Abwesenheit eingetragen ist.</Hinweis>}
+      <Hinweis>Herbst-, Weihnachts-, Semester- und Osterferien der Berufsschule danach einzeln unter „Alle Einträge“ (Filter Berufsschule) stornieren.</Hinweis>
+    </div>
+  </Modal>;
 }
 function GesundForm({ a, onOk, onAbbruch }) {
   const [bis, setBis] = useState(addTage(heute(), -1) < a.von ? a.von : addTage(heute(), -1));
@@ -1215,8 +1338,11 @@ function MaDialog({ ctx, ma, onClose }) {
       <Feld label="Vorgesetzte/r"><select className={inputCls} value={f.vorgesetzterId || ""} onChange={e => set("vorgesetzterId", e.target.value || null)}>
         <option value="">– keine/r –</option>{db.mitarbeiter.filter(m => m.id !== f.id && m.aktiv && m.rolle !== "mitarbeiter").map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
       <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || f.id === user.id} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
+      {f.lehrbeginn && <Feld label="Lehrbeginn" hilfe={`Derzeit ${lehrjahr(f, heute()) || "–"}. Lehrjahr · Berufsschule ${fmtTage(bsTageProWoche(db, f, heute()))} Tag(e)/Woche`}>
+        <input type="date" className={inputCls} value={f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.value || undefined)} /></Feld>}
       <Feld label="Zeitkonto-Übertrag (Minuten)" hilfe="Saldo aus dem alten System beim Start"><input type="number" className={inputCls} value={f.saldoStart} onChange={e => set("saldoStart", e.target.value)} /></Feld>
       <div className="space-y-2 pt-5">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.checked ? (f.eintritt || heute()) : undefined)} />Lehrling</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.kjbg} onChange={e => set("kjbg", e.target.checked)} />Jugendliche/r unter 18 (KJBG-Regeln)</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.aktiv} disabled={f.id === user.id} onChange={e => set("aktiv", e.target.checked)} />Aktiv (kann sich anmelden)</label>
       </div>
@@ -1240,7 +1366,7 @@ function Mitarbeiter({ ctx }) {
     <Karte innen="p-0">
       <Tabelle kopf={["Name", "Pers.-Nr.", "Abteilung", "Eintritt", "Modell", { t: "Std./Wo.", cls: "text-right" }, { t: "Urlaub", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, "Vorgesetzte/r", "Rolle", ""]}>
         {liste.map(m => { const konto = zeitkonto(db, m, heute()); const k = urlaubsKonto(db, m, jahr); return <tr key={m.id} className={m.aktiv ? "" : "text-stone-400"}>
-          <td className="px-3 py-2.5"><div className="flex items-center gap-2.5"><Avatar name={m.name} klein /><div><div className="font-medium whitespace-nowrap">{m.name}{m.kjbg && <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 rounded px-1">KJBG</span>}</div><div className="text-xs text-stone-500">{m.funktion}</div></div></div></td>
+          <td className="px-3 py-2.5"><div className="flex items-center gap-2.5"><Avatar name={m.name} klein /><div><div className="font-medium whitespace-nowrap">{m.name}{m.lehrbeginn && lehrjahr(m, heute()) && <span className="ml-1.5 text-[10px] font-semibold text-stone-700 bg-stone-100 rounded px-1">{lehrjahr(m, heute())}. Lj.</span>}{m.kjbg && <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 rounded px-1">KJBG</span>}</div><div className="text-xs text-stone-500">{m.funktion}</div></div></div></td>
           <td className="px-3 py-2.5 tabular">{m.personalnr}</td>
           <td className="px-3 py-2.5">{m.abteilung}</td>
           <td className="px-3 py-2.5 tabular whitespace-nowrap">{fmtD(m.eintritt)}</td>
@@ -1274,7 +1400,8 @@ function Kalender({ ctx }) {
     if (a) {
       // Datensparsam: Kolleg/innen sehen nur „abwesend“, nicht ob krank
       const zeigen = leitung || m.id === user.id || a.art === "urlaub";
-      return zeigen ? { cls: `${ARTEN[a.art].voll} ${frei ? "opacity-40" : ""}`, t: ARTEN[a.art].kurz, title: ARTEN[a.art].label } : { cls: `bg-stone-400 text-white ${frei ? "opacity-40" : ""}`, t: "A", title: "Abwesend" };
+      const halb = anteil(a) < 1;
+      return zeigen ? { cls: `${halb ? ARTEN[a.art].hell : ARTEN[a.art].voll} ${frei ? "opacity-40" : ""}`, t: ARTEN[a.art].kurz + (halb ? "½" : ""), title: ARTEN[a.art].label + (halb ? " (halber Tag)" : "") } : { cls: `bg-stone-400 text-white ${frei ? "opacity-40" : ""}`, t: "A", title: "Abwesend" };
     }
     if (b && (leitung || m.id === user.id)) return { cls: `${ARTEN[b.art].hell} streifen`, t: "?", title: `${ARTEN[b.art].label} beantragt` };
     if (frei) return { cls: "bg-stone-100", t: "" };
@@ -1305,6 +1432,7 @@ function Kalender({ ctx }) {
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-2 px-5 py-3 border-t border-stone-100 text-xs text-stone-600">
         {Object.entries(ARTEN).map(([k, a]) => <span key={k} className="inline-flex items-center gap-1.5"><span className={`w-4 h-4 rounded text-[9px] font-bold flex items-center justify-center ${a.voll}`}>{a.kurz}</span>{a.label}</span>)}
+        <span className="inline-flex items-center gap-1.5"><span className="w-5 h-4 rounded text-[9px] font-bold flex items-center justify-center bg-indigo-100 text-indigo-800">BS½</span>halber Tag</span>
         <span className="inline-flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-amber-100 streifen" />beantragt</span>
         <span className="inline-flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-stone-100 ring-1 ring-stone-200" />frei / Schließtag / Feiertag</span>
       </div>
@@ -1451,14 +1579,19 @@ function Einstellungen({ ctx }) {
           {minFeld("wocheMaxMin", "Wochenhöchstarbeitszeit", "§ 9 AZG: 60 h, Ø 48 h in 17 Wochen")}
         </div>
       </Karte>
-      <Karte titel="Jugendliche (KJBG)">
+      <Karte titel="Lehrlinge & Jugendliche (KJBG)">
         <div className="grid sm:grid-cols-2 gap-4">
           {minFeld("kjbgPauseAbMin", "Ruhepause ab", "§ 15 KJBG: mehr als 4,5 h")}
           {minFeld("kjbgTagMaxMin", "Tageshöchstarbeitszeit", "§ 11 KJBG: 8 h (9 h bei Verteilung)")}
           {minFeld("kjbgWocheMaxMin", "Wochenarbeitszeit", "§ 11 KJBG: 40 h")}
           {minFeld("kjbgRuhezeitMin", "Tägliche Ruhezeit", "§ 16 KJBG: 12 h")}
         </div>
-        <p className="mt-4 text-xs text-stone-500">Berufsschulzeit wird nach KJBG auf die Arbeitszeit angerechnet – im Kalender als „Berufsschule“ eintragen, sie wird voll angerechnet.</p>
+        <div className="mt-5 pt-4 border-t border-stone-100">
+          <div className="text-sm font-medium mb-2">Berufsschule – Tage pro Woche</div>
+          <div className="grid grid-cols-4 gap-3">{[1, 2, 3, 4].map(lj => <Feld key={lj} label={`${lj}. Lehrjahr`}>
+            <input type="number" step="0.5" min="0" max="5" className={inputCls} disabled={!admin} value={e.bsTageJeLehrjahr?.[lj] ?? ""} onChange={ev => setE("bsTageJeLehrjahr", { ...e.bsTageJeLehrjahr, [lj]: +ev.target.value })} /></Feld>)}</div>
+          <p className="mt-2 text-xs text-stone-500">Wien: 1. Lehrjahr 1,5 Tage, 2. und 3. Lehrjahr 1 Tag. Berufsschulzeit wird nach KJBG auf die Arbeitszeit angerechnet. Planen unter „Krankenstand → Berufsschule planen“.</p>
+        </div>
       </Karte>
       <Karte titel="Urlaub, Zuschläge & Firmenregeln">
         <div className="grid sm:grid-cols-2 gap-4">
