@@ -23,17 +23,29 @@
 CREATE TABLE IF NOT EXISTS zeit_arbeitsmodelle (
   id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name      text NOT NULL,
-  std_mo    numeric(4,2) NOT NULL DEFAULT 0 CHECK (std_mo BETWEEN 0 AND 12),
-  std_di    numeric(4,2) NOT NULL DEFAULT 0 CHECK (std_di BETWEEN 0 AND 12),
-  std_mi    numeric(4,2) NOT NULL DEFAULT 0 CHECK (std_mi BETWEEN 0 AND 12),
-  std_do    numeric(4,2) NOT NULL DEFAULT 0 CHECK (std_do BETWEEN 0 AND 12),
-  std_fr    numeric(4,2) NOT NULL DEFAULT 0 CHECK (std_fr BETWEEN 0 AND 12),
-  std_sa    numeric(4,2) NOT NULL DEFAULT 0 CHECK (std_sa BETWEEN 0 AND 12),
-  std_so    numeric(4,2) NOT NULL DEFAULT 0 CHECK (std_so BETWEEN 0 AND 12),
-  beginn    time NOT NULL DEFAULT '09:00',
   aktiv     boolean NOT NULL DEFAULT true
 );
 ALTER TABLE zeit_arbeitsmodelle ENABLE ROW LEVEL SECURITY;
+
+-- Fixer Dienstplan: Beginn, Ende, Pause je Wochentag (0 = Montag … 6 = Sonntag).
+-- Kein Eintrag = frei. Sollstunden = Ende − Beginn − Pause.
+CREATE TABLE IF NOT EXISTS zeit_modell_tage (
+  modell_id  uuid NOT NULL REFERENCES zeit_arbeitsmodelle(id) ON DELETE CASCADE,
+  wochentag  smallint NOT NULL CHECK (wochentag BETWEEN 0 AND 6),
+  beginn     time NOT NULL,
+  ende       time NOT NULL,
+  pause_min  integer NOT NULL DEFAULT 0 CHECK (pause_min >= 0),
+  PRIMARY KEY (modell_id, wochentag),
+  CHECK (ende > beginn)
+);
+ALTER TABLE zeit_modell_tage ENABLE ROW LEVEL SECURITY;
+
+-- Gesetzliche Feiertage (einmal pro Jahr befüllen; die App berechnet sie ohnehin)
+CREATE TABLE IF NOT EXISTS zeit_feiertage (
+  datum date PRIMARY KEY,
+  name  text NOT NULL
+);
+ALTER TABLE zeit_feiertage ENABLE ROW LEVEL SECURITY;
 
 -- ── Zeit-Profil je Person (Ergänzung zu abw_team) ──────────────
 -- Rolle „Admin“ = abw_team.role = 'owner' (bestehend). Vorgesetzte ergeben
@@ -45,8 +57,10 @@ CREATE TABLE IF NOT EXISTS zeit_profil (
   abteilung        text,
   funktion         text,
   vorgesetzter_id  text REFERENCES abw_team(id),
-  kjbg             boolean NOT NULL DEFAULT false,   -- Jugendliche unter 18
+  geburtsdatum     date,                             -- unter 18 → KJBG, ab dem 18. Geburtstag automatisch AZG
   lehrbeginn       date,                             -- nur Lehrlinge; Lehrjahr wird daraus berechnet
+  bs_tag1          smallint CHECK (bs_tag1 BETWEEN 0 AND 6),  -- fixer Berufsschultag (ganz)
+  bs_tag2          smallint CHECK (bs_tag2 BETWEEN 0 AND 6),  -- halber Tag im 1. Lehrjahr
   saldo_start_min  integer NOT NULL DEFAULT 0,       -- Übertrag Zeitkonto beim Start
   urlaub_uebertrag numeric(4,1) NOT NULL DEFAULT 0,
   CHECK (vorgesetzter_id IS NULL OR vorgesetzter_id <> person_id)
@@ -71,7 +85,8 @@ CREATE TABLE IF NOT EXISTS zeit_buchungen (
   ende         time,
   pause_min    integer NOT NULL DEFAULT 0 CHECK (pause_min >= 0),
   pause_start  time,
-  quelle       text NOT NULL DEFAULT 'stempel' CHECK (quelle IN ('stempel', 'manuell', 'korrektur')),
+  quelle       text NOT NULL DEFAULT 'stempel' CHECK (quelle IN ('stempel', 'manuell', 'korrektur', 'auto')),
+  auto         text[] NOT NULL DEFAULT '{}',   -- was laut Dienstplan ergänzt wurde: kommen/gehen/pause/tag
   notiz        text,
   erstellt_am  timestamptz NOT NULL DEFAULT now(),
   geaendert_am timestamptz,
@@ -135,7 +150,7 @@ ALTER TABLE abw_anfragen ADD CONSTRAINT abw_anfragen_anteil_check CHECK (anteil 
 -- Schlüssel 'bs_tage_je_lehrjahr', z. B. {"1":1.5,"2":1,"3":1,"4":1} (Wien).
 
 -- Nicht-anonym, sonst nichts: anon hat auf keiner Zeit-Tabelle etwas verloren
-REVOKE ALL ON zeit_arbeitsmodelle, zeit_profil, zeit_modell_zuordnung, zeit_buchungen,
+REVOKE ALL ON zeit_arbeitsmodelle, zeit_modell_tage, zeit_feiertage, zeit_profil, zeit_modell_zuordnung, zeit_buchungen,
               zeit_korrekturen, zeit_protokoll, zeit_monatsabschluss FROM anon;
 
 -- ════════════════════════════════════════════════════════════
@@ -172,6 +187,28 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   );
 $$;
 
+-- Dienstplan einer Person an einem Tag (gültige Modellzuordnung zu diesem Datum)
+CREATE OR REPLACE FUNCTION zeit_plan_am(p_person text, p_datum date) RETURNS zeit_modell_tage
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT t.* FROM zeit_modell_zuordnung z
+  JOIN zeit_modell_tage t ON t.modell_id = z.modell_id AND t.wochentag = extract(isodow FROM p_datum)::int - 1
+  WHERE z.person_id = p_person AND z.gueltig_ab <= p_datum
+    AND z.gueltig_ab = (SELECT max(gueltig_ab) FROM zeit_modell_zuordnung WHERE person_id = p_person AND gueltig_ab <= p_datum);
+$$;
+
+CREATE OR REPLACE FUNCTION zeit_jugendlich(p_person text, p_datum date) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT COALESCE((SELECT geburtsdatum + interval '18 years' > p_datum FROM zeit_profil WHERE person_id = p_person), false);
+$$;
+
+-- Wird nachträglich eine Pause gebraucht? (§ 11 AZG: > 6 h; § 15 KJBG: > 4,5 h → 30 min)
+CREATE OR REPLACE FUNCTION zeit_pause_noetig(p_person text, b zeit_buchungen) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT b.ende IS NOT NULL AND b.pause_min < 30
+     AND extract(epoch FROM b.ende - b.beginn) / 60 - b.pause_min
+         > CASE WHEN zeit_jugendlich(p_person, b.datum) THEN 270 ELSE 360 END;
+$$;
+
 -- ════════════════════════════════════════════════════════════
 --  RLS-Policies
 -- ════════════════════════════════════════════════════════════
@@ -180,6 +217,17 @@ DROP POLICY IF EXISTS "zeit_modelle_select" ON zeit_arbeitsmodelle;
 CREATE POLICY "zeit_modelle_select" ON zeit_arbeitsmodelle FOR SELECT TO authenticated USING (true);
 DROP POLICY IF EXISTS "zeit_modelle_write" ON zeit_arbeitsmodelle;
 CREATE POLICY "zeit_modelle_write" ON zeit_arbeitsmodelle FOR ALL TO authenticated
+  USING (abw_is_owner()) WITH CHECK (abw_is_owner());
+
+DROP POLICY IF EXISTS "zeit_modell_tage_select" ON zeit_modell_tage;
+CREATE POLICY "zeit_modell_tage_select" ON zeit_modell_tage FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "zeit_modell_tage_write" ON zeit_modell_tage;
+CREATE POLICY "zeit_modell_tage_write" ON zeit_modell_tage FOR ALL TO authenticated
+  USING (abw_is_owner()) WITH CHECK (abw_is_owner());
+DROP POLICY IF EXISTS "zeit_feiertage_select" ON zeit_feiertage;
+CREATE POLICY "zeit_feiertage_select" ON zeit_feiertage FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "zeit_feiertage_write" ON zeit_feiertage;
+CREATE POLICY "zeit_feiertage_write" ON zeit_feiertage FOR ALL TO authenticated
   USING (abw_is_owner()) WITH CHECK (abw_is_owner());
 
 -- Profil & Modellzuordnung: eigene + verwaltete lesen, nur Chefin ändert
@@ -242,8 +290,10 @@ CREATE TRIGGER zeit_buchungen_sperre BEFORE INSERT OR UPDATE OR DELETE ON zeit_b
 -- ════════════════════════════════════════════════════════════
 
 -- Stempeln: Uhrzeit vom Server (Europe/Vienna), Person aus dem Login.
--- p_aktion: 'kommen' | 'pause_start' | 'pause_ende' | 'gehen'
-CREATE OR REPLACE FUNCTION zeit_stempeln(p_aktion text) RETURNS zeit_buchungen
+-- p_aktion: 'kommen' | 'pause_start' | 'pause_ende' | 'gehen' | 'nur_gehen' (Kommen vergessen)
+-- p_auto_pause: fehlende Pause beim Gehen laut Dienstplan eintragen
+DROP FUNCTION IF EXISTS zeit_stempeln(text);
+CREATE OR REPLACE FUNCTION zeit_stempeln(p_aktion text, p_auto_pause boolean DEFAULT true) RETURNS zeit_buchungen
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   v_person text := abw_current_person_id();
@@ -251,9 +301,20 @@ DECLARE
   v_datum  date := v_jetzt::date;
   v_zeit   time := date_trunc('minute', v_jetzt)::time;
   b        zeit_buchungen;
+  v_plan   zeit_modell_tage;
 BEGIN
   IF v_person IS NULL THEN RAISE EXCEPTION 'Nicht angemeldet'; END IF;
+  v_plan := zeit_plan_am(v_person, v_datum);
   SELECT * INTO b FROM zeit_buchungen WHERE person_id = v_person AND datum = v_datum FOR UPDATE;
+  IF p_aktion = 'nur_gehen' THEN
+    IF FOUND THEN RAISE EXCEPTION 'Heute bereits eingestempelt'; END IF;
+    IF v_plan.beginn IS NULL OR v_plan.beginn >= v_zeit THEN RAISE EXCEPTION 'Kein Dienstplan-Beginn vor jetzt'; END IF;
+    INSERT INTO zeit_buchungen (person_id, datum, beginn, quelle, auto)
+      VALUES (v_person, v_datum, v_plan.beginn, 'stempel', ARRAY['kommen']) RETURNING * INTO b;
+    INSERT INTO zeit_protokoll (von_person, person_id, datum, aktion, grund)
+      VALUES (v_person, v_person, v_datum, 'automatisch ergänzt: Kommen', 'Kommen vergessen – Beginn laut Dienstplan');
+    p_aktion := 'gehen';
+  END IF;
   IF p_aktion = 'kommen' THEN
     IF FOUND THEN RAISE EXCEPTION 'Heute bereits eingestempelt'; END IF;
     INSERT INTO zeit_buchungen (person_id, datum, beginn, quelle)
@@ -273,6 +334,12 @@ BEGIN
       SET pause_min = pause_min + COALESCE((extract(epoch FROM v_zeit - pause_start) / 60)::int, 0),
           pause_start = NULL, ende = v_zeit
       WHERE id = b.id RETURNING * INTO b;
+    IF p_auto_pause AND zeit_pause_noetig(v_person, b) THEN
+      UPDATE zeit_buchungen SET pause_min = greatest(COALESCE(v_plan.pause_min, 0), 30), auto = auto || 'pause'::text
+        WHERE id = b.id RETURNING * INTO b;
+      INSERT INTO zeit_protokoll (von_person, person_id, datum, aktion, grund)
+        VALUES (v_person, v_person, v_datum, 'automatisch ergänzt: Pause', 'keine Pause gestempelt – laut Dienstplan');
+    END IF;
   ELSE
     RAISE EXCEPTION 'Unbekannte Aktion: %', p_aktion;
   END IF;
@@ -303,7 +370,7 @@ BEGIN
       VALUES (p_person, p_datum, p_beginn, p_ende, COALESCE(p_pause_min, 0), 'manuell')
     ON CONFLICT (person_id, datum) DO UPDATE
       SET beginn = EXCLUDED.beginn, ende = EXCLUDED.ende, pause_min = EXCLUDED.pause_min,
-          pause_start = NULL, quelle = 'korrektur', geaendert_am = now();
+          pause_start = NULL, quelle = 'korrektur', auto = '{}', geaendert_am = now();
   END IF;
   INSERT INTO zeit_protokoll (von_person, person_id, datum, aktion, alt, neu, grund)
   VALUES (
@@ -378,14 +445,75 @@ BEGIN
     VALUES (abw_current_person_id(), p_person, v_monat, 'Monat wieder geöffnet', p_grund);
 END $$;
 
+-- ════════════════════════════════════════════════════════════
+--  Nächtliche Automatik (fixer Dienstplan): ergänzt den Vortag
+--  * vergessenes Gehen → Dienstende laut Plan
+--  * fehlende Pause    → Pause laut Plan (mind. 30 min)
+--  * gar nicht gestempelt (und keine Abwesenheit) → ganzer Tag laut Plan
+--  Läuft NICHT als Benutzer, sondern per pg_cron. Jede Ergänzung ist in
+--  zeit_buchungen.auto markiert und steht im Protokoll.
+-- ════════════════════════════════════════════════════════════
+CREATE OR REPLACE FUNCTION zeit_automatik(
+  p_datum date DEFAULT ((now() AT TIME ZONE 'Europe/Vienna')::date - 1),
+  p_auto_gehen boolean DEFAULT true, p_auto_pause boolean DEFAULT true, p_auto_fehltag boolean DEFAULT true
+) RETURNS integer
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  p      record;
+  v_plan zeit_modell_tage;
+  b      zeit_buchungen;
+  n      integer := 0;
+BEGIN
+  IF EXISTS (SELECT 1 FROM zeit_feiertage WHERE datum = p_datum) THEN RETURN 0; END IF;
+  FOR p IN SELECT id FROM abw_team WHERE ausgeschieden_am IS NULL OR ausgeschieden_am >= p_datum LOOP
+    v_plan := zeit_plan_am(p.id, p_datum);
+    CONTINUE WHEN v_plan.beginn IS NULL OR zeit_monat_gesperrt(p.id, p_datum);
+    SELECT * INTO b FROM zeit_buchungen WHERE person_id = p.id AND datum = p_datum FOR UPDATE;
+    IF NOT FOUND THEN
+      -- jede genehmigte Abwesenheit (auch halbe Tage) → nichts automatisch anlegen
+      CONTINUE WHEN NOT p_auto_fehltag OR EXISTS (
+        SELECT 1 FROM abw_anfragen WHERE person_id = p.id AND status = 'genehmigt' AND p_datum BETWEEN von AND bis);
+      INSERT INTO zeit_buchungen (person_id, datum, beginn, ende, pause_min, quelle, auto)
+        VALUES (p.id, p_datum, v_plan.beginn, v_plan.ende, v_plan.pause_min, 'auto', ARRAY['tag']);
+      INSERT INTO zeit_protokoll (person_id, datum, aktion, grund)
+        VALUES (p.id, p_datum, 'automatisch ergänzt: ganzer Tag', 'nicht gestempelt – laut Dienstplan');
+      n := n + 1;
+      CONTINUE;
+    END IF;
+    IF b.ende IS NULL AND p_auto_gehen THEN
+      UPDATE zeit_buchungen
+        SET ende = greatest(v_plan.ende, beginn),
+            pause_min = pause_min + COALESCE((extract(epoch FROM greatest(v_plan.ende, beginn) - pause_start) / 60)::int, 0),
+            pause_start = NULL, auto = auto || 'gehen'::text
+        WHERE id = b.id RETURNING * INTO b;
+      INSERT INTO zeit_protokoll (person_id, datum, aktion, grund)
+        VALUES (p.id, p_datum, 'automatisch ergänzt: Gehen', 'nicht ausgestempelt – Dienstende laut Plan');
+      n := n + 1;
+    END IF;
+    IF p_auto_pause AND zeit_pause_noetig(p.id, b) THEN
+      UPDATE zeit_buchungen SET pause_min = greatest(v_plan.pause_min, 30), auto = auto || 'pause'::text WHERE id = b.id;
+      INSERT INTO zeit_protokoll (person_id, datum, aktion, grund)
+        VALUES (p.id, p_datum, 'automatisch ergänzt: Pause', 'keine Pause gestempelt – laut Dienstplan');
+      n := n + 1;
+    END IF;
+  END LOOP;
+  RETURN n;
+END $$;
+-- Nur der Server-Job darf das ausführen, kein Benutzer:
+REVOKE ALL ON FUNCTION zeit_automatik(date, boolean, boolean, boolean) FROM PUBLIC, anon, authenticated;
+-- Einrichten (Supabase → Database → Extensions → pg_cron aktivieren), täglich 02:15 UTC:
+-- SELECT cron.schedule('zeit-automatik', '15 2 * * *', $cron$ SELECT zeit_automatik(); $cron$);
+
 -- Funktionen: nur für Angemeldete (Supabase gibt sonst auch anon EXECUTE)
-REVOKE ALL ON FUNCTION zeit_stempeln(text), zeit_buchung_aendern(text, date, time, time, integer, text, boolean),
+REVOKE ALL ON FUNCTION zeit_stempeln(text, boolean), zeit_plan_am(text, date), zeit_jugendlich(text, date),
+  zeit_pause_noetig(text, zeit_buchungen), zeit_buchung_aendern(text, date, time, time, integer, text, boolean),
   zeit_korrektur_entscheiden(uuid, boolean), zeit_monat_bestaetigen(date),
   zeit_monat_abschliessen(text, date), zeit_monat_oeffnen(text, date, text),
   zeit_ist_vorgesetzt_von(text), zeit_darf_verwalten(text), zeit_darf_sehen(text),
   zeit_monat_gesperrt(text, date)
   FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION zeit_stempeln(text), zeit_buchung_aendern(text, date, time, time, integer, text, boolean),
+GRANT EXECUTE ON FUNCTION zeit_stempeln(text, boolean), zeit_plan_am(text, date), zeit_jugendlich(text, date),
+  zeit_pause_noetig(text, zeit_buchungen), zeit_buchung_aendern(text, date, time, time, integer, text, boolean),
   zeit_korrektur_entscheiden(uuid, boolean), zeit_monat_bestaetigen(date),
   zeit_monat_abschliessen(text, date), zeit_monat_oeffnen(text, date, text),
   zeit_ist_vorgesetzt_von(text), zeit_darf_verwalten(text), zeit_darf_sehen(text),

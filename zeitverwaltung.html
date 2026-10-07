@@ -42,7 +42,7 @@ const { useState, useEffect, useMemo } = React;
 //  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
 //  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
 // ═════════════════════════════════════════════════════════════════════════════
-const LS_KEY = "ghd-zeitverwaltung-demo-v2";
+const LS_KEY = "ghd-zeitverwaltung-demo-v3";
 const SESS_KEY = "ghd-zeitverwaltung-demo-user";
 
 // ─── DATUM & ZEIT ─────────────────────────────────────────────────────────────
@@ -162,6 +162,12 @@ const STANDARD_EINSTELLUNGEN = {
   bsTageJeLehrjahr: { 1: 1.5, 2: 1, 3: 1, 4: 1 }, // Berufsschule Wien: Tage pro Woche je Lehrjahr
   auAbTag: 4,                  // Firmenregel: AU-Bestätigung ab dem x. Krankenstandstag
   schliesstage: [0, 6],        // Mo, So
+  // Fixer Dienstplan: vergessenes Stempeln und Pausen automatisch laut Plan ergänzen
+  autoPause: true,             // Pause laut Plan eintragen, wenn keine (ausreichende) gestempelt wurde
+  autoGehen: true,             // vergessenes „Gehen“ = Dienstende laut Plan
+  autoFehltag: true,           // gar nicht gestempelt = Arbeitszeit laut Plan
+  ueberstunden: false,         // Überstunden/Mehrarbeit vorgesehen? (fixer Plan: nein)
+  planToleranzMin: 15,         // ab so vielen Minuten über Plan gibt es einen Hinweis
   kontoStart: null,
 };
 
@@ -174,6 +180,25 @@ function abwAm(db, maId, d) { return db.abwesenheiten.find(a => a.maId === maId 
 function abwAntragAm(db, maId, d) { return db.abwesenheiten.find(a => a.maId === maId && a.status === "beantragt" && d >= a.von && d <= (a.bis || a.von)); }
 function zeitAm(db, maId, d) { return db.zeiten.find(z => z.maId === maId && z.datum === d); }
 function modellSollMin(db, ma, d) { return Math.round((+modellVon(db, ma).tage[wd(d)] || 0) * 60); }
+// Dienstplan je Wochentag: { b: Beginn, e: Ende, p: Pause in min } oder null (frei).
+// Ältere Modelle ohne Uhrzeiten bekommen einen Plan aus Stunden + Arbeitsbeginn.
+function planAusModell(m, i) {
+  if (m.plan) return m.plan[i] || null;
+  const h = +m.tage[i] || 0; if (!h) return null;
+  const p = h > 6 ? 30 : 0, b = hm2min(m.beginn || "09:00");
+  return { b: min2hm(b), e: min2hm(b + h * 60 + p), p };
+}
+function planStunden(t) { return t && t.b && t.e ? Math.max(0, hm2min(t.e) - hm2min(t.b) - (+t.p || 0)) / 60 : 0; }
+function mitStunden(m) { return { ...m, tage: WT.map((_, i) => planStunden(planAusModell(m, i))) }; }
+function planTag(db, ma, d) { return planAusModell(modellVon(db, ma), wd(d)); }
+// KJBG gilt bis zum 18. Geburtstag – mit Geburtsdatum stellt sich das automatisch um
+function jugendlich(ma, d) { return ma.geburtsdatum ? dienstjahre(ma.geburtsdatum, d || heute()) < 18 : !!ma.kjbg; }
+function pauseFehlt(db, ma, z) {
+  const e = db.einstellungen;
+  if (!z || !z.ende) return false;
+  return nettoMin(z) > (jugendlich(ma, z.datum) ? e.kjbgPauseAbMin : e.pauseAbMin) && (z.pause || 0) < e.pauseMin;
+}
+const AUTO_TEXT = { kommen: "Kommen", gehen: "Gehen", pause: "Pause", tag: "ganzer Tag" };
 
 function sollMin(db, ma, d) {
   if (!beschaeftigt(ma, d) || feiertag(d)) return 0;
@@ -237,7 +262,7 @@ function zeitkonto(db, ma, bis) {
 function pruefeTag(db, ma, d) {
   const e = db.einstellungen, z = zeitAm(db, ma.id, d), h = [];
   if (!z || !z.beginn || !z.ende) return h;
-  const kj = !!ma.kjbg, pause = z.pause || 0;
+  const kj = jugendlich(ma, d), pause = z.pause || 0;
   const abwTag = abwAm(db, ma.id, d);
   // Berufsschulzeit wird auf die Arbeitszeit angerechnet (halber Schultag + Salon)
   const netto = nettoMin(z) + (abwTag && abwTag.art === "berufsschule" ? Math.round(modellSollMin(db, ma, d) * anteil(abwTag)) : 0);
@@ -258,14 +283,19 @@ function pruefeTag(db, ma, d) {
     if (ruhe < minRuhe) h.push({ stufe: "fehler", text: `Tägliche Ruhezeit nur ${fmtH(ruhe)} h (mind. ${fmtH(minRuhe)} h, ${kj ? "§ 16 KJBG" : "§ 12 AZG"})` });
   }
   if (wd(d) === 6 || feiertag(d)) h.push({ stufe: "warn", text: "Arbeit an Sonn-/Feiertag – Ausnahme und Entgelt nach ARG prüfen" });
+  // Fixer Plan ohne Überstunden: längere Tage sichtbar machen (müssen ausgeglichen oder bezahlt werden)
+  const soll = sollMin(db, ma, d), ist = nettoMin(z);
+  if (!e.ueberstunden && soll && ist - soll > (e.planToleranzMin || 0))
+    h.push({ stufe: "warn", text: `${fmtH(ist - soll)} h länger als Dienstplan – Zeitausgleich geben oder Zeit korrigieren` });
   return h;
 }
 function pruefeWoche(db, ma, montag) {
   const e = db.einstellungen;
   const summeW = tageZw(montag, addTage(montag, 6)).reduce((s, d) => s + nettoMin(zeitAm(db, ma.id, d)), 0);
-  const max = ma.kjbg ? e.kjbgWocheMaxMin : e.wocheMaxMin;
+  const kj = jugendlich(ma, montag);
+  const max = kj ? e.kjbgWocheMaxMin : e.wocheMaxMin;
   if (summeW > max) return { stufe: "fehler", text: `Wochenarbeitszeit ${fmtH(summeW)} h über Höchstgrenze ${fmtH(max)} h` };
-  if (!ma.kjbg && summeW > e.wocheWarnMin) return { stufe: "warn", text: `Wochenarbeitszeit ${fmtH(summeW)} h – Durchschnitt von 48 h im Blick behalten` };
+  if (!kj && summeW > e.wocheWarnMin) return { stufe: "warn", text: `Wochenarbeitszeit ${fmtH(summeW)} h – Durchschnitt von 48 h im Blick behalten` };
   return null;
 }
 function hinweiseZeitraum(db, ma, von, bis) {
@@ -332,6 +362,7 @@ function bsTageProWoche(db, ma, d) {
 }
 // Vorschlag: erster und zweiter Arbeitstag des Modells (bei Di–Sa also Di ganz, Mi ggf. halb)
 function bsWochentage(db, ma) {
+  if (ma.bsTag1 != null) { const t2 = modellVon(db, ma).tage.map((h, i) => +h > 0 ? i : null).filter(i => i !== null && i !== ma.bsTag1)[0]; return { tag1: ma.bsTag1, tag2: ma.bsTag2 ?? t2 ?? 2 }; }
   const t = modellVon(db, ma).tage.map((h, i) => +h > 0 ? i : null).filter(i => i !== null);
   return { tag1: t[0] ?? 1, tag2: t[1] ?? 2 };
 }
@@ -358,6 +389,75 @@ function efzWochen(ma) {
   return j < 1 ? 6 : j < 15 ? 8 : j < 25 ? 10 : 12;
 }
 
+// ─── AUTOMATIK (fixer Dienstplan) ─────────────────────────────────────────────
+// Ergänzt vergangene Tage laut Plan: vergessenes Gehen, fehlende Pause, ganz vergessene Tage.
+// Live-Version: läuft jede Nacht als Serverfunktion (zeit_automatik, siehe Schema-Entwurf).
+// Jede Ergänzung ist markiert und steht im Protokoll; der Monat wird erst nach Prüfung bestätigt.
+function automatik(n) {
+  const e = n.einstellungen, h = heute();
+  const ab = addTage(h, -62) > (e.kontoStart || "") ? addTage(h, -62) : e.kontoStart;
+  let anzahl = 0;
+  const log = (ma, d, was, alt, neu) => { anzahl++; n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: "system", maId: ma.id, datum: d, aktion: `automatisch ergänzt: ${was}`, alt, neu, grund: "laut Dienstplan (nicht gestempelt)" }); };
+  for (const ma of n.mitarbeiter.filter(m => m.aktiv || m.austritt)) {
+    for (let d = ab; d < h; d = addTage(d, 1)) {
+      if (!beschaeftigt(ma, d) || feiertag(d) || gesperrt(n, ma.id, d)) continue;
+      const plan = planTag(n, ma, d); if (!plan) continue;
+      const a = abwAm(n, ma.id, d);
+      if (a && (anteil(a) >= 1 || ARTEN[a.art]?.soll0)) continue;
+      let z = zeitAm(n, ma.id, d);
+      if (!z) {
+        if (!e.autoFehltag) continue;
+        // halber Abwesenheitstag (z. B. Berufsschule vormittags): nur der Rest bis Dienstende
+        const rest = Math.round(modellSollMin(n, ma, d) * (1 - (a ? anteil(a) : 0)));
+        const beginn = a ? min2hm(hm2min(plan.e) - rest) : plan.b;
+        z = { id: uid(), maId: ma.id, datum: d, beginn, ende: plan.e, pause: a ? 0 : (+plan.p || 0), quelle: "auto", auto: ["tag"] };
+        n.zeiten.push(z); log(ma, d, "ganzer Tag", null, { beginn: z.beginn, ende: z.ende, pause: z.pause });
+        continue;
+      }
+      if (!z.ende && e.autoGehen) {
+        const alt = { beginn: z.beginn, ende: null, pause: z.pause };
+        z.ende = hm2min(plan.e) > hm2min(z.beginn) ? plan.e : z.beginn;
+        if (z.pauseStart) { z.pause += Math.max(0, hm2min(z.ende) - hm2min(z.pauseStart)); z.pauseStart = null; }
+        z.auto = [...(z.auto || []), "gehen"]; log(ma, d, "Gehen", alt, { beginn: z.beginn, ende: z.ende, pause: z.pause });
+      }
+      if (e.autoPause && pauseFehlt(n, ma, z)) {
+        const alt = { beginn: z.beginn, ende: z.ende, pause: z.pause };
+        z.pause = Math.max(+plan.p || 0, e.pauseMin);
+        z.auto = [...(z.auto || []), "pause"]; log(ma, d, "Pause", alt, { beginn: z.beginn, ende: z.ende, pause: z.pause });
+      }
+    }
+  }
+  return anzahl;
+}
+
+// Stempeln (Handy-Stempeluhr und Salon-Tablet nutzen dieselbe Logik)
+function stempelBuchen(n, ma, aktion) {
+  const d = heute(), t = nowHM(), plan = planTag(n, ma, d), vn = ma.name.split(" ")[0];
+  let x = n.zeiten.find(q => q.maId === ma.id && q.datum === d);
+  if (aktion === "kommen") {
+    n.zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: t, ende: null, pause: 0, pauseStart: null, quelle: "stempel" });
+    return `${vn}: Kommen ${t}`;
+  }
+  if (aktion === "nurGehen") { // Kommen vergessen → Beginn laut Plan
+    x = { id: uid(), maId: ma.id, datum: d, beginn: plan?.b || t, ende: null, pause: 0, pauseStart: null, quelle: "stempel", auto: ["kommen"] };
+    n.zeiten.push(x); aktion = "gehen";
+  }
+  if (aktion === "pauseStart") { x.pauseStart = t; return `${vn}: Pause ab ${t}`; }
+  if (aktion === "pauseEnde") { x.pause += Math.max(0, hm2min(t) - hm2min(x.pauseStart)); x.pauseStart = null; return `${vn}: Pause beendet (${t})`; }
+  if (aktion === "gehen") {
+    if (x.pauseStart) { x.pause += Math.max(0, hm2min(t) - hm2min(x.pauseStart)); x.pauseStart = null; }
+    x.ende = t;
+    let msg = `${vn}: Gehen ${t}`;
+    if (x.auto?.includes("kommen")) msg += ` · Beginn ${x.beginn} laut Plan`;
+    if (n.einstellungen.autoPause && pauseFehlt(n, ma, x)) {
+      x.pause = Math.max(+plan?.p || 0, n.einstellungen.pauseMin);
+      x.auto = [...(x.auto || []), "pause"];
+      msg += ` · Pause ${x.pause} min laut Plan eingetragen`;
+    }
+    return msg;
+  }
+}
+
 // ─── BERECHTIGUNGEN (nur Oberfläche! Echte Prüfung: RLS im Schema-Entwurf) ───
 function istLeitung(u) { return u.rolle === "admin" || u.rolle === "vorgesetzt"; }
 function istAdmin(u) { return u.rolle === "admin"; }
@@ -373,7 +473,7 @@ function darfVerwalten(u, ma) {
 }
 function abschlussVon(db, maId, mk) { return db.abschluesse.find(a => a.maId === maId && a.monat === mk); }
 function gesperrt(db, maId, d) { return !!abschlussVon(db, maId, monatKey(d))?.abgeschlossenAm; }
-function nameVon(db, id) { return db.mitarbeiter.find(m => m.id === id)?.name || "–"; }
+function nameVon(db, id) { return id === "system" ? "Automatik" : db.mitarbeiter.find(m => m.id === id)?.name || "–"; }
 
 // ─── DEMO-DATEN ───────────────────────────────────────────────────────────────
 function zufall(seed) { let s = seed; return () => { s = (s * 1664525 + 1013904223) % 4294967296; return s / 4294967296; }; }
@@ -383,13 +483,14 @@ function demoDaten() {
   const h = heute(), jetzt = new Date();
   const m2 = monatKey(h), m1 = monatVerschieben(m2, -1), m0 = monatVerschieben(m2, -2);
   const start = `${m0}-01`;
+  const T = (b, e, p = 30) => ({ b, e, p });
   const modelle = [
-    { id: "vz40",     name: "Vollzeit 40 h · Di–Sa",           tage: [0, 8, 8, 8, 8, 8, 0],       beginn: "09:00" },
-    { id: "vz40lang", name: "Vollzeit 40 h · langer Do/Fr",    tage: [0, 8, 7, 9.5, 9.5, 6, 0],   beginn: "09:00" },
-    { id: "tz30",     name: "Teilzeit 30 h · Mi–Sa",           tage: [0, 0, 7.5, 7.5, 7.5, 7.5, 0], beginn: "09:00" },
-    { id: "tz20",     name: "Teilzeit 20 h · Do–Sa",           tage: [0, 0, 0, 7, 7, 6, 0],       beginn: "10:00" },
-    { id: "lehre",    name: "Lehrling 40 h (inkl. Berufsschule)", tage: [0, 8, 8, 8, 8, 8, 0],    beginn: "09:00" },
-  ];
+    { id: "vz40",     name: "Vollzeit 40 h · Di–Sa",         plan: [null, T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), null] },
+    { id: "vz40lang", name: "Vollzeit 40 h · langer Do/Fr",  plan: [null, T("09:00", "17:30"), T("09:00", "16:30"), T("10:00", "20:00"), T("10:00", "20:00"), T("08:00", "14:30"), null] },
+    { id: "tz30",     name: "Teilzeit 30 h · Mi–Sa",         plan: [null, null, T("09:00", "17:00"), T("09:00", "17:00"), T("09:00", "17:00"), T("09:00", "17:00"), null] },
+    { id: "tz20",     name: "Teilzeit 20 h · Do–Sa",         plan: [null, null, null, T("10:00", "17:30"), T("10:00", "17:30"), T("09:00", "15:00", 0), null] },
+    { id: "lehre",    name: "Lehrling 40 h (inkl. Berufsschule)", plan: [null, T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), null] },
+  ].map(mitStunden);
   // Erfundene Personen – keine echten Mitarbeiter/innen
   const mitarbeiter = [
     { id: "ma1", name: "Sophie Lindner",   personalnr: "P-001", abteilung: "Leitung",    funktion: "Inhaberin",          eintritt: "2012-03-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 3, vorgesetzterId: null,  rolle: "admin",       aktiv: true },
@@ -398,8 +499,8 @@ function demoDaten() {
     { id: "ma4", name: "Elena Novak",      personalnr: "P-004", abteilung: "Coloration", funktion: "Coloristin",         eintritt: "2021-05-01", modellId: "tz30",     urlaubstage: 20, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
     { id: "ma5", name: "Mario Gruber",     personalnr: "P-005", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2023-01-09", modellId: "vz40lang", urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
     { id: "ma6", name: "Lisa Wagner",      personalnr: "P-006", abteilung: "Rezeption",  funktion: "Rezeption",          eintritt: "2024-03-01", modellId: "tz20",     urlaubstage: 15, urlaubUebertrag: 1, vorgesetzterId: "ma1", rolle: "mitarbeiter", aktiv: true },
-    { id: "ma7", name: "Nina Hofer",       personalnr: "P-007", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: "2025-09-01", modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, kjbg: true, lehrbeginn: "2025-09-01" },
-    { id: "ma9", name: "Lea Fuchs",        personalnr: "P-009", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: `${m1}-01`,   modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, kjbg: true, lehrbeginn: `${m1}-01` },
+    { id: "ma7", name: "Nina Hofer",       personalnr: "P-007", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: "2025-09-01", modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: "2025-09-01", geburtsdatum: `${parseInt(addTage(h, 40)) - 18}${addTage(h, 40).slice(4)}`, bsTag1: 3 },
+    { id: "ma9", name: "Lea Fuchs",        personalnr: "P-009", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: `${m1}-01`,   modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: `${m1}-01`, geburtsdatum: `${parseInt(h) - 15}-03-12`, bsTag1: 1, bsTag2: 4 },
     { id: "ma8", name: "Tobias Reiter",    personalnr: "P-008", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2020-04-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: false, austritt: `${m0}-15` },
   ].map(m => ({ saldoStart: 0, kjbg: false, ...m }));
 
@@ -431,30 +532,35 @@ function demoDaten() {
       const soll = Math.round((+mod.tage[wd(d)] || 0) * 60);
       const a = abwAm(db0, ma.id, d);
       if (!soll || feiertag(d) || !beschaeftigt(ma, d) || (a && anteil(a) >= 1)) continue;
+      const plan = planAusModell(mod, wd(d));
       if (a) { // halber Schultag: nachmittags im Salon
         const rest = Math.round(soll * (1 - anteil(a)));
-        zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: "13:30", ende: min2hm(810 + rest), pause: 0, quelle: "stempel" });
+        zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: min2hm(hm2min(plan.e) - rest), ende: plan.e, pause: 0, quelle: "stempel" });
         continue;
       }
-      const b = hm2min(mod.beginn) + zw(-3, 2) * 5;
-      let netto = soll + zw(-4, 9) * 5;
-      let pause = soll >= 360 ? [30, 30, 45, 60][zw(0, 3)] : 0;
-      if (ma.kjbg) netto = Math.min(netto, 480);
-      zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: min2hm(b), ende: min2hm(b + netto + pause), pause, quelle: "stempel" });
+      // Fixer Plan: meist pünktlich, ab und zu ein paar Minuten Abweichung
+      const b = hm2min(plan.b) + (r() < 0.7 ? 0 : zw(-1, 1) * 5);
+      const ende = hm2min(plan.e) + (r() < 0.7 ? 0 : zw(0, 2) * 5);
+      zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: min2hm(b), ende: min2hm(ende), pause: +plan.p || 0, quelle: "stempel" });
     }
   }
   // Ein paar realistische Auffälligkeiten für die AZG-Prüfung
   const ma5Tage = zeiten.filter(z => z.maId === "ma5" && monatKey(z.datum) === m1);
   if (ma5Tage[3]) { ma5Tage[3].pause = 15; }
   const ma3Tage = zeiten.filter(z => z.maId === "ma3" && monatKey(z.datum) === m1);
-  if (ma3Tage[6]) { ma3Tage[6].beginn = "08:30"; ma3Tage[6].ende = "20:00"; ma3Tage[6].pause = 30; }
+  if (ma3Tage[6]) { ma3Tage[6].beginn = "08:30"; ma3Tage[6].ende = "19:00"; ma3Tage[6].pause = 30; }
+  // Vergessenes Stempeln im offenen Monat – die Automatik ergänzt das beim Start
+  const offen = zeiten.filter(z => z.datum >= `${m1}-01` && z.datum < h);
+  [3, 11, 19].forEach(i => { if (offen[i]) offen[i].ende = null; });
+  [5, 14].forEach(i => { if (offen[i]) offen[i].pause = 0; });
+  [8, 22, 30].forEach(i => { const z = offen[i]; if (z) zeiten.splice(zeiten.indexOf(z), 1); });
 
   // Heute: wer laut Modell arbeitet, ist schon eingestempelt (außer der Inhaberin – zum Ausprobieren)
   for (const ma of mitarbeiter) {
     if (ma.id === "ma1" || !ma.aktiv) continue;
     const mod = modellVon(db0, ma);
     if (!+mod.tage[wd(h)] || feiertag(h) || abwAm(db0, ma.id, h)) continue;
-    const b = hm2min(mod.beginn) + zw(-2, 1) * 5;
+    const b = hm2min(planAusModell(mod, wd(h)).b);
     if (jetzt.getHours() * 60 + jetzt.getMinutes() < b) continue;
     zeiten.push({ id: uid(), maId: ma.id, datum: h, beginn: min2hm(b), ende: null, pause: 0, pauseStart: null, quelle: "stempel" });
   }
@@ -470,12 +576,14 @@ function demoDaten() {
   // Offener Korrekturantrag
   const letzteJulia = zeiten.filter(z => z.maId === "ma3" && z.ende && z.datum < h && !abschluesse.some(a => a.maId === "ma3" && a.monat === monatKey(z.datum) && a.abgeschlossenAm)).slice(-1)[0];
   const korrekturen = [];
-  if (letzteJulia) korrekturen.push({ id: uid(), maId: "ma3", datum: letzteJulia.datum, zeitId: letzteJulia.id,
+  if (letzteJulia && letzteJulia.ende) korrekturen.push({ id: uid(), maId: "ma3", datum: letzteJulia.datum, zeitId: letzteJulia.id,
     alt: { beginn: letzteJulia.beginn, ende: letzteJulia.ende, pause: letzteJulia.pause },
     neu: { beginn: letzteJulia.beginn, ende: min2hm(hm2min(letzteJulia.ende) + 30), pause: letzteJulia.pause },
     grund: "Letzte Kundin hat länger gedauert, Ausstempeln vergessen.", status: "offen", von: "ma3", am: h });
 
-  return { ...db0, zeiten, abschluesse, korrekturen, version: 1 };
+  const db1 = { ...db0, zeiten, abschluesse, korrekturen, version: 1 };
+  automatik(db1);
+  return db1;
 }
 function ladeDb() {
   try {
@@ -632,7 +740,7 @@ function csvExport(dateiname, zeilen) {
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
-function Login({ db, onLogin }) {
+function Login({ db, onLogin, onTerminal }) {
   const aktive = db.mitarbeiter.filter(m => m.aktiv);
   return <div className="min-h-screen flex items-center justify-center bg-stone-100 p-4">
     <div className="w-full max-w-md">
@@ -651,7 +759,69 @@ function Login({ db, onLogin }) {
           </button>)}
         </div>
       </Karte>
+      <button onClick={onTerminal} className="mt-4 w-full flex items-center justify-center gap-2 rounded-xl bg-stone-900 text-white py-3 text-sm font-medium hover:bg-stone-700">
+        <Icon n="uhr" className="w-4 h-4" />Stempel-Tablet im Salon öffnen
+      </button>
     </div>
+  </div>;
+}
+
+// ─── STEMPEL-TABLET (Salon) ───────────────────────────────────────────────────
+// Ein Tablet beim Empfang: Name antippen → Kommen / Pause / Gehen.
+// Live-Version: Tablet mit eigenem Gerätezugang, jede Person bestätigt mit ihrer
+// persönlichen PIN, die der SERVER prüft (nie im Browser) – siehe CLAUDE.md Regel 4.
+function Terminal({ db, aendern, onEnde }) {
+  const [wahl, setWahl] = useState(null);
+  const [uhr, setUhr] = useState(nowHM());
+  useEffect(() => { const t = setInterval(() => setUhr(nowHM()), 5000); return () => clearInterval(t); }, []);
+  useEffect(() => { if (!wahl) return; const t = setTimeout(() => setWahl(null), 20000); return () => clearTimeout(t); }, [wahl]);
+  const d = heute();
+  const team = db.mitarbeiter.filter(m => m.aktiv && beschaeftigt(m, d));
+  const status = m => {
+    const z = zeitAm(db, m.id, d), a = abwAm(db, m.id, d), plan = planTag(db, m, d);
+    if (a && anteil(a) >= 1) return { k: "abw", text: ARTEN[a.art].label, a };
+    if (!z) return { k: "aus", text: plan ? `Plan ${plan.b}–${plan.e}` : "heute frei", plan };
+    if (z.ende) return { k: "fertig", text: `${z.beginn}–${z.ende}` };
+    if (z.pauseStart) return { k: "pause", text: `Pause seit ${z.pauseStart}` };
+    return { k: "da", text: `da seit ${z.beginn}` };
+  };
+  function buchen(m, aktion) { aendern(n => stempelBuchen(n, n.mitarbeiter.find(x => x.id === m.id), aktion)); setWahl(null); }
+  const farbe = { da: "bg-emerald-500", pause: "bg-amber-400", aus: "bg-stone-300", fertig: "bg-stone-500", abw: "bg-sky-400" };
+  const gross = "flex-1 min-w-[9rem] rounded-2xl py-6 text-xl font-semibold flex items-center justify-center gap-2";
+  const m = wahl && db.mitarbeiter.find(x => x.id === wahl), st = m && status(m);
+  return <div className="min-h-screen bg-stone-900 text-white flex flex-col">
+    <div className="flex items-center justify-between px-6 py-4">
+      <div><div className="text-sm text-stone-400">{db.einstellungen.firmenname}</div><div className="text-lg font-semibold">{WT_LANG[wd(d)]}, {fmtD(d)}</div></div>
+      <div className="text-5xl font-semibold tabular">{uhr}</div>
+    </div>
+    <div className="px-6 text-stone-400 text-sm">Name antippen zum Stempeln</div>
+    <div className="flex-1 p-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 content-start">
+      {team.map(x => { const s = status(x); return <button key={x.id} onClick={() => setWahl(x.id)} className="rounded-2xl bg-stone-800 hover:bg-stone-700 p-5 text-left">
+        <div className="flex items-center gap-3"><Avatar name={x.name} /><span className={`ml-auto w-3 h-3 rounded-full ${farbe[s.k]}`} /></div>
+        <div className="mt-3 text-lg font-semibold">{x.name.split(" ")[0]}</div>
+        <div className="text-sm text-stone-400">{s.text}</div>
+      </button>; })}
+    </div>
+    <div className="px-6 py-4 flex items-center justify-between text-xs text-stone-500">
+      <span>Demo ohne PIN. Live: persönliche PIN, vom Server geprüft · Uhrzeit vom Server</span>
+      <button onClick={onEnde} className="underline hover:text-stone-300">Tablet-Modus beenden</button>
+    </div>
+    {m && <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-40" onClick={() => setWahl(null)}>
+      <div className="bg-white text-stone-900 rounded-3xl p-6 w-full max-w-xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-3"><Avatar name={m.name} /><div><div className="text-xl font-semibold">{m.name}</div><div className="text-sm text-stone-500">{st.text}</div></div>
+          <button className="ml-auto p-2 rounded-lg hover:bg-stone-100" onClick={() => setWahl(null)}><Icon n="x" /></button></div>
+        <div className="mt-6 flex flex-wrap gap-3">
+          {st.k === "aus" && <button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen(m, "kommen")}><Icon n="play" className="w-6 h-6" />Kommen</button>}
+          {st.k === "aus" && st.plan && hm2min(nowHM()) > hm2min(st.plan.b) + 30 && <button className={`${gross} bg-stone-200`} onClick={() => buchen(m, "nurGehen")}>Gehen<span className="text-sm font-normal">(Kommen vergessen)</span></button>}
+          {st.k === "da" && <><button className={`${gross} bg-amber-400`} onClick={() => buchen(m, "pauseStart")}><Icon n="pause" className="w-6 h-6" />Pause</button>
+            <button className={`${gross} bg-stone-900 text-white`} onClick={() => buchen(m, "gehen")}><Icon n="stopp" className="w-6 h-6" />Gehen</button></>}
+          {st.k === "pause" && <><button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen(m, "pauseEnde")}><Icon n="play" className="w-6 h-6" />Pause Ende</button>
+            <button className={`${gross} bg-stone-900 text-white`} onClick={() => buchen(m, "gehen")}><Icon n="stopp" className="w-6 h-6" />Gehen</button></>}
+          {(st.k === "fertig" || st.k === "abw") && <p className="text-stone-600">{st.k === "fertig" ? "Heute schon ausgestempelt. Änderungen bitte über die Zeiterfassung." : `Heute eingetragen: ${st.text}.`}</p>}
+        </div>
+        {db.einstellungen.autoPause && (st.k === "da" || st.k === "pause") && <p className="mt-4 text-sm text-stone-500">Pause nicht gestempelt? Beim Gehen wird sie laut Dienstplan eingetragen.</p>}
+      </div>
+    </div>}
   </div>;
 }
 
@@ -662,21 +832,11 @@ function Stempeluhr({ ctx }) {
   const soll = sollMin(db, user, d), netto = nettoMin(z);
   const zustand = !z ? "aus" : z.ende ? "fertig" : z.pauseStart ? "pause" : "arbeit";
   const pauseBisher = (z?.pause || 0) + (z?.pauseStart && !z?.ende ? Math.max(0, hm2min(nowHM()) - hm2min(z.pauseStart)) : 0);
-  const pauseAb = user.kjbg ? db.einstellungen.kjbgPauseAbMin : db.einstellungen.pauseAbMin;
-
-  function stempel(aktion) {
-    const t = nowHM();
-    aendern(n => {
-      let x = n.zeiten.find(q => q.maId === user.id && q.datum === d);
-      if (aktion === "kommen") n.zeiten.push({ id: uid(), maId: user.id, datum: d, beginn: t, ende: null, pause: 0, pauseStart: null, quelle: "stempel" });
-      if (aktion === "pauseStart") x.pauseStart = t;
-      if (aktion === "pauseEnde") { x.pause += Math.max(0, hm2min(t) - hm2min(x.pauseStart)); x.pauseStart = null; }
-      if (aktion === "gehen") {
-        if (x.pauseStart) { x.pause += Math.max(0, hm2min(t) - hm2min(x.pauseStart)); x.pauseStart = null; }
-        x.ende = t;
-      }
-    }, { kommen: `Arbeitsbeginn ${t} erfasst`, pauseStart: `Pause ab ${t}`, pauseEnde: `Pause beendet (${t})`, gehen: `Arbeitsende ${t} erfasst` }[aktion]);
-  }
+  const kj = jugendlich(user, d);
+  const pauseAb = kj ? db.einstellungen.kjbgPauseAbMin : db.einstellungen.pauseAbMin;
+  const plan = planTag(db, user, d);
+  const kommenVergessen = zustand === "aus" && plan && !a && hm2min(nowHM()) > hm2min(plan.b) + 30;
+  function stempel(aktion) { aendern(n => stempelBuchen(n, n.mitarbeiter.find(m => m.id === user.id), aktion)); }
   return <Karte titel="Stempeluhr" aktion={<span className="text-xs text-stone-500">{WT_LANG[wd(d)]}, {fmtD(d)}</span>}>
     <div className="flex flex-col sm:flex-row sm:items-center gap-4">
       <div className="flex-1">
@@ -686,15 +846,16 @@ function Stempeluhr({ ctx }) {
         </div>
         <div className="mt-2 flex items-baseline gap-4">
           <div><div className="text-3xl font-semibold tabular">{fmtH(netto)}</div><div className="text-xs text-stone-500">Arbeitszeit heute</div></div>
-          <div><div className="text-lg font-medium tabular text-stone-600">{fmtH(soll)}</div><div className="text-xs text-stone-500">Soll</div></div>
+          <div><div className="text-lg font-medium tabular text-stone-600">{plan ? `${plan.b}–${plan.e}` : fmtH(soll)}</div><div className="text-xs text-stone-500">Dienstplan</div></div>
           <div><div className="text-lg font-medium tabular text-stone-600">{pauseBisher} min</div><div className="text-xs text-stone-500">Pause</div></div>
         </div>
         {a && <div className="mt-2"><ArtChip art={a.art} /></div>}
         {zustand !== "aus" && zustand !== "fertig" && netto > pauseAb - 30 && pauseBisher < db.einstellungen.pauseMin &&
-          <div className="mt-3"><Hinweis ton="warn">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({user.kjbg ? "§ 15 KJBG" : "§ 11 AZG"}).</Hinweis></div>}
+          <div className="mt-3"><Hinweis ton="warn">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({kj ? "§ 15 KJBG" : "§ 11 AZG"}).{db.einstellungen.autoPause ? " Wird keine Pause gestempelt, trägt die App beim Gehen die Pause laut Plan ein." : ""}</Hinweis></div>}
       </div>
       <div className="flex flex-wrap gap-2 no-print">
         {zustand === "aus" && <Knopf art="gruen" icon="play" onClick={() => stempel("kommen")} disabled={gesperrt(db, user.id, d)}>Kommen</Knopf>}
+        {kommenVergessen && <Knopf art="sekundaer" icon="stopp" onClick={() => stempel("nurGehen")} title={`Beginn wird laut Plan (${plan.b}) eingetragen`}>Gehen (Kommen vergessen)</Knopf>}
         {zustand === "arbeit" && <><Knopf art="sekundaer" icon="pause" onClick={() => stempel("pauseStart")}>Pause</Knopf><Knopf icon="stopp" onClick={() => stempel("gehen")}>Gehen</Knopf></>}
         {zustand === "pause" && <><Knopf art="gruen" icon="play" onClick={() => stempel("pauseEnde")}>Pause beenden</Knopf><Knopf icon="stopp" onClick={() => stempel("gehen")}>Gehen</Knopf></>}
         {zustand === "fertig" && <span className="text-xs text-stone-500 max-w-[14rem]">Änderungen bitte als Korrektur unter „Zeiterfassung“.</span>}
@@ -759,6 +920,7 @@ function Dashboard({ ctx }) {
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("urlaub")}><span>Urlaubs- & Abwesenheitsanträge</span><b className="tabular">{offenAntraege.length}</b></li>
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Zeitkorrekturen prüfen</span><b className="tabular">{offenKorr.length}</b></li>
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Monatsabschluss {fmtMonat(vormonat)}</span><b className="tabular">{offeneAbschluesse.length} offen</b></li>
+            <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Automatisch ergänzt (7 Tage) – prüfen</span><b className="tabular">{db.zeiten.filter(z => z.auto?.length && z.datum >= addTage(h, -7) && aktiveTeam.some(m => m.id === z.maId)).length}</b></li>
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("krank")}><span>AU-Bestätigungen ausständig</span><b className="tabular">{db.abwesenheiten.filter(a => KRANK_ARTEN.includes(a.art) && wirksam(a) && !a.au && aktiveTeam.some(m => m.id === a.maId)).length}</b></li>
           </ul>
         </Karte>}
@@ -786,7 +948,8 @@ function ZeitDialog({ ctx, ma, datum, onClose }) {
   const { db, user, aendern } = ctx;
   const z = zeitAm(db, ma.id, datum);
   const direkt = darfVerwalten(user, ma) || (istAdmin(user) && ma.id === user.id);
-  const [f, setF] = useState({ beginn: z?.beginn || modellVon(db, ma).beginn || "09:00", ende: z?.ende || "", pause: z?.pause ?? 30, notiz: z?.notiz || "", grund: "" });
+  const plan = planTag(db, ma, datum);
+  const [f, setF] = useState({ beginn: z?.beginn || plan?.b || "09:00", ende: z?.ende || plan?.e || "", pause: z?.pause ?? plan?.p ?? 30, notiz: z?.notiz || "", grund: "" });
   const [loeschen, setLoeschen] = useState(false);
   const netto = f.beginn && f.ende ? hm2min(f.ende) - hm2min(f.beginn) - (+f.pause || 0) : 0;
   const fehler = loeschen ? (!f.grund.trim() ? "Bitte einen Grund angeben." : null)
@@ -867,6 +1030,7 @@ function Monatsabschluss({ ctx, ma, monat, summeMonat, konto }) {
   const vorbei = monat < monatKey(heute());
   const offeneKorr = db.korrekturen.filter(k => k.maId === ma.id && k.status === "offen" && monatKey(k.datum) === monat).length;
   const laufend = db.zeiten.some(z => z.maId === ma.id && monatKey(z.datum) === monat && !z.ende);
+  const autoTage = db.zeiten.filter(z => z.maId === ma.id && monatKey(z.datum) === monat && z.auto?.length).length;
   const darfAbschliessen = darfVerwalten(user, ma) || (istAdmin(user) && ma.id === user.id);
   const [grund, setGrund] = useState(null);
 
@@ -881,6 +1045,7 @@ function Monatsabschluss({ ctx, ma, monat, summeMonat, konto }) {
       {schritt(!!ab?.bestaetigtAm, "Bestätigung durch Mitarbeiter/in", ab?.bestaetigtAm ? `am ${fmtD(ab.bestaetigtAm)}` : "Zeiten geprüft und bestätigt")}
       {schritt(!!ab?.abgeschlossenAm, "Abschluss durch Vorgesetzte/Verwaltung", ab?.abgeschlossenAm ? `am ${fmtD(ab.abgeschlossenAm)} von ${nameVon(db, ab.abgeschlossenVon)} · Saldo ${fmtH(ab.saldoMonat ?? summeMonat.saldo, true)}` : "Monat wird gesperrt, Saldo geht ins Zeitkonto")}
     </div>
+    {autoTage > 0 && !ab?.abgeschlossenAm && <div className="mt-4"><Hinweis ton="warn">{autoTage} Tag{autoTage === 1 ? "" : "e"} automatisch laut Dienstplan ergänzt (Kennzeichen „auto“). Bitte vor dem Bestätigen prüfen – stimmt etwas nicht, Korrektur beantragen.</Hinweis></div>}
     {!vorbei && !ab?.abgeschlossenAm && <p className="mt-4 text-xs text-stone-500">Der Abschluss ist ab dem 1. des Folgemonats möglich.</p>}
     {vorbei && !ab?.abgeschlossenAm && (offeneKorr > 0 || laufend) && <div className="mt-4"><Hinweis ton="warn">{offeneKorr > 0 ? `${offeneKorr} offene Korrekturanträge. ` : ""}{laufend ? "Ein Tag hat noch kein Arbeitsende." : ""} Bitte zuerst klären.</Hinweis></div>}
     <div className="mt-4 flex flex-wrap gap-2 no-print">
@@ -935,7 +1100,7 @@ function Zeiterfassung({ ctx }) {
       <Kpi label="Soll" wert={fmtH(sm.soll)} sub="bis heute" />
       <Kpi label="Ist" wert={fmtH(sm.ist)} sub="gearbeitet" />
       <Kpi label="Abwesenheit" wert={fmtH(sm.gut)} sub="angerechnet" />
-      <Kpi label="Saldo Monat" wert={fmtH(sm.saldo, true)} ton={sm.saldo >= 0 ? "pos" : "neg"} sub={sm.ueberstunden || sm.mehrarbeit ? `ÜS ${fmtH(sm.ueberstunden)} · MA ${fmtH(sm.mehrarbeit)}` : " "} />
+      <Kpi label="Saldo Monat" wert={fmtH(sm.saldo, true)} ton={sm.saldo >= 0 ? "pos" : "neg"} sub={db.einstellungen.ueberstunden && (sm.ueberstunden || sm.mehrarbeit) ? `ÜS ${fmtH(sm.ueberstunden)} · MA ${fmtH(sm.mehrarbeit)}` : "Abweichung vom Plan"} />
       <Kpi label="Zeitkonto" wert={fmtH(konto, true)} ton={konto >= 0 ? "pos" : "neg"} sub="kumuliert" />
     </div>
 
@@ -964,6 +1129,7 @@ function Zeiterfassung({ ctx }) {
                   {beantragt && !t.a && <span className="text-xs text-amber-700">{ARTEN[beantragt.art].label} beantragt</span>}
                   {korr && <Badge status="offen">Korrektur offen</Badge>}
                   {t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? <span className="text-[11px] text-stone-500" title="Manuell erfasst oder korrigiert – siehe Protokoll">✎</span> : null}
+                  {t.z?.auto?.length ? <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-200" title="Nicht gestempelt – laut Dienstplan eingetragen">auto: {t.z.auto.map(x => AUTO_TEXT[x]).join(", ")}</span> : null}
                   {hw.map((x, i) => <span key={i} title={x.text} className={`inline-flex ${x.stufe === "fehler" ? "text-rose-600" : "text-amber-600"}`}><Icon n="warnung" className="w-4 h-4" /></span>)}
                   {!t.z && !t.a && t.soll > 0 && t.zaehlt && <span className="text-xs text-rose-700">fehlt</span>}
                 </div>
@@ -984,7 +1150,7 @@ function Zeiterfassung({ ctx }) {
 
       <div className="space-y-5">
         <Monatsabschluss key={ma.id + monat} ctx={ctx} ma={ma} monat={monat} summeMonat={sm} konto={konto} />
-        <Karte titel="Prüfung AZG / KJBG" aktion={ma.kjbg ? <span className="text-xs font-medium text-indigo-700">Jugendliche/r · KJBG</span> : null} innen="p-4 space-y-2">
+        <Karte titel="Prüfung AZG / KJBG" aktion={jugendlich(ma, tage[0]) || jugendlich(ma, tage[tage.length - 1]) ? <span className="text-xs font-medium text-indigo-700">unter 18 · KJBG</span> : null} innen="p-4 space-y-2">
           {hinweise.length === 0 ? <Hinweis ton="ok">Keine Auffälligkeiten bei Pausen, Höchstarbeitszeit und Ruhezeit.</Hinweis> :
             hinweise.map((x, i) => <Hinweis key={i} ton={x.stufe === "fehler" ? "fehler" : "warn"}>{x.woche ? `Woche ab ${fmtDk(x.d)}` : fmtDk(x.d)}: {x.text}</Hinweis>)}
         </Karte>
@@ -1271,6 +1437,7 @@ function BsPlaner({ ctx, lehrlinge, onClose }) {
   function speichern() {
     aendern(n => {
       if (ersetzen) { const ids = new Set(bestehend.map(a => a.id)); n.abwesenheiten = n.abwesenheiten.filter(a => !ids.has(a.id)); }
+      Object.assign(n.mitarbeiter.find(m => m.id === ma.id), { bsTag1: +plan.tag1, bsTag2: +plan.tag2 }); // fixe Schultage merken
       neu.forEach(t => n.abwesenheiten.push({ id: uid(), maId: ma.id, art: "berufsschule", von: t.d, bis: t.d, status: "genehmigt", anteil: t.anteil < 1 ? t.anteil : undefined, notiz: t.anteil < 1 ? "halber Schultag" : "", beantragtAm: h, erfasstVon: user.id, entschiedenVon: user.id }));
     }, `${neu.length} Berufsschultage eingetragen`);
     onClose();
@@ -1286,6 +1453,7 @@ function BsPlaner({ ctx, lehrlinge, onClose }) {
       <Feld label="Bis" hilfe="Standard: Ende des Schuljahres"><input type="date" className={inputCls} value={bis} min={von} onChange={e => setBis(e.target.value)} /></Feld>
       {tagWahl("tag1", "Schultag (ganzer Tag)")}
       {tagWahl("tag2", "Zusätzlicher halber Tag (1. Lehrjahr)")}
+      <p className="text-xs text-stone-500 sm:col-span-2 -mt-2">Die gewählten Tage werden beim Lehrling als fixe Schultage gespeichert.</p>
       <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ohneSommer} onChange={e => setOhneSommer(e.target.checked)} />Sommerferien (Juli/August) auslassen</label>
       <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ersetzen} onChange={e => setErsetzen(e.target.checked)} />Bereits geplante Berufsschultage in diesem Zeitraum ersetzen ({bestehend.length})</label>
     </div>
@@ -1338,12 +1506,18 @@ function MaDialog({ ctx, ma, onClose }) {
       <Feld label="Vorgesetzte/r"><select className={inputCls} value={f.vorgesetzterId || ""} onChange={e => set("vorgesetzterId", e.target.value || null)}>
         <option value="">– keine/r –</option>{db.mitarbeiter.filter(m => m.id !== f.id && m.aktiv && m.rolle !== "mitarbeiter").map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
       <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || f.id === user.id} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
+      <Feld label="Geburtsdatum" hilfe={f.geburtsdatum ? (jugendlich(f, heute()) ? `Unter 18 – KJBG-Regeln gelten bis ${fmtD(`${parseInt(f.geburtsdatum) + 18}${f.geburtsdatum.slice(4)}`)}, danach automatisch AZG` : "Volljährig – es gilt das AZG") : "Für Lehrlinge wichtig: bis 18 gelten automatisch die strengeren KJBG-Regeln"}>
+        <input type="date" className={inputCls} value={f.geburtsdatum || ""} onChange={e => set("geburtsdatum", e.target.value || undefined)} /></Feld>
       {f.lehrbeginn && <Feld label="Lehrbeginn" hilfe={`Derzeit ${lehrjahr(f, heute()) || "–"}. Lehrjahr · Berufsschule ${fmtTage(bsTageProWoche(db, f, heute()))} Tag(e)/Woche`}>
         <input type="date" className={inputCls} value={f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.value || undefined)} /></Feld>}
+      {f.lehrbeginn && <Feld label="Fixe Berufsschultage" hilfe="Ganzer Tag · halber Tag (nur im 1. Lehrjahr)">
+        <div className="flex gap-2">
+          <select className={inputCls} value={bsWochentage(db, f).tag1} onChange={e => set("bsTag1", +e.target.value)}>{WT_LANG.map((t, i) => <option key={i} value={i}>{t}</option>)}</select>
+          <select className={inputCls} value={bsWochentage(db, f).tag2} onChange={e => set("bsTag2", +e.target.value)}>{WT_LANG.map((t, i) => <option key={i} value={i}>{t}</option>)}</select>
+        </div></Feld>}
       <Feld label="Zeitkonto-Übertrag (Minuten)" hilfe="Saldo aus dem alten System beim Start"><input type="number" className={inputCls} value={f.saldoStart} onChange={e => set("saldoStart", e.target.value)} /></Feld>
       <div className="space-y-2 pt-5">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.checked ? (f.eintritt || heute()) : undefined)} />Lehrling</label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.kjbg} onChange={e => set("kjbg", e.target.checked)} />Jugendliche/r unter 18 (KJBG-Regeln)</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.aktiv} disabled={f.id === user.id} onChange={e => set("aktiv", e.target.checked)} />Aktiv (kann sich anmelden)</label>
       </div>
     </div>
@@ -1366,7 +1540,7 @@ function Mitarbeiter({ ctx }) {
     <Karte innen="p-0">
       <Tabelle kopf={["Name", "Pers.-Nr.", "Abteilung", "Eintritt", "Modell", { t: "Std./Wo.", cls: "text-right" }, { t: "Urlaub", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, "Vorgesetzte/r", "Rolle", ""]}>
         {liste.map(m => { const konto = zeitkonto(db, m, heute()); const k = urlaubsKonto(db, m, jahr); return <tr key={m.id} className={m.aktiv ? "" : "text-stone-400"}>
-          <td className="px-3 py-2.5"><div className="flex items-center gap-2.5"><Avatar name={m.name} klein /><div><div className="font-medium whitespace-nowrap">{m.name}{m.lehrbeginn && lehrjahr(m, heute()) && <span className="ml-1.5 text-[10px] font-semibold text-stone-700 bg-stone-100 rounded px-1">{lehrjahr(m, heute())}. Lj.</span>}{m.kjbg && <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 rounded px-1">KJBG</span>}</div><div className="text-xs text-stone-500">{m.funktion}</div></div></div></td>
+          <td className="px-3 py-2.5"><div className="flex items-center gap-2.5"><Avatar name={m.name} klein /><div><div className="font-medium whitespace-nowrap">{m.name}{m.lehrbeginn && lehrjahr(m, heute()) && <span className="ml-1.5 text-[10px] font-semibold text-stone-700 bg-stone-100 rounded px-1">{lehrjahr(m, heute())}. Lj.</span>}{jugendlich(m, heute()) && <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 rounded px-1" title="unter 18 – KJBG">KJBG</span>}</div><div className="text-xs text-stone-500">{m.funktion}</div></div></div></td>
           <td className="px-3 py-2.5 tabular">{m.personalnr}</td>
           <td className="px-3 py-2.5">{m.abteilung}</td>
           <td className="px-3 py-2.5 tabular whitespace-nowrap">{fmtD(m.eintritt)}</td>
@@ -1470,10 +1644,10 @@ function Auswertungen({ ctx }) {
   const sum = k => zeilen.reduce((n, z) => n + k(z), 0);
 
   function exportieren() {
-    const kopf = ["Personalnr", "Name", "Arbeitszeitmodell", "Soll (h)", "Ist (h)", "Abwesenheit angerechnet (h)", "Saldo Zeitraum (h)", "Zeitkonto (h)", "Mehrarbeit (h)", "Überstunden (h)", "Urlaubstage", "Resturlaub", "Krankenstand (KT)", "Sonstige Abwesenheit (KT)"];
+    const kopf = ["Personalnr", "Name", "Arbeitszeitmodell", "Soll (h)", "Ist (h)", "Abwesenheit angerechnet (h)", "Saldo Zeitraum (h)", "Zeitkonto (h)", ...(db.einstellungen.ueberstunden ? ["Mehrarbeit (h)", "Überstunden (h)"] : []), "Urlaubstage", "Resturlaub", "Krankenstand (KT)", "Sonstige Abwesenheit (KT)"];
     if (ansicht === "monat") kopf.push("Monatsabschluss");
     csvExport(`auswertung_${ansicht === "monat" ? monat : jahr}.csv`, [kopf, ...zeilen.map(z => {
-      const r = [z.m.personalnr, z.m.name, modellVon(db, z.m).name, fmtDez(z.s.soll), fmtDez(z.s.ist), fmtDez(z.s.gut), fmtDez(z.s.saldo), fmtDez(z.konto), fmtDez(z.s.mehrarbeit), fmtDez(z.s.ueberstunden), z.urlaubZr, z.uk.rest, z.krank, z.sonst];
+      const r = [z.m.personalnr, z.m.name, modellVon(db, z.m).name, fmtDez(z.s.soll), fmtDez(z.s.ist), fmtDez(z.s.gut), fmtDez(z.s.saldo), fmtDez(z.konto), ...(db.einstellungen.ueberstunden ? [fmtDez(z.s.mehrarbeit), fmtDez(z.s.ueberstunden)] : []), z.urlaubZr, z.uk.rest, z.krank, z.sonst];
       if (ansicht === "monat") r.push(z.ab?.abgeschlossenAm ? `abgeschlossen ${fmtD(z.ab.abgeschlossenAm)}` : "offen");
       return r;
     })]);
@@ -1486,6 +1660,7 @@ function Auswertungen({ ctx }) {
     }));
     csvExport(`arbeitszeiten_${ansicht === "monat" ? monat : jahr}.csv`, zz);
   }
+  const mitUS = db.einstellungen.ueberstunden;
   const zt = (v, vz) => <span className={vz ? (v > 0 ? "text-emerald-700" : v < 0 ? "text-rose-700" : "") : ""}>{fmtH(v, vz)}</span>;
 
   return <div className="space-y-5 print-full">
@@ -1503,18 +1678,19 @@ function Auswertungen({ ctx }) {
 
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       <Kpi label="Ist-Stunden" wert={fmtH(sum(z => z.s.ist))} sub={`Soll ${fmtH(sum(z => z.s.soll))}`} />
-      <Kpi label="Überstunden" wert={fmtH(sum(z => z.s.ueberstunden))} sub={`+ Mehrarbeit ${fmtH(sum(z => z.s.mehrarbeit))}`} />
+      {mitUS ? <Kpi label="Überstunden" wert={fmtH(sum(z => z.s.ueberstunden))} sub={`+ Mehrarbeit ${fmtH(sum(z => z.s.mehrarbeit))}`} />
+        : <Kpi label="Abweichung vom Plan" wert={fmtH(sum(z => z.s.saldo), true)} sub="Summe aller Salden" />}
       <Kpi label="Urlaubstage" wert={sum(z => z.urlaubZr)} sub="im Zeitraum" />
       <Kpi label="Krankenstandstage" wert={sum(z => z.krank)} sub="Kalendertage" />
     </div>
 
     <Karte innen="p-0" titel={ansicht === "monat" ? <span className="capitalize">Monatsübersicht {fmtMonat(monat)}</span> : `Jahresübersicht ${jahr}`}>
-      <Tabelle kopf={["Mitarbeiter/in", { t: "Soll", cls: "text-right" }, { t: "Ist", cls: "text-right" }, { t: "Abw.", cls: "text-right" }, { t: "Saldo", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, { t: "Mehrarb.", cls: "text-right" }, { t: "Überst.", cls: "text-right" }, { t: "Urlaub", cls: "text-right" }, { t: "Rest", cls: "text-right" }, { t: "Krank", cls: "text-right" }, { t: "Sonst.", cls: "text-right" }, ...(ansicht === "monat" ? ["Abschluss"] : [])]}
+      <Tabelle kopf={["Mitarbeiter/in", { t: "Soll", cls: "text-right" }, { t: "Ist", cls: "text-right" }, { t: "Abw.", cls: "text-right" }, { t: "Saldo", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, ...(mitUS ? [{ t: "Mehrarb.", cls: "text-right" }, { t: "Überst.", cls: "text-right" }] : []), { t: "Urlaub", cls: "text-right" }, { t: "Rest", cls: "text-right" }, { t: "Krank", cls: "text-right" }, { t: "Sonst.", cls: "text-right" }, ...(ansicht === "monat" ? ["Abschluss"] : [])]}
         fuss={<tr className="border-t-2 border-stone-200 font-semibold tabular">
           <td className="px-3 py-2.5">Summe</td>
           <td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.soll))}</td><td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.ist))}</td><td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.gut))}</td>
           <td className="px-3 py-2.5 text-right">{zt(sum(z => z.s.saldo), true)}</td><td className="px-3 py-2.5 text-right">{zt(sum(z => z.konto), true)}</td>
-          <td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.mehrarbeit))}</td><td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.ueberstunden))}</td>
+          {mitUS && <><td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.mehrarbeit))}</td><td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.ueberstunden))}</td></>}
           <td className="px-3 py-2.5 text-right">{sum(z => z.urlaubZr)}</td><td className="px-3 py-2.5 text-right">{sum(z => z.uk.rest)}</td><td className="px-3 py-2.5 text-right">{sum(z => z.krank)}</td><td className="px-3 py-2.5 text-right">{sum(z => z.sonst)}</td>{ansicht === "monat" && <td />}
         </tr>}>
         {zeilen.map(z => <tr key={z.m.id} className="tabular">
@@ -1524,8 +1700,8 @@ function Auswertungen({ ctx }) {
           <td className="px-3 py-2.5 text-right text-stone-500">{fmtH(z.s.gut)}</td>
           <td className="px-3 py-2.5 text-right font-medium">{zt(z.s.saldo, true)}</td>
           <td className="px-3 py-2.5 text-right font-medium">{zt(z.konto, true)}</td>
-          <td className="px-3 py-2.5 text-right">{z.s.mehrarbeit ? fmtH(z.s.mehrarbeit) : "–"}</td>
-          <td className="px-3 py-2.5 text-right">{z.s.ueberstunden ? fmtH(z.s.ueberstunden) : "–"}</td>
+          {mitUS && <><td className="px-3 py-2.5 text-right">{z.s.mehrarbeit ? fmtH(z.s.mehrarbeit) : "–"}</td>
+          <td className="px-3 py-2.5 text-right">{z.s.ueberstunden ? fmtH(z.s.ueberstunden) : "–"}</td></>}
           <td className="px-3 py-2.5 text-right">{z.urlaubZr || "–"}</td>
           <td className="px-3 py-2.5 text-right">{z.uk.rest}</td>
           <td className="px-3 py-2.5 text-right">{z.krank || "–"}</td>
@@ -1535,7 +1711,7 @@ function Auswertungen({ ctx }) {
       </Tabelle>
     </Karte>
     <p className="text-xs text-stone-500">
-      Saldo = Ist + angerechnete Abwesenheit − Soll. Mehrarbeit/Überstunden sind vereinfacht aus positiven Wochensalden berechnet: bei Teilzeit bis zur Normalarbeitszeit ({db.einstellungen.vollzeitWoche} h) Mehrarbeit (Zuschlag {db.einstellungen.zuschlagMehrarbeit} %, entfällt bei Ausgleich im Quartal), darüber Überstunden ({db.einstellungen.zuschlagUeberstunden} %). Durchrechnungszeiträume und KV-Sonderregeln müssen mit der Lohnverrechnung abgestimmt werden.
+      Saldo = Ist + angerechnete Abwesenheit − Soll.{!mitUS && " Überstunden sind laut Einstellungen nicht vorgesehen (fixer Dienstplan) – ein positiver Saldo heißt: länger gearbeitet als geplant, bitte ausgleichen."}{mitUS && <> Mehrarbeit/Überstunden sind vereinfacht aus positiven Wochensalden berechnet: bei Teilzeit bis zur Normalarbeitszeit ({db.einstellungen.vollzeitWoche} h) Mehrarbeit (Zuschlag {db.einstellungen.zuschlagMehrarbeit} %, entfällt bei Ausgleich im Quartal), darüber Überstunden ({db.einstellungen.zuschlagUeberstunden} %). Durchrechnungszeiträume und KV-Sonderregeln müssen mit der Lohnverrechnung abgestimmt werden.</>}
     </p>
   </div>;
 }
@@ -1553,17 +1729,34 @@ function Einstellungen({ ctx }) {
 
   return <div className="space-y-5">
     <Seitenkopf titel="Einstellungen" sub={admin ? "Arbeitszeitmodelle, gesetzliche Grenzen und Firmenregeln" : "Nur lesend – Änderungen durch die Administration"} />
-    <Karte titel="Arbeitszeitmodelle" aktion={admin && <Knopf klein icon="plus" onClick={() => setModellNeu({ id: uid(), name: "Neues Modell", tage: [0, 8, 8, 8, 8, 8, 0], beginn: "09:00" })}>Modell</Knopf>} innen="p-0">
+    <Karte titel="Arbeitszeitmodelle / fixe Dienstpläne" aktion={admin && <Knopf klein icon="plus" onClick={() => setModellNeu(mitStunden({ id: uid(), name: "Neuer Dienstplan", plan: [null, ...[1, 2, 3, 4, 5].map(() => ({ b: "09:00", e: "17:30", p: 30 })), null] }))}>Dienstplan</Knopf>} innen="p-0">
       <Tabelle kopf={["Name", ...WT.map(t => ({ t, cls: "text-center" })), { t: "Std./Wo.", cls: "text-right" }, { t: "Personen", cls: "text-right" }, ""]}>
         {db.modelle.map(m => <tr key={m.id}>
           <td className="px-3 py-2.5 font-medium whitespace-nowrap">{m.name}</td>
-          {m.tage.map((h, i) => <td key={i} className={`px-2 py-2.5 text-center tabular ${+h ? "" : "text-stone-300"}`}>{+h ? String(h).replace(".", ",") : "–"}</td>)}
+          {WT.map((_, i) => { const t = planAusModell(m, i); return <td key={i} className={`px-2 py-2.5 text-center tabular text-xs leading-tight ${t ? "" : "text-stone-300"}`}>{t ? <>{t.b}–{t.e}<div className="text-stone-400">{fmtTage(planStunden(t))} h{t.p ? ` · ${t.p}′` : ""}</div></> : "–"}</td>; })}
           <td className="px-3 py-2.5 text-right tabular font-semibold">{String(wochenStd(m)).replace(".", ",")}</td>
           <td className="px-3 py-2.5 text-right tabular">{db.mitarbeiter.filter(x => x.modellId === m.id && x.aktiv).length}</td>
-          <td className="px-3 py-2.5 text-right">{admin && <button onClick={() => setModellNeu({ ...m, tage: [...m.tage] })} className="p-1.5 rounded-md text-stone-500 hover:bg-stone-100"><Icon n="stift" className="w-4 h-4" /></button>}</td>
+          <td className="px-3 py-2.5 text-right">{admin && <button onClick={() => setModellNeu({ ...m, plan: WT.map((_, i) => planAusModell(m, i)) })} className="p-1.5 rounded-md text-stone-500 hover:bg-stone-100"><Icon n="stift" className="w-4 h-4" /></button>}</td>
         </tr>)}
       </Tabelle>
-      <p className="px-5 py-3 text-xs text-stone-500">Änderungen an einem Modell wirken rückwirkend auf alle offenen Monate. In der Live-Version bekommt jede Zuordnung ein „gültig ab“-Datum.</p>
+      <p className="px-5 py-3 text-xs text-stone-500">Änderungen an einem Modell wirken rückwirkend auf alle offenen Monate. In der Live-Version bekommt jede Zuordnung ein „gültig ab“-Datum. Für individuelle Pläne einfach je Person einen eigenen Dienstplan anlegen.</p>
+    </Karte>
+
+    <Karte titel="Automatik & Überstunden">
+      <div className="grid md:grid-cols-2 gap-x-8 gap-y-3">
+        {[
+          ["autoGehen", "Vergessenes „Gehen“ ergänzen", "Dienstende laut Plan eintragen"],
+          ["autoPause", "Pause automatisch eintragen", "wenn keine oder zu kurze Pause gestempelt wurde – Dauer laut Plan"],
+          ["autoFehltag", "Ganz vergessene Tage ergänzen", "Arbeitstag ohne Stempelung und ohne Abwesenheit = Arbeitszeit laut Plan"],
+          ["ueberstunden", "Überstunden / Mehrarbeit vorgesehen", "aus: Auswertungen ohne Überstunden; längere Tage werden als Hinweis markiert"],
+        ].map(([k, t, h]) => <label key={k} className="flex items-start gap-3 text-sm">
+          <input type="checkbox" className="mt-1" disabled={!admin} checked={!!e[k]} onChange={ev => setE(k, ev.target.checked)} />
+          <span><span className="font-medium">{t}</span><span className="block text-xs text-stone-500">{h}</span></span></label>)}
+        <Feld label="Hinweis ab (Minuten über Plan)"><input type="number" className={inputCls} disabled={!admin} value={e.planToleranzMin} onChange={ev => setE("planToleranzMin", +ev.target.value)} /></Feld>
+      </div>
+      <div className="mt-4"><Hinweis>
+        Bei fixer Arbeitszeit reicht nach § 26 AZG, dass der Dienstplan schriftlich festgehalten ist, die Einhaltung jeden Monat bestätigt wird und nur Abweichungen aufgezeichnet werden. Für automatisch eingetragene Pausen braucht es eine schriftliche Vereinbarung über die Pausen (z. B. im Dienstvertrag). Alles Automatische ist mit „auto“ markiert und steht im Protokoll – Mitarbeiter/innen prüfen es beim Monatsabschluss.
+      </Hinweis></div>
     </Karte>
 
     <div className="grid lg:grid-cols-2 gap-5">
@@ -1633,15 +1826,25 @@ function Einstellungen({ ctx }) {
 }
 function ModellDialog({ modell, onSave, onClose }) {
   const [m, setM] = useState(modell);
-  return <Modal titel="Arbeitszeitmodell" onClose={onClose} fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={() => onSave({ ...m, tage: m.tage.map(h => +String(h).replace(",", ".") || 0) })} disabled={!m.name.trim()}>Speichern</Knopf></>}>
+  const setTag = (i, t) => { const plan = [...m.plan]; plan[i] = t; setM({ ...m, plan }); };
+  const summe = m.plan.reduce((s, t) => s + planStunden(t), 0);
+  return <Modal breit titel="Dienstplan" onClose={onClose} fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={() => onSave(mitStunden(m))} disabled={!m.name.trim()}>Speichern</Knopf></>}>
     <div className="space-y-4">
       <Feld label="Bezeichnung"><input className={inputCls} value={m.name} onChange={e => setM({ ...m, name: e.target.value })} /></Feld>
-      <Feld label="Sollstunden je Wochentag">
-        <div className="grid grid-cols-7 gap-1.5">{WT.map((t, i) => <div key={i} className="text-center"><div className="text-xs text-stone-500 mb-1">{t}</div>
-          <input className={`${inputCls} px-1 text-center`} value={m.tage[i]} onChange={e => { const tg = [...m.tage]; tg[i] = e.target.value; setM({ ...m, tage: tg }); }} /></div>)}</div>
-      </Feld>
-      <Feld label="Üblicher Arbeitsbeginn"><input type="time" className={inputCls} value={m.beginn} onChange={e => setM({ ...m, beginn: e.target.value })} /></Feld>
-      <div className="text-sm">Summe: <b>{m.tage.reduce((s, h) => s + (+String(h).replace(",", ".") || 0), 0)} h/Woche</b></div>
+      <div className="space-y-1.5">
+        {WT_LANG.map((t, i) => { const p = m.plan[i]; return <div key={i} className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 w-32 text-sm"><input type="checkbox" checked={!!p} onChange={e => setTag(i, e.target.checked ? { b: "09:00", e: "17:30", p: 30 } : null)} />{t}</label>
+          {p ? <>
+            <input type="time" className={`${inputKlein} py-1.5`} value={p.b} onChange={e => setTag(i, { ...p, b: e.target.value })} />
+            <span className="text-stone-400">–</span>
+            <input type="time" className={`${inputKlein} py-1.5`} value={p.e} onChange={e => setTag(i, { ...p, e: e.target.value })} />
+            <span className="text-xs text-stone-500 ml-1">Pause</span>
+            <input type="number" min="0" step="5" className={`${inputKlein} py-1.5 w-16`} value={p.p} onChange={e => setTag(i, { ...p, p: +e.target.value })} />
+            <span className="text-xs text-stone-500">min · <b className="text-stone-800">{fmtTage(planStunden(p))} h</b></span>
+          </> : <span className="text-xs text-stone-400">frei</span>}
+        </div>; })}
+      </div>
+      <div className="text-sm">Summe: <b>{fmtTage(summe)} h/Woche</b></div>
     </div>
   </Modal>;
 }
@@ -1669,13 +1872,20 @@ function App() {
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 30000); return () => clearInterval(t); }, []);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
 
+  const [terminal, setTerminal] = useState(false);
+  // Automatik beim Öffnen (live: nächtlicher Server-Job)
+  useEffect(() => { const n = JSON.parse(JSON.stringify(db)); if (automatik(n)) setDb(n); }, []);
+
+  // fn darf eine Meldung zurückgeben (z. B. beim Stempeln)
+  const aendern = (fn, meldung) => { const n = JSON.parse(JSON.stringify(db)); const r = fn(n); setDb(n); if (meldung || typeof r === "string") setToast(meldung || r); };
+  const toastEl = toast && <div className="no-print fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg flex items-center gap-2 max-w-[92vw]"><Icon n="haken" className="w-4 h-4 text-emerald-400 shrink-0" />{toast}</div>;
   const user = db.mitarbeiter.find(m => m.id === userId && m.aktiv);
   function login(id) { try { sessionStorage.setItem(SESS_KEY, id); } catch (e) { } setUserId(id); setSeiteRoh("dashboard"); }
   function logout() { try { sessionStorage.removeItem(SESS_KEY); } catch (e) { } setUserId(null); }
-  if (!user) return <Login db={db} onLogin={login} />;
+  if (terminal) return <>{<Terminal db={db} aendern={aendern} onEnde={() => setTerminal(false)} />}{toastEl}</>;
+  if (!user) return <Login db={db} onLogin={login} onTerminal={() => setTerminal(true)} />;
 
   const setSeite = s => { setSeiteRoh(s); setNavOffen(false); window.scrollTo(0, 0); };
-  const aendern = (fn, meldung) => { setDb(prev => { const n = JSON.parse(JSON.stringify(prev)); fn(n); return n; }); if (meldung) setToast(meldung); };
   const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite };
   const badges = {
     urlaub: db.abwesenheiten.filter(a => a.art === "urlaub" && a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId))).length,
@@ -1720,7 +1930,7 @@ function App() {
       <div className="no-print bg-amber-50 border-b border-amber-200 text-amber-900 text-xs px-4 lg:px-8 py-1.5">Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank.</div>
       <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 print-full"><Seite ctx={ctx} /></div>
     </main>
-    {toast && <div className="no-print fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg flex items-center gap-2"><Icon n="haken" className="w-4 h-4 text-emerald-400" />{toast}</div>}
+    {toastEl}
   </div>;
 }
 

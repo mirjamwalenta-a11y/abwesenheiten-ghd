@@ -13,6 +13,8 @@ Stand: Prototyp (Oberfläche fertig, Datenbank als Entwurf).
 
 Navigation: **Dashboard → Zeiterfassung → Urlaub → Krankenstand → Mitarbeiter → Kalender → Auswertungen → Einstellungen**
 
+- **Stempeln** – am eigenen Handy (Stempeluhr im Dashboard) oder am **Stempel-Tablet im Salon**: Name antippen → Kommen / Pause / Gehen. Hat jemand das Kommen vergessen, gibt es „Gehen (Kommen vergessen)“ – der Beginn kommt aus dem Dienstplan.
+- **Fixer Dienstplan & Automatik** – Dienstplan mit Beginn, Ende und Pause je Wochentag. Vergessenes Gehen, fehlende Pausen und ganz vergessene Tage werden automatisch laut Plan ergänzt (live: jede Nacht per Server-Job). Alles Automatische ist mit „auto“ markiert, steht im Protokoll und wird beim Monatsabschluss geprüft. Überstunden lassen sich abschalten; längere Tage erscheinen dann als Hinweis.
 - **Login** – Demo-Auswahl einer Person; Rolle Administrator / Vorgesetzte / Mitarbeiter.
 - **Dashboard** – Stempeluhr, Zeitkonto, Resturlaub; für die Leitung: wer heute im Dienst ist, wer fehlt, offene Anträge, offene Monatsabschlüsse, ausständige AU-Bestätigungen, Verstöße gegen das Arbeitszeitgesetz.
 - **Zeiterfassung** – Kommen / Pause / Gehen, Monatsliste mit Beginn, Ende, Pause, Ist, Soll, Saldo; Zeitkonto kumuliert; Korrekturen (Mitarbeiter beantragt, Vorgesetzte genehmigt bzw. ändert direkt – immer mit Grund und Änderungsprotokoll); Monatsabschluss in zwei Schritten (Mitarbeiter bestätigt → Leitung schließt ab → Monat gesperrt; nur Admin öffnet wieder, mit Grund); Arbeitszeitnachweis zum Drucken mit Unterschriftszeilen.
@@ -33,7 +35,8 @@ Navigation: **Dashboard → Zeiterfassung → Urlaub → Krankenstand → Mitarb
 | Höchstarbeitszeit | § 9 AZG: 12 h/Tag, 60 h/Woche, Ø 48 h in 17 Wochen | Warnung ab 10 h und 48 h, Fehler über 12 h und 60 h |
 | Tägliche Ruhezeit | § 12 AZG: 11 h | Prüfung gegen das Arbeitsende des Vortags |
 | Sonn- und Feiertage | ARG | Hinweis bei Arbeit an Sonn- und Feiertagen |
-| Jugendliche (Lehrlinge unter 18) | KJBG: Pause ab 4,5 h, 8 h/Tag (9 h bei Verteilung), 40 h/Woche, 12 h Ruhezeit, Nachtruhe 20–6 Uhr | strengere Prüfung bei KJBG-Kennzeichen |
+| Fixe Arbeitszeit | § 26 AZG: Dienstplan schriftlich festhalten, Einhaltung monatlich bestätigen, nur Abweichungen aufzeichnen; automatische Pausen nur mit schriftlicher Pausen-Vereinbarung | Dienstplan je Wochentag, Automatik mit Kennzeichen „auto“, Bestätigung beim Monatsabschluss |
+| Jugendliche (Lehrlinge unter 18) | KJBG: Pause ab 4,5 h, 8 h/Tag (9 h bei Verteilung), 40 h/Woche, 12 h Ruhezeit, Nachtruhe 20–6 Uhr | strengere Prüfung, gesteuert über das Geburtsdatum – ab dem 18. Geburtstag automatisch AZG |
 | Überstunden / Mehrarbeit | § 10 AZG 50 %, § 19d AZG 25 % bei Teilzeit | Mehrarbeit und Überstunden getrennt ausgewiesen (vereinfacht pro Woche) |
 | Urlaub | § 2 UrlG: 25 Arbeitstage (5-Tage-Woche), ab 25 Dienstjahren 30 | Vorschlag aliquot zu den Arbeitstagen pro Woche; Feiertage zählen nicht |
 | Verjährung Urlaub | § 4 Abs 5 UrlG | Hinweis im Urlaubskonto |
@@ -49,8 +52,8 @@ Navigation: **Dashboard → Zeiterfassung → Urlaub → Krankenstand → Mitarb
 Grundidee: **eine** Personenliste für alle Apps. Personen bleiben in `abw_team`, Urlaub und Krankenstand bleiben in `abw_anfragen` – die bestehende Abwesenheiten-App läuft also unverändert weiter.
 
 ```
-abw_team (bestehend)  ── 1:1 ── zeit_profil            Personalnr, Abteilung, Vorgesetzte/r, KJBG, Übertrag
-     │                ── 1:n ── zeit_modell_zuordnung  Modell „gültig ab“ ── zeit_arbeitsmodelle
+abw_team (bestehend)  ── 1:1 ── zeit_profil            Personalnr, Abteilung, Vorgesetzte/r, Geburtsdatum, Lehrbeginn, Schultage
+     │                ── 1:n ── zeit_modell_zuordnung  Modell „gültig ab“ ── zeit_arbeitsmodelle ── zeit_modell_tage (Beginn/Ende/Pause je Wochentag)
      │                ── 1:n ── zeit_buchungen         1 Zeile pro Person und Tag
      │                ── 1:n ── zeit_korrekturen       Anträge der Mitarbeiter/innen
      │                ── 1:n ── zeit_protokoll         jede Änderung (nur lesbar)
@@ -63,7 +66,8 @@ Sicherheit (nach `CLAUDE.md`):
 - Alle neuen Tabellen haben **RLS ab dem Anlegen**, `anon` hat keinen Zugriff.
 - Rollen prüft die **Datenbank**: Admin = `abw_is_owner()`, Vorgesetzte/r = `zeit_profil.vorgesetzter_id`.
 - Arbeitszeiten sind per REST **nur lesbar**. Geschrieben wird ausschließlich über Funktionen:
-  - `zeit_stempeln(aktion)` – Uhrzeit vom Server (Europe/Vienna), nicht vom Handy
+  - `zeit_stempeln(aktion)` – Uhrzeit vom Server (Europe/Vienna), nicht vom Handy; inkl. „Kommen vergessen“ und automatischer Pause
+  - `zeit_automatik()` – nächtlicher Job (pg_cron), nur für den Server ausführbar
   - `zeit_buchung_aendern(...)` – nur Leitung, Grund ist Pflicht, schreibt ins Protokoll
   - `zeit_korrektur_entscheiden(id, ja/nein)`
   - `zeit_monat_bestaetigen`, `zeit_monat_abschliessen`, `zeit_monat_oeffnen` (nur Admin)
@@ -82,9 +86,9 @@ Das Skript wurde lokal gegen eine nachgebaute Supabase-Umgebung getestet (zweima
 ## 5. Offene Fragen an dich
 
 1. **Vorgesetzte:** Gibt es neben dir eine Salonleitung, die Urlaub genehmigen soll? Dafür muss eine bestehende Policy von `abw_anfragen` erweitert werden (im SQL auskommentiert vorbereitet).
-2. **Arbeitszeitmodelle:** Welche Modelle gibt es wirklich (Tage, Stunden, Schließtage Sonntag + Montag)? Gibt es eine Durchrechnung bzw. Gleitzeit laut KV oder Betriebsvereinbarung?
-3. **Überstunden:** Auszahlung oder Zeitausgleich? Ab wann zählen sie (täglich über 8 h oder erst über die Wochenstunden)?
-4. **Lehrlinge:** ~~Berufsschule~~ geklärt (Wien: 1. Lj. 1,5 Tage, 2./3. Lj. 1 Tag pro Woche). Offen: Welche Wochentage? Und sind die Lehrlinge unter 18 (strengere KJBG-Regeln)?
+2. **Dienstpläne:** ~~geklärt~~ – fixer Plan, keine Überstunden. Offen: die tatsächlichen Zeiten je Person (Beginn, Ende, Pause pro Wochentag).
+3. **Pausen-Vereinbarung:** Steht die Pause (Dauer, Zeitfenster) schriftlich im Dienstvertrag? Das ist die Voraussetzung, dass Pausen automatisch eingetragen werden dürfen.
+4. **Lehrlinge:** geklärt – Wien 1. Lj. 1,5 Tage, 2./3. Lj. 1 Tag; Schultage fix je Lehrling; unter/über 18 automatisch über das Geburtsdatum.
 5. **Krankenstand mit offenem Ende:** In `abw_anfragen` ist `bis` heute Pflicht. Offenes Ende erlauben (dann muss die Abwesenheiten-App damit umgehen) oder „voraussichtliches Ende“ eintragen?
 6. **Datenschutz im Kalender:** Die Abwesenheiten-App zeigt allen genehmigte Einträge inkl. Art. Sollen Kolleg/innen „Krankenstand“ weiterhin sehen oder nur „abwesend“ (so macht es der Prototyp)?
-7. **Stempeln wo:** Am eigenen Handy, oder an einem Salon-Tablet? Beim Tablet braucht es einen anderen Login (z. B. PIN pro Person mit Server-Prüfung).
+7. **Stempeln wo:** Handy, Salon-Tablet oder beides? Das Tablet braucht einen eigenen Gerätezugang und eine persönliche PIN je Person, die der Server prüft.
