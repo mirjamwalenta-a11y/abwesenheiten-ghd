@@ -650,6 +650,52 @@ REVOKE ALL ON FUNCTION zeit_automatik(date, boolean, boolean, boolean) FROM PUBL
 -- Einrichten (Supabase → Database → Extensions → pg_cron aktivieren), täglich 02:15 UTC:
 -- SELECT cron.schedule('zeit-automatik', '15 2 * * *', $cron$ SELECT zeit_automatik(); $cron$);
 
+-- ════════════════════════════════════════════════════════════
+--  BESTÄTIGUNGEN (Krankenstand, Arbeitsunfall, Pflegefreistellung, Arzt)
+--  Gesundheitsbezogene Daten (Art. 9 DSGVO) → privater Storage-Bucket.
+--  Lesen: nur die Person selbst und die Leitung (zeit_darf_sehen).
+--  Hochladen: für sich selbst oder als Leitung. Löschen: nur Chefin.
+--  Ablage: belege/<person_id>/<uuid>.<endung>
+--  Aufbewahrung: mit den Lohnunterlagen (7 Jahre), danach löschen.
+-- ════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS zeit_belege (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  anfrage_id      text NOT NULL,     -- abw_anfragen.id (Typ beim Einbau prüfen, dann FK ergänzen)
+  person_id       text NOT NULL REFERENCES abw_team(id),
+  pfad            text NOT NULL UNIQUE,
+  dateiname       text NOT NULL,
+  typ             text NOT NULL CHECK (typ IN ('application/pdf', 'image/jpeg', 'image/png', 'image/heic')),
+  groesse         integer NOT NULL CHECK (groesse BETWEEN 1 AND 10485760),
+  hochgeladen_von text NOT NULL,
+  hochgeladen_am  timestamptz NOT NULL DEFAULT now(),
+  CHECK (split_part(pfad, '/', 1) = person_id)
+);
+ALTER TABLE zeit_belege ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON zeit_belege FROM anon;
+
+DROP POLICY IF EXISTS "zeit_belege_select" ON zeit_belege;
+CREATE POLICY "zeit_belege_select" ON zeit_belege FOR SELECT TO authenticated USING (zeit_darf_sehen(person_id));
+DROP POLICY IF EXISTS "zeit_belege_insert" ON zeit_belege;
+CREATE POLICY "zeit_belege_insert" ON zeit_belege FOR INSERT TO authenticated
+  WITH CHECK (hochgeladen_von = abw_current_person_id()
+              AND (person_id = abw_current_person_id() OR zeit_darf_verwalten(person_id)));
+DROP POLICY IF EXISTS "zeit_belege_delete" ON zeit_belege;
+CREATE POLICY "zeit_belege_delete" ON zeit_belege FOR DELETE TO authenticated USING (abw_is_owner());
+
+INSERT INTO storage.buckets (id, name, public) VALUES ('belege', 'belege', false) ON CONFLICT (id) DO NOTHING;
+
+DROP POLICY IF EXISTS "belege_lesen" ON storage.objects;
+CREATE POLICY "belege_lesen" ON storage.objects FOR SELECT TO authenticated
+  USING (bucket_id = 'belege' AND zeit_darf_sehen(split_part(name, '/', 1)));
+DROP POLICY IF EXISTS "belege_hochladen" ON storage.objects;
+CREATE POLICY "belege_hochladen" ON storage.objects FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'belege' AND (split_part(name, '/', 1) = abw_current_person_id()
+                                        OR zeit_darf_verwalten(split_part(name, '/', 1))));
+DROP POLICY IF EXISTS "belege_loeschen" ON storage.objects;
+CREATE POLICY "belege_loeschen" ON storage.objects FOR DELETE TO authenticated
+  USING (bucket_id = 'belege' AND abw_is_owner());
+-- kein UPDATE: eine hochgeladene Bestätigung wird nicht überschrieben
+
 -- Funktionen: nur für Angemeldete (Supabase gibt sonst auch anon EXECUTE)
 REVOKE ALL ON FUNCTION zeit_stempeln(text, boolean), zeit_plan_am(text, date), zeit_jugendlich(text, date),
   zeit_pause_noetig(text, zeit_buchungen), zeit_buchung_aendern(text, date, time, time, integer, text, boolean),

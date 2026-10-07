@@ -146,10 +146,10 @@ const ROLLEN = {
 // soll0 = an diesem Tag entfällt die Sollzeit ganz (unbezahlt).
 const ARTEN = {
   urlaub:       { label: "Urlaub",                    kurz: "U",  voll: "bg-emerald-500 text-white", hell: "bg-emerald-100 text-emerald-800", punkt: "bg-emerald-500", gutschrift: true },
-  krank:        { label: "Krankenstand",              kurz: "K",  voll: "bg-rose-500 text-white",    hell: "bg-rose-100 text-rose-800",       punkt: "bg-rose-500",    gutschrift: true, meldung: true, au: true, offen: true },
-  unfall:       { label: "Arbeitsunfall",             kurz: "UF", voll: "bg-red-700 text-white",     hell: "bg-red-100 text-red-800",         punkt: "bg-red-700",     gutschrift: true, meldung: true, au: true, offen: true },
-  pflege:       { label: "Pflegefreistellung",        kurz: "PF", voll: "bg-orange-500 text-white",  hell: "bg-orange-100 text-orange-800",   punkt: "bg-orange-500",  gutschrift: true, meldung: true, offen: true },
-  arzt:         { label: "Arztbesuch",                kurz: "AR", voll: "bg-teal-600 text-white",    hell: "bg-teal-100 text-teal-800",       punkt: "bg-teal-600",    gutschrift: true, meldung: true, stunden: true },
+  krank:        { label: "Krankenstand",              kurz: "K",  voll: "bg-rose-500 text-white",    hell: "bg-rose-100 text-rose-800",       punkt: "bg-rose-500",    gutschrift: true, meldung: true, au: true, offen: true, beleg: true },
+  unfall:       { label: "Arbeitsunfall",             kurz: "UF", voll: "bg-red-700 text-white",     hell: "bg-red-100 text-red-800",         punkt: "bg-red-700",     gutschrift: true, meldung: true, au: true, offen: true, beleg: true },
+  pflege:       { label: "Pflegefreistellung",        kurz: "PF", voll: "bg-orange-500 text-white",  hell: "bg-orange-100 text-orange-800",   punkt: "bg-orange-500",  gutschrift: true, meldung: true, offen: true, beleg: true },
+  arzt:         { label: "Arztbesuch",                kurz: "AR", voll: "bg-teal-600 text-white",    hell: "bg-teal-100 text-teal-800",       punkt: "bg-teal-600",    gutschrift: true, meldung: true, stunden: true, beleg: true },
   sonder:       { label: "Dienstverhinderung",        kurz: "DV", voll: "bg-amber-500 text-white",   hell: "bg-amber-100 text-amber-800",     punkt: "bg-amber-500",   gutschrift: true },
   berufsschule: { label: "Berufsschule",              kurz: "BS", voll: "bg-indigo-500 text-white",  hell: "bg-indigo-100 text-indigo-800",   punkt: "bg-indigo-500",  gutschrift: true },
   fortbildung:  { label: "Fortbildung / Seminar",     kurz: "FB", voll: "bg-violet-500 text-white",  hell: "bg-violet-100 text-violet-800",   punkt: "bg-violet-500",  gutschrift: true },
@@ -869,6 +869,86 @@ function Tabelle({ kopf, children, fuss }) {
   </div>;
 }
 
+// ─── BELEGE (Krankenstands-/Arztbestätigungen) ────────────────────────────────
+// Prototyp: Dateien liegen in IndexedDB dieses Browsers. Live: privater Storage-Bucket,
+// lesbar nur für die Person selbst und die Leitung (siehe Schema-Entwurf).
+const BelegSpeicher = {
+  _db: null,
+  oeffnen() {
+    if (!this._db) this._db = new Promise((ok, fehler) => {
+      const r = indexedDB.open("ghd-zeitverwaltung-belege", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("dateien");
+      r.onsuccess = () => ok(r.result); r.onerror = () => fehler(r.error);
+    });
+    return this._db;
+  },
+  async tx(modus, fn) {
+    const d = await this.oeffnen();
+    return new Promise((ok, fehler) => { const t = d.transaction("dateien", modus); const r = fn(t.objectStore("dateien")); t.oncomplete = () => ok(r?.result); t.onerror = () => fehler(t.error); });
+  },
+  put(id, blob) { return this.tx("readwrite", s => s.put(blob, id)); },
+  get(id) { return this.tx("readonly", s => s.get(id)); },
+  del(id) { return this.tx("readwrite", s => s.delete(id)); },
+};
+// Fotos auf max. 1600 px verkleinern (Handyfotos haben sonst mehrere MB)
+async function belegVorbereiten(file) {
+  if (!file.type.startsWith("image/")) return { blob: file, name: file.name, typ: file.type || "application/pdf" };
+  try {
+    const bild = await createImageBitmap(file), f = Math.min(1, 1600 / Math.max(bild.width, bild.height));
+    const c = document.createElement("canvas"); c.width = Math.round(bild.width * f); c.height = Math.round(bild.height * f);
+    c.getContext("2d").drawImage(bild, 0, 0, c.width, c.height);
+    const blob = await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.85));
+    return { blob, name: file.name.replace(/\.[^.]+$/, "") + ".jpg", typ: "image/jpeg" };
+  } catch (e) { return { blob: file, name: file.name, typ: file.type }; }
+}
+// data:-URL → Blob ohne fetch (die Seite erlaubt keine Netzwerkzugriffe, CSP connect-src)
+function dataUrlZuBlob(durl) {
+  const [kopf, b64] = durl.split(","), typ = (kopf.match(/data:([^;]+)/) || [])[1] || "application/octet-stream";
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: typ });
+}
+async function belegeSpeichern(files, vonId) {
+  const metas = [];
+  for (const file of files) {
+    if (file.size > 10 * 1024 * 1024) throw new Error(`„${file.name}“ ist größer als 10 MB.`);
+    const v = await belegVorbereiten(file), id = uid();
+    await BelegSpeicher.put(id, v.blob);
+    metas.push({ id, name: v.name, typ: v.typ, groesse: v.blob.size, am: new Date().toISOString(), von: vonId });
+  }
+  return metas;
+}
+async function belegOeffnen(meta) {
+  const blob = await BelegSpeicher.get(meta.id);
+  if (!blob) { alert("Die Datei ist in diesem Browser nicht vorhanden (z. B. auf einem anderen Gerät hochgeladen)."); return; }
+  const url = URL.createObjectURL(blob), a = document.createElement("a");
+  a.href = url; a.target = "_blank"; a.rel = "noopener"; a.download = meta.name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+// Anzeige + Hochladen direkt an einer Abwesenheit
+function Belege({ ctx, a, darf, kompakt }) {
+  const { aendern, user } = ctx;
+  const [laedt, setLaedt] = useState(false);
+  const dateien = a.dateien || [];
+  async function hochladen(ev) {
+    const files = [...(ev.target.files || [])]; ev.target.value = ""; if (!files.length) return;
+    setLaedt(true);
+    try {
+      const metas = await belegeSpeichern(files, user.id);
+      aendern(n => { const x = n.abwesenheiten.find(q => q.id === a.id); x.dateien = [...(x.dateien || []), ...metas]; if (ARTEN[x.art]?.au) x.au = true; },
+        metas.length === 1 ? "Bestätigung hochgeladen" : `${metas.length} Bestätigungen hochgeladen`);
+    } catch (e) { alert(e.message || "Hochladen fehlgeschlagen."); }
+    setLaedt(false);
+  }
+  return <span className="inline-flex flex-wrap items-center gap-1.5">
+    {dateien.map(d => <button key={d.id} onClick={() => belegOeffnen(d)} title={d.name} className="inline-flex items-center gap-1 rounded-full bg-sky-50 text-sky-800 ring-1 ring-inset ring-sky-200 px-2 py-0.5 text-[11px] font-semibold hover:ring-sky-500">📎 {kompakt ? (d.typ === "application/pdf" ? "PDF" : "Foto") : d.name}</button>)}
+    {darf && ARTEN[a.art]?.beleg && <label className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer ring-1 ring-inset ${dateien.length ? "text-stone-500 ring-stone-200 hover:ring-gold-500" : "bg-gold-50 text-gold-700 ring-gold-300 hover:ring-gold-500"}`}>
+      {laedt ? "lädt …" : dateien.length ? "+" : "📎 Bestätigung hochladen"}
+      <input type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={hochladen} disabled={laedt} />
+    </label>}
+  </span>;
+}
+
 // Excel-Bibliothek (SheetJS) erst beim ersten Download laden
 function ladeXlsx() {
   if (window.XLSX) return Promise.resolve(window.XLSX);
@@ -876,6 +956,15 @@ function ladeXlsx() {
     const s = document.createElement("script");
     s.src = "https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js";
     s.onload = () => ok(window.XLSX); s.onerror = () => fehler(new Error("Excel-Bibliothek nicht erreichbar"));
+    document.head.appendChild(s);
+  });
+}
+function ladeJszip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  return new Promise((ok, fehler) => {
+    const s = document.createElement("script");
+    s.src = "https://unpkg.com/jszip@3.10.1/dist/jszip.min.js";
+    s.onload = () => ok(window.JSZip); s.onerror = () => fehler(new Error("ZIP-Bibliothek nicht erreichbar"));
     document.head.appendChild(s);
   });
 }
@@ -1404,9 +1493,16 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
   const autoTage = ganzTag ? zeitraum.filter(d => zeitAm(db, f.maId, d)?.auto?.includes("tag")) : [];
   const gestempelt = ganzTag ? zeitraum.filter(d => { const z = zeitAm(db, f.maId, d); return z && !z.auto?.includes("tag"); }) : [];
 
-  function speichern() {
+  const [neueDateien, setNeueDateien] = useState([]);
+  const [speichert, setSpeichert] = useState(false);
+  async function speichern() {
+    let metas = [];
+    if (art.beleg && neueDateien.length) {
+      setSpeichert(true);
+      try { metas = await belegeSpeichern(neueDateien, user.id); } catch (e) { alert(e.message || "Hochladen fehlgeschlagen."); setSpeichert(false); return; }
+    }
     aendern(n => {
-      const daten = { maId: f.maId, art: f.art, von: f.von, bis, status, anteil: halbMoeglich && f.halb ? 0.5 : undefined, minuten: art.stunden ? Math.round(+f.stunden * 60) : undefined, au: art.au ? f.au : undefined, notiz: f.notiz };
+      const daten = { maId: f.maId, art: f.art, von: f.von, bis, status, dateien: [...(bestand?.dateien || []), ...metas], anteil: halbMoeglich && f.halb ? 0.5 : undefined, minuten: art.stunden ? Math.round(+f.stunden * 60) : undefined, au: art.au ? (f.au || metas.length > 0) : undefined, notiz: f.notiz };
       if (bestand) Object.assign(n.abwesenheiten.find(a => a.id === bestand.id), daten, { geaendertVon: user.id, geaendertAm: heute() });
       else n.abwesenheiten.push({ id: uid(), ...daten, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: status === "genehmigt" ? user.id : undefined });
       if (status !== "beantragt") autoTage.forEach(d => {
@@ -1420,7 +1516,7 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
   function loeschen() { aendern(n => { Object.assign(n.abwesenheiten.find(a => a.id === bestand.id), { status: "storniert", geaendertVon: user.id, geaendertAm: heute() }); }, "Eintrag storniert"); onClose(); }
   const titel = bestand ? "Abwesenheit bearbeiten" : modus === "alle" ? "Urlaub / Krankenstand nachtragen" : modus === "urlaub" ? (fuerAndere ? "Urlaub eintragen" : "Urlaub beantragen") : "Krankmeldung / Abwesenheit erfassen";
   return <Modal titel={titel} onClose={onClose}
-    fuss={<>{bestand && <Knopf art="rot" onClick={loeschen}>Stornieren</Knopf>}<span className="flex-1" /><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>{bestand ? "Speichern" : status === "beantragt" ? "Antrag senden" : status === "gemeldet" ? "Melden" : "Eintragen"}</Knopf></>}>
+    fuss={<>{bestand && <Knopf art="rot" onClick={loeschen}>Stornieren</Knopf>}<span className="flex-1" /><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler || speichert}>{bestand ? "Speichern" : status === "beantragt" ? "Antrag senden" : status === "gemeldet" ? "Melden" : "Eintragen"}</Knopf></>}>
     <div className="grid sm:grid-cols-2 gap-4">
       {auswahl.length > 1 && <Feld label="Mitarbeiter/in" breit><select className={inputCls} value={f.maId} onChange={e => setF({ ...f, maId: e.target.value })}>{auswahl.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>}
       {arten.length > 1 && <Feld label="Art der Abwesenheit" breit><select className={inputCls} value={f.art} onChange={e => setF({ ...f, art: e.target.value })}>{arten.map(a => <option key={a} value={a}>{ARTEN[a].label}</option>)}</select></Feld>}
@@ -1433,7 +1529,16 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
         {halbMoeglich && <label className="flex items-center gap-2 mt-1.5 text-xs text-stone-600"><input type="checkbox" checked={f.halb} onChange={e => setF({ ...f, halb: e.target.checked })} />nur halber Tag</label>}
       </Feld>}
       {art.au && <Feld label="Arbeitsunfähigkeitsbestätigung" breit hilfe={`Firmenregel: Bestätigung ab dem ${db.einstellungen.auAbTag}. Kalendertag vorlegen (änderbar unter Einstellungen).`}>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.au} onChange={e => setF({ ...f, au: e.target.checked })} />AU-Bestätigung liegt vor</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.au || neueDateien.length > 0} onChange={e => setF({ ...f, au: e.target.checked })} />AU-Bestätigung liegt vor</label>
+      </Feld>}
+      {art.beleg && <Feld label={art.au ? "Bestätigung hochladen (Foto oder PDF)" : "Bestätigung (optional, Foto oder PDF)"} breit hilfe="Am Handy kannst du direkt fotografieren. Nur du und die Leitung sehen die Datei.">
+        <div className="flex flex-wrap items-center gap-2">
+          {(bestand?.dateien || []).map(d => <button key={d.id} onClick={() => belegOeffnen(d)} className="rounded-full bg-sky-50 text-sky-800 ring-1 ring-inset ring-sky-200 px-2.5 py-1 text-xs font-semibold">📎 {d.name}</button>)}
+          {neueDateien.map((d, i) => <span key={i} className="inline-flex items-center gap-1 rounded-full bg-gold-50 text-gold-700 ring-1 ring-inset ring-gold-300 px-2.5 py-1 text-xs font-semibold">📎 {d.name}<button onClick={() => setNeueDateien(neueDateien.filter((_, j) => j !== i))} className="ml-1 text-stone-500 hover:text-rose-600">×</button></span>)}
+          <label className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[13px] font-semibold cursor-pointer bg-white ring-1 ring-inset ring-stone-200 hover:ring-gold-500">
+            📷 Datei wählen<input type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={e => { setNeueDateien([...neueDateien, ...e.target.files]); e.target.value = ""; }} />
+          </label>
+        </div>
       </Feld>}
       <Feld label="Notiz (optional)" breit hilfe={art.au || art.stunden ? "Keine Diagnosen eintragen – die gehen den Betrieb nichts an." : null}><input className={inputCls} value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>
     </div>
@@ -1567,6 +1672,7 @@ function Krankenstand({ ctx }) {
           {laufend.map(a => { const tag = tageZw(a.von, h).length; const auNoetig = KRANK_ARTEN.includes(a.art) && !a.au && tag >= db.einstellungen.auAbTag; return <li key={a.id} className="px-5 py-3">
             <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{nameVon(db, a.maId)}</span><ArtChip art={a.art} /></div>
             <div className="text-xs text-stone-500 mt-0.5">{fmtZr(a.von, a.bis)} · {tag}. Tag{KRANK_ARTEN.includes(a.art) ? ` · AU ${a.au ? "liegt vor" : "fehlt"}` : ""}</div>
+            {ARTEN[a.art].beleg && <div className="mt-2 no-print"><Belege ctx={ctx} a={a} darf={darfBearbeiten(a)} /></div>}
             {auNoetig && <div className="mt-2"><Hinweis ton="warn">AU-Bestätigung ab dem {db.einstellungen.auAbTag}. Tag erforderlich.</Hinweis></div>}
             {darfBearbeiten(a) && ARTEN[a.art].offen && <div className="mt-2 flex flex-wrap gap-2 no-print">
               {gesund === a.id ? <GesundForm a={a} onOk={b => gesundMelden(a, b)} onAbbruch={() => setGesund(null)} /> : <>
@@ -1628,13 +1734,13 @@ function Krankenstand({ ctx }) {
     <Karte titel="Alle Einträge" aktion={<select className={`${inputKlein} py-1 text-xs`} value={filterArt} onChange={e => setFilterArt(e.target.value)}>
       <option value="">Alle Arten (ohne Berufsschule)</option>{Object.keys(ARTEN).filter(a => a !== "urlaub").map(a => <option key={a} value={a}>{ARTEN[a].label}</option>)}</select>} innen="p-0">
       {liste.length === 0 ? <Leer text="Keine Einträge." /> :
-      <Tabelle kopf={["Mitarbeiter/in", "Art", "Zeitraum", { t: "Tage", cls: "text-right" }, "AU", "Status", ""]}>
+      <Tabelle kopf={["Mitarbeiter/in", "Art", "Zeitraum", { t: "Tage", cls: "text-right" }, "Bestätigung", "Status", ""]}>
         {liste.slice(0, 60).map(a => <tr key={a.id}>
           <td className="px-3 py-2.5 whitespace-nowrap font-medium">{nameVon(db, a.maId)}</td>
           <td className="px-3 py-2.5"><ArtChip art={a.art} /></td>
           <td className="px-3 py-2.5 whitespace-nowrap tabular">{fmtZr(a.von, a.bis)}</td>
           <td className="px-3 py-2.5 text-right tabular">{tageZw(a.von, a.bis || heute()).length}</td>
-          <td className="px-3 py-2.5 text-xs">{KRANK_ARTEN.includes(a.art) ? (a.au ? "✓" : <span className="text-amber-700">fehlt</span>) : ""}</td>
+          <td className="px-3 py-2.5 text-xs">{ARTEN[a.art].beleg ? <span className="inline-flex items-center gap-1.5">{KRANK_ARTEN.includes(a.art) && !a.au && !(a.dateien || []).length && <span className="text-amber-700">fehlt</span>}{KRANK_ARTEN.includes(a.art) && a.au && !(a.dateien || []).length && "✓"}<Belege ctx={ctx} a={a} darf={darfBearbeiten(a) && a.status !== "storniert"} kompakt /></span> : ""}</td>
           <td className="px-3 py-2.5"><Badge status={a.status} /></td>
           <td className="px-3 py-2.5 text-right whitespace-nowrap">{darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)) && a.status !== "storniert" && !gesperrt(db, a.maId, a.von) ? <Knopf klein art="geist" icon="stift" onClick={() => setBearbeiten(a)}>Bearbeiten</Knopf> : darfBearbeiten(a) && a.status === "beantragt" && <Knopf klein art="geist" onClick={() => stornieren(a)}>Stornieren</Knopf>}</td>
         </tr>)}
@@ -2128,16 +2234,46 @@ function Auswertungen({ ctx }) {
     const krank = [...kopf,
       ["Personalnr", "Name", "Krankenstand (Kalendertage)", "davon Arbeitstage", "Fälle", "Arbeitsunfall (Kalendertage)", "Pflegefreistellung (Kalendertage)", "Arztbesuche (Stunden)", "Zeitkonto zum Stichtag (h)"],
       ...jd.zeilen.map(z => [z.m.personalnr, z.m.name, z.krankKT, z.krankAT, z.faelle.length, z.unfallKT, z.pflegeKT, h2(z.arztMin), h2(z.konto)])];
-    const faelle = [...kopf, ["Personalnr", "Name", "Art", "Von", "Bis", "Kalendertage", "AU-Bestätigung"],
+    const faelle = [...kopf, ["Personalnr", "Name", "Art", "Von", "Bis", "Kalendertage", "AU-Bestätigung", "Datei(en) im ZIP"],
       ...jd.zeilen.flatMap(z => z.faelle.sort((a, b) => a.von.localeCompare(b.von)).map(a => [z.m.personalnr, z.m.name, ARTEN[a.art].label, fmtD(a.von), a.bis ? fmtD(a.bis) : "offen",
-        tageZw(a.von > jd.von ? a.von : jd.von, (a.bis || heute()) < z.stichtag ? (a.bis || heute()) : z.stichtag).length, a.au ? "ja" : "nein"]))];
+        tageZw(a.von > jd.von ? a.von : jd.von, (a.bis || heute()) < z.stichtag ? (a.bis || heute()) : z.stichtag).length, a.au ? "ja" : "nein", belegDateinamen(z.m, a).join(", ")]))];
     const wb = X.utils.book_new();
     const blatt = (rows, name, b) => { const ws = X.utils.aoa_to_sheet(rows); ws["!cols"] = b.map(w => ({ wch: w })); X.utils.book_append_sheet(wb, ws, name); };
     blatt(stand, "Mitarbeiterstand", [24, 22, 18, 11, 11, 30, 13, 13, 11]);
     blatt(urlaub, "Urlaub", [11, 22, 11, 18, 20, 14, 11, 12, 34]);
     blatt(krank, "Krankenstand", [11, 22, 24, 16, 8, 24, 26, 18, 22]);
-    blatt(faelle, "Krankenstandsfälle", [11, 22, 16, 11, 11, 12, 14]);
+    blatt(faelle, "Krankenstandsfälle", [11, 22, 16, 11, 11, 12, 14, 50]);
     X.writeFile(wb, `Jahresabschluss_${jahr}_Mitarbeiter.xlsx`);
+    setLaedt(false);
+  }
+  // Alle Bestätigungen des Jahres als ZIP (je Person ein Ordner) + Übersicht
+  async function belegeZip() {
+    setLaedt(true);
+    try {
+      const [Z, X] = await Promise.all([ladeJszip(), ladeXlsx()]);
+      const jd = jahresDaten(db, jahr), zip = new Z();
+      const zeilen = [["Personalnr", "Name", "Art", "Von", "Bis", "Datei", "Status"]];
+      let anzahl = 0, fehlen = 0;
+      for (const z of jd.zeilen) {
+        const abw = db.abwesenheiten.filter(a => a.maId === z.m.id && ARTEN[a.art]?.beleg && wirksam(a) && a.von <= z.stichtag && (a.bis || a.von) >= jd.von).sort((a, b) => a.von.localeCompare(b.von));
+        for (const a of abw) {
+          const namen = belegDateinamen(z.m, a);
+          if (!namen.length) { if (KRANK_ARTEN.includes(a.art)) { fehlen++; zeilen.push([z.m.personalnr, z.m.name, ARTEN[a.art].label, fmtD(a.von), a.bis ? fmtD(a.bis) : "offen", "", "keine Datei"]); } continue; }
+          for (let i = 0; i < namen.length; i++) {
+            const blob = await BelegSpeicher.get(a.dateien[i].id);
+            if (blob) { zip.file(namen[i], blob); anzahl++; }
+            zeilen.push([z.m.personalnr, z.m.name, ARTEN[a.art].label, fmtD(a.von), a.bis ? fmtD(a.bis) : "offen", namen[i], blob ? "im ZIP" : "nicht auf diesem Gerät"]);
+          }
+        }
+      }
+      const wb = X.utils.book_new(), ws = X.utils.aoa_to_sheet(zeilen); ws["!cols"] = [11, 22, 18, 11, 11, 55, 20].map(w => ({ wch: w }));
+      X.utils.book_append_sheet(wb, ws, "Bestätigungen");
+      zip.file(`Uebersicht_Bestaetigungen_${jahr}.xlsx`, X.write(wb, { type: "array", bookType: "xlsx" }));
+      const inhalt = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(inhalt), a = document.createElement("a");
+      a.href = url; a.download = `Krankenstandsbestaetigungen_${jahr}.zip`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+      if (fehlen) alert(`${anzahl} Dateien im ZIP. Bei ${fehlen} Krankenstand${fehlen === 1 ? "" : "en"} fehlt noch eine Bestätigung – siehe Übersicht im ZIP.`);
+    } catch (e) { alert(e.message || "ZIP konnte nicht erstellt werden."); }
     setLaedt(false);
   }
   // Beschäftigungsstand im Format, das der Steuerberater bisher bekommt
@@ -2186,6 +2322,7 @@ function Auswertungen({ ctx }) {
       <div className="mt-4 flex flex-wrap gap-2">
         <button onClick={beschaeftigungsstand} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">⬇️ Beschäftigungsstand {jahr} (wie bisher)</button>
         <button onClick={jahresExcel} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25 disabled:opacity-60">⬇️ Ausführlich (Excel)</button>
+        <button onClick={belegeZip} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25 disabled:opacity-60">📎 Krankenstandsbestätigungen (ZIP)</button>
         <button onClick={() => setDruck("jahr")} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25">🖨️ Als PDF</button>
       </div>
     </section>; })()}
@@ -2249,6 +2386,12 @@ function Auswertungen({ ctx }) {
   {druck === "monat" && <DruckNachweise db={db} liste={liste} monat={monat} />}
   {druck === "jahr" && <DruckJahr db={db} jd={jahresDaten(db, jahr)} />}
   </>;
+}
+
+// Dateiname im ZIP: „P-003 Julia Pichler/2026-09-15_Krankenstand_1.jpg“
+function belegDateinamen(m, a) {
+  const ordner = `${m.personalnr || ""} ${m.name}`.trim().replace(/[\\/:*?"<>|]/g, "");
+  return (a.dateien || []).map((d, i) => `${ordner}/${a.von}_${ARTEN[a.art].label.replace(/[^\wÄÖÜäöüß-]+/g, "-")}_${i + 1}.${(d.name.split(".").pop() || "dat").toLowerCase()}`);
 }
 
 // Jahresabschluss als Druck/PDF
@@ -2425,8 +2568,14 @@ function Einstellungen({ ctx }) {
     {admin && <Karte titel="Testdaten">
       <p className="text-sm text-stone-600">Alle Daten liegen nur in diesem Browser. {db.eigeneDaten ? "Du testest mit deinen eigenen Mitarbeiter/innen." : "Derzeit erfundene Demo-Daten."} Mit „Sichern“ und „Laden“ nimmst du die Testdaten auf ein anderes Gerät mit.</p>
       <div className="mt-4 flex flex-wrap gap-2">
-        <Knopf art="sekundaer" icon="download" onClick={() => {
-          const url = URL.createObjectURL(new Blob([JSON.stringify(db)], { type: "application/json" }));
+        <Knopf art="sekundaer" icon="download" onClick={async () => {
+          // Belege als Data-URL mitsichern, damit sie auf dem anderen Gerät auch da sind
+          const belege = {};
+          for (const meta of db.abwesenheiten.flatMap(a => a.dateien || [])) {
+            const blob = await BelegSpeicher.get(meta.id).catch(() => null);
+            if (blob) belege[meta.id] = await new Promise(ok => { const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(blob); });
+          }
+          const url = URL.createObjectURL(new Blob([JSON.stringify({ ...db, _belege: belege })], { type: "application/json" }));
           const a = document.createElement("a"); a.href = url; a.download = `zeitverwaltung_testdaten_${heute()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
         }}>Testdaten sichern</Knopf>
         <label className="inline-flex items-center justify-center gap-1.5 rounded-full font-semibold text-[13px] px-4 py-2 bg-white text-stone-900 ring-1 ring-inset ring-stone-200 hover:ring-gold-500 cursor-pointer">
@@ -2434,7 +2583,11 @@ function Einstellungen({ ctx }) {
           <input type="file" accept=".json,application/json" className="hidden" onChange={ev => {
             const datei = ev.target.files?.[0]; if (!datei) return;
             datei.text().then(t => { const n = JSON.parse(t); if (n?.version !== 1 || !Array.isArray(n.mitarbeiter)) throw new Error();
-              if (confirm(`Testdaten vom Gerät laden? (${n.mitarbeiter.length} Personen) – die aktuellen Daten in diesem Browser werden ersetzt.`)) setDb({ ...n, einstellungen: { ...STANDARD_EINSTELLUNGEN, ...n.einstellungen } });
+              if (!confirm(`Testdaten vom Gerät laden? (${n.mitarbeiter.length} Personen) – die aktuellen Daten in diesem Browser werden ersetzt.`)) return;
+              const { _belege, ...rest } = n;
+              Promise.all(Object.entries(_belege || {}).map(([id, durl]) => BelegSpeicher.put(id, dataUrlZuBlob(durl))))
+                .catch(() => alert("Einige Bestätigungen konnten nicht übernommen werden."))
+                .finally(() => setDb({ ...rest, einstellungen: { ...STANDARD_EINSTELLUNGEN, ...rest.einstellungen } }));
             }).catch(() => alert("Diese Datei ist keine Sicherung der Zeitverwaltung."));
             ev.target.value = "";
           }} />
