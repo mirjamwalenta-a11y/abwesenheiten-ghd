@@ -452,6 +452,34 @@ function austrittsUrlaub(db, ma) {
   const verbraucht = k.konsumiert + k.geplant;
   return { jahr, aliquot, anspruch: k.anspruch, uebertrag: k.uebertrag, verbraucht, tage, tageJahr, offen: Math.round((aliquot + k.uebertrag - verbraucht) * 100) / 100 };
 }
+// Jahresabschluss: alle, die im Jahr beschäftigt waren – Stand 31.12. bzw. letzter Arbeitstag
+function jahresDaten(db, jahr) {
+  const von = `${jahr}-01-01`, bis = `${jahr}-12-31`;
+  const personen = db.mitarbeiter.filter(m => (!m.eintritt || m.eintritt <= bis) && (!m.austritt || m.austritt >= von))
+    .sort((a, b) => (a.personalnr || "").localeCompare(b.personalnr || ""));
+  const zeilen = personen.map(m => {
+    const ausgetreten = !!m.austritt && m.austritt <= bis;
+    const stichtag = ausgetreten ? m.austritt : bis;
+    const k = urlaubsKonto(db, m, jahr);
+    // Anspruch im Ein- bzw. Austrittsjahr aliquot nach Kalendertagen
+    const start = m.eintritt && m.eintritt > von ? m.eintritt : von;
+    const aliquot = start > von || ausgetreten;
+    const anspruch = aliquot ? Math.round(k.anspruch * tageZw(start, stichtag).length / tageZw(von, bis).length * 100) / 100 : k.anspruch;
+    const verbraucht = k.konsumiert + k.geplant;
+    const offen = Math.round((anspruch + k.uebertrag - verbraucht) * 100) / 100;
+    const faelle = db.abwesenheiten.filter(a => a.maId === m.id && KRANK_ARTEN.includes(a.art) && wirksam(a) && a.von <= stichtag && (a.bis || heute()) >= von);
+    const krankAT = tageZw(von, stichtag).filter(d => { const a = abwAm(db, m.id, d); return a && KRANK_ARTEN.includes(a.art) && sollMin(db, m, d) > 0; }).length;
+    const arztMin = db.abwesenheiten.filter(a => a.maId === m.id && a.art === "arzt" && wirksam(a) && a.von >= von && a.von <= stichtag).reduce((s, a) => s + (+a.minuten || 0), 0);
+    return { m, ausgetreten, stichtag, anspruchJahr: k.anspruch, anspruch, aliquot, uebertrag: k.uebertrag, verbraucht, offen,
+      krankKT: abwKalendertage(db, m, ["krank"], von, stichtag), unfallKT: abwKalendertage(db, m, ["unfall"], von, stichtag), krankAT, faelle,
+      pflegeKT: abwKalendertage(db, m, ["pflege"], von, stichtag), arztMin, konto: zeitkonto(db, m, stichtag < heute() ? stichtag : heute()) };
+  });
+  const amStichtag = d => db.mitarbeiter.filter(m => (!m.eintritt || m.eintritt <= d) && (!m.austritt || m.austritt >= d)).length;
+  return { jahr, von, bis, zeilen, stand0101: amStichtag(von), stand3112: amStichtag(bis),
+    eintritte: personen.filter(m => m.eintritt >= von && m.eintritt <= bis).length, austritte: zeilen.filter(z => z.ausgetreten).length,
+    vorlaeufig: bis >= heute() };
+}
+
 const STAMM_FELDER = { name: "Name", personalnr: "Personalnummer", abteilung: "Abteilung", funktion: "Funktion", eintritt: "Eintritt", modellId: "Dienstplan",
   urlaubstage: "Urlaubstage", urlaubUebertrag: "Resturlaub Vorjahr", urlaubVorStart: "Urlaub vor Start", vorgesetzterId: "Vorgesetzte/r", rolle: "Rolle",
   geburtsdatum: "Geburtsdatum", lehrbeginn: "Lehrbeginn", saldoStart: "Zeitkonto-Übertrag" };
@@ -1080,6 +1108,7 @@ function Dashboard({ ctx }) {
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Zeitkorrekturen prüfen</span><b className="tabular">{offenKorr.length}</b></li>
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("auswertung")}><span>Monatsabschluss {fmtMonat(vormonat)}</span><b className="tabular">{offeneAbschluesse.length} offen</b></li>
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Automatisch ergänzt (7 Tage) – prüfen</span><b className="tabular">{db.zeiten.filter(z => z.auto?.length && z.datum >= addTage(h, -7) && aktiveTeam.some(m => m.id === z.maId)).length}</b></li>
+            {istAdmin(user) && (h.slice(5) >= "12-15" || h.slice(5) <= "01-31") && <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("auswertung")}><span>📒 Jahresabschluss {h.slice(5) <= "01-31" ? parseInt(h) - 1 : parseInt(h)} an den Steuerberater</span><b>→</b></li>}
             <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("krank")}><span>AU-Bestätigungen ausständig</span><b className="tabular">{db.abwesenheiten.filter(a => KRANK_ARTEN.includes(a.art) && wirksam(a) && !a.au && aktiveTeam.some(m => m.id === a.maId)).length}</b></li>
           </ul>
         </Karte>}
@@ -1918,7 +1947,7 @@ function Auswertungen({ ctx }) {
     }));
     csvExport(`arbeitszeiten_${ansicht === "monat" ? monat : jahr}.csv`, zz);
   }
-  const [druck, setDruck] = useState(false);
+  const [druck, setDruck] = useState(false); // false | "monat" | "jahr"
   const [laedt, setLaedt] = useState(false);
   useEffect(() => {
     if (!druck) return;
@@ -1974,6 +2003,36 @@ function Auswertungen({ ctx }) {
     X.writeFile(wb, `Zeitverwaltung_${ansicht === "monat" ? monat : jahr}.xlsx`);
     setLaedt(false);
   }
+  async function jahresExcel() {
+    setLaedt(true);
+    let X;
+    try { X = await ladeXlsx(); } catch (e) { setLaedt(false); alert("Excel konnte nicht geladen werden (keine Internetverbindung?)."); return; }
+    const jd = jahresDaten(db, jahr), h2 = m => Math.round((m || 0) / 60 * 100) / 100;
+    const kopf = [[`${db.einstellungen.firmenname} · Jahresabschluss ${jahr}`], [`Stichtag 31.12.${jahr}${jd.vorlaeufig ? ` – VORLÄUFIG, Stand ${fmtD(heute())} (geplanter Urlaub bis 31.12. eingerechnet)` : ""}`], [`Erstellt am ${new Date().toLocaleString("de-AT")} von ${user.name}`], []];
+    const stand = [...kopf,
+      ["Mitarbeiterstand 01.01.", jd.stand0101], ["Eintritte", jd.eintritte], ["Austritte", jd.austritte], ["Mitarbeiterstand 31.12.", jd.stand3112], [],
+      ["Personalnr", "Name", "Funktion", "Eintritt", "Austritt", "Art der Beendigung", "Status 31.12.", "Wochenstunden", "Dienstjahre"],
+      ...jd.zeilen.map(z => [z.m.personalnr, z.m.name, z.m.funktion || "", fmtD(z.m.eintritt), z.ausgetreten ? fmtD(z.m.austritt) : "", z.ausgetreten ? (z.m.austrittArt || "") : "",
+        z.ausgetreten ? "ausgetreten" : "beschäftigt", wochenStd(modellVon(db, z.m)), dienstjahre(z.m.eintritt, z.stichtag)])];
+    const urlaub = [...kopf,
+      ["Personalnr", "Name", "Stichtag", "Jahresanspruch (Tage)", "Anspruch anteilig (Tage)", "Übertrag Vorjahr", "Verbraucht", "Offen (Tage)", "Hinweis"],
+      ...jd.zeilen.map(z => [z.m.personalnr, z.m.name, fmtD(z.stichtag), z.anspruchJahr, z.anspruch, z.uebertrag, z.verbraucht, z.offen,
+        z.ausgetreten ? (z.offen > 0 ? "ausgetreten – Urlaubsersatzleistung" : z.offen < 0 ? "ausgetreten – zu viel verbraucht" : "ausgetreten") : z.aliquot ? "Eintrittsjahr – anteilig" : "offen für Rückstellung"])];
+    const krank = [...kopf,
+      ["Personalnr", "Name", "Krankenstand (Kalendertage)", "davon Arbeitstage", "Fälle", "Arbeitsunfall (Kalendertage)", "Pflegefreistellung (Kalendertage)", "Arztbesuche (Stunden)", "Zeitkonto zum Stichtag (h)"],
+      ...jd.zeilen.map(z => [z.m.personalnr, z.m.name, z.krankKT, z.krankAT, z.faelle.length, z.unfallKT, z.pflegeKT, h2(z.arztMin), h2(z.konto)])];
+    const faelle = [...kopf, ["Personalnr", "Name", "Art", "Von", "Bis", "Kalendertage", "AU-Bestätigung"],
+      ...jd.zeilen.flatMap(z => z.faelle.sort((a, b) => a.von.localeCompare(b.von)).map(a => [z.m.personalnr, z.m.name, ARTEN[a.art].label, fmtD(a.von), a.bis ? fmtD(a.bis) : "offen",
+        tageZw(a.von > jd.von ? a.von : jd.von, (a.bis || heute()) < z.stichtag ? (a.bis || heute()) : z.stichtag).length, a.au ? "ja" : "nein"]))];
+    const wb = X.utils.book_new();
+    const blatt = (rows, name, b) => { const ws = X.utils.aoa_to_sheet(rows); ws["!cols"] = b.map(w => ({ wch: w })); X.utils.book_append_sheet(wb, ws, name); };
+    blatt(stand, "Mitarbeiterstand", [24, 22, 18, 11, 11, 30, 13, 13, 11]);
+    blatt(urlaub, "Urlaub", [11, 22, 11, 18, 20, 14, 11, 12, 34]);
+    blatt(krank, "Krankenstand", [11, 22, 24, 16, 8, 24, 26, 18, 22]);
+    blatt(faelle, "Krankenstandsfälle", [11, 22, 16, 11, 11, 12, 14]);
+    X.writeFile(wb, `Jahresabschluss_${jahr}_Mitarbeiter.xlsx`);
+    setLaedt(false);
+  }
   const mitUS = db.einstellungen.ueberstunden;
   const zt = (v, vz) => <span className={vz ? (v > 0 ? "text-emerald-700" : v < 0 ? "text-rose-700" : "") : ""}>{fmtH(v, vz)}</span>;
 
@@ -1988,6 +2047,17 @@ function Auswertungen({ ctx }) {
       <Knopf art="sekundaer" icon="drucker" onClick={() => window.print()}>Übersicht drucken</Knopf>
     </Seitenkopf>
 
+    {ansicht === "jahr" && istLeitung(user) && (() => { const jd = jahresDaten(db, jahr); return <section className="now-card rounded-[14px] text-white p-5 no-print">
+      <div className="text-[11px] tracking-[.14em] font-bold opacity-90 uppercase">📒 Jahresabschluss {jahr} für den Steuerberater</div>
+      <div className="mt-2 text-[19px] font-bold">{jd.stand3112} Mitarbeiter/innen am 31.12. · {jd.eintritte} Eintritte · {jd.austritte} Austritte</div>
+      <p className="mt-2 text-[13px] opacity-90">Pro Person: Mitarbeiterstand mit Ein- und Austritt, Urlaub (Anspruch, verbraucht, <b>offen am 31.12.</b>), Krankenstände mit allen Fällen, Arbeitsunfälle, Pflegefreistellung, Arztbesuche und Zeitkonto. Wer im Jahr ausgetreten ist, steht mit dem Stand zum letzten Arbeitstag drin.</p>
+      {jd.vorlaeufig && <p className="mt-2 text-xs rounded-lg bg-white/15 px-3 py-2">Vorläufig: Das Jahr läuft noch. Genehmigter Urlaub bis 31.12. ist schon eingerechnet – nach dem 31.12. noch einmal herunterladen.</p>}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button onClick={jahresExcel} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">⬇️ Excel für den Steuerberater</button>
+        <button onClick={() => setDruck("jahr")} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50">🖨️ Als PDF</button>
+      </div>
+    </section>; })()}
+
     {ansicht === "monat" && <section className="now-card rounded-[14px] text-white p-5 no-print">
       <div className="text-[11px] tracking-[.14em] font-bold opacity-90 uppercase">📦 Monatsabschluss {fmtMonat(monat)}</div>
       <div className="mt-2 text-[19px] font-bold">{zeilen.filter(z => z.ab?.abgeschlossenAm).length} von {zeilen.length} abgeschlossen</div>
@@ -1999,7 +2069,7 @@ function Auswertungen({ ctx }) {
       <div className="mt-4 flex flex-wrap gap-2">
         {istLeitung(user) && <button disabled={!vorbei || !abschliessbar.length} onClick={alleAbschliessen} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25 disabled:opacity-40">🔒 Alle abschließen{abschliessbar.length ? ` (${abschliessbar.length})` : ""}</button>}
         <button onClick={excelHerunterladen} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">⬇️ Excel herunterladen</button>
-        <button onClick={() => setDruck(true)} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50">🖨️ Arbeitszeitnachweise (PDF)</button>
+        <button onClick={() => setDruck("monat")} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50">🖨️ Arbeitszeitnachweise (PDF)</button>
       </div>
       {!vorbei && <p className="mt-3 text-xs opacity-80">Abschließen geht ab dem 1. des Folgemonats.</p>}
       <p className="mt-3 text-xs opacity-80">Excel: Übersicht, alle Arbeitszeiten pro Tag, Abwesenheiten und Änderungsprotokoll. PDF: pro Person ein Arbeitszeitnachweis{db.einstellungen.pdfUnterschrift ? " mit Unterschriftszeilen" : ""} – im Druckdialog „Als PDF speichern“ wählen.</p>
@@ -2044,8 +2114,31 @@ function Auswertungen({ ctx }) {
       Saldo = Ist + angerechnete Abwesenheit − Soll.{!mitUS && " Überstunden sind laut Einstellungen nicht vorgesehen (fixer Dienstplan) – ein positiver Saldo heißt: länger gearbeitet als geplant, bitte ausgleichen."}{mitUS && <> Mehrarbeit/Überstunden sind vereinfacht aus positiven Wochensalden berechnet: bei Teilzeit bis zur Normalarbeitszeit ({db.einstellungen.vollzeitWoche} h) Mehrarbeit (Zuschlag {db.einstellungen.zuschlagMehrarbeit} %, entfällt bei Ausgleich im Quartal), darüber Überstunden ({db.einstellungen.zuschlagUeberstunden} %). Durchrechnungszeiträume und KV-Sonderregeln müssen mit der Lohnverrechnung abgestimmt werden.</>}
     </p>
   </div>
-  {druck && <DruckNachweise db={db} liste={liste} monat={monat} />}
+  {druck === "monat" && <DruckNachweise db={db} liste={liste} monat={monat} />}
+  {druck === "jahr" && <DruckJahr db={db} jd={jahresDaten(db, jahr)} />}
   </>;
+}
+
+// Jahresabschluss als Druck/PDF
+function DruckJahr({ db, jd }) {
+  const th = "text-left border-b border-stone-400 py-1 pr-2", td = "border-b border-stone-200 py-[2px] pr-2";
+  return <div className="druck-bereich" style={{ fontSize: 10 }}>
+    <div className="flex justify-between items-end border-b-2 border-stone-500 pb-1 mb-3">
+      <div><div className="text-[9px] uppercase tracking-widest text-stone-500">{db.einstellungen.firmenname}</div><div className="text-lg font-bold">Jahresabschluss {jd.jahr} – Mitarbeiter</div></div>
+      <div className="text-right text-stone-600">Stichtag 31.12.{jd.jahr}{jd.vorlaeufig ? ` · VORLÄUFIG (Stand ${fmtD(heute())})` : ""}<br />erstellt {fmtD(heute())}</div>
+    </div>
+    <div className="flex gap-8 mb-3 font-semibold"><span>Stand 01.01.: {jd.stand0101}</span><span>Eintritte: {jd.eintritte}</span><span>Austritte: {jd.austritte}</span><span>Stand 31.12.: {jd.stand3112}</span></div>
+    <div className="font-bold mb-1">Mitarbeiterstand und Urlaub</div>
+    <table className="w-full mb-4"><thead><tr>{["Pers.-Nr.", "Name", "Eintritt", "Austritt / Art", "Anspruch", "Übertrag", "Verbraucht", "Offen"].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+      <tbody>{jd.zeilen.map(z => <tr key={z.m.id}><td className={td}>{z.m.personalnr}</td><td className={td}>{z.m.name}</td><td className={td}>{fmtD(z.m.eintritt)}</td>
+        <td className={td}>{z.ausgetreten ? `${fmtD(z.m.austritt)} · ${z.m.austrittArt || ""}` : "–"}</td><td className={td}>{fmtTage(z.anspruch)}{z.aliquot ? " (anteilig)" : ""}</td>
+        <td className={td}>{z.uebertrag}</td><td className={td}>{z.verbraucht}</td><td className={`${td} font-bold`}>{fmtTage(z.offen)}{z.ausgetreten && z.offen > 0 ? " (Ersatzleistung)" : ""}</td></tr>)}</tbody></table>
+    <div className="font-bold mb-1">Krankenstände und Abwesenheiten</div>
+    <table className="w-full mb-4"><thead><tr>{["Name", "Krank (KT)", "davon AT", "Fälle", "Arbeitsunfall (KT)", "Pflegefreist. (KT)", "Arzt (h)", "Zeitkonto"].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+      <tbody>{jd.zeilen.map(z => <tr key={z.m.id}><td className={td}>{z.m.name}</td><td className={td}>{z.krankKT}</td><td className={td}>{z.krankAT}</td><td className={td}>{z.faelle.length}</td>
+        <td className={td}>{z.unfallKT}</td><td className={td}>{z.pflegeKT}</td><td className={td}>{fmtH(z.arztMin)}</td><td className={td}>{fmtH(z.konto, true)}</td></tr>)}</tbody></table>
+    <div className="text-stone-600">KT = Kalendertage, AT = Arbeitstage laut Dienstplan. Urlaub in Arbeitstagen; im Ein- und Austrittsjahr anteilig nach Kalendertagen. Bei Ausgetretenen gilt der Stand zum letzten Arbeitstag. Richtwerte aus der Zeitverwaltung – maßgeblich ist die Lohnverrechnung.</div>
+  </div>;
 }
 
 // Arbeitszeitnachweise aller Personen eines Monats – je Person eine Seite
