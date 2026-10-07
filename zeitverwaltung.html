@@ -794,9 +794,42 @@ function csvExport(dateiname, zeilen) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// ─── PIN-EINGABE (wie Abwesenheiten-App) ─────────────────────────────────────
+// Prototyp: jede 4-stellige PIN wird angenommen. Live prüft ausschließlich der
+// Server (Supabase-Login bzw. zeit_terminal_stempeln) – nie der Browser.
+function PinFeld({ onFertig, dunkel }) {
+  const [pin, setPin] = useState("");
+  function tipp(k) {
+    if (k === "del") { setPin(p => p.slice(0, -1)); return; }
+    const n = pin + k; if (n.length > 4) return;
+    setPin(n);
+    if (n.length === 4) setTimeout(() => { onFertig(n); setPin(""); }, 150);
+  }
+  return <div>
+    <div className="flex justify-center gap-4 mb-6">{[0, 1, 2, 3].map(i => <div key={i} className={`w-4 h-4 rounded-full border-2 transition-all ${i < pin.length ? (dunkel ? "border-gold-500 bg-gold-500" : "border-stone-900 bg-stone-900") : "border-stone-300"}`} />)}</div>
+    <div className="grid grid-cols-3 gap-3 max-w-xs mx-auto w-full">
+      {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "del"].map((k, i) => k === "" ? <div key={i} /> :
+        <button key={i} onClick={() => tipp(k)} className={`h-14 rounded-2xl text-xl font-semibold transition-all active:scale-95 ${k === "del" ? "text-stone-500 hover:bg-stone-100" : "bg-white border border-stone-200 text-stone-900 hover:border-gold-500"}`}>{k === "del" ? "⌫" : k}</button>)}
+    </div>
+  </div>;
+}
+
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 function Login({ db, onLogin, onTerminal }) {
   const aktive = db.mitarbeiter.filter(m => m.aktiv);
+  const [sel, setSel] = useState(null);
+  if (sel) return <div className="min-h-screen flex justify-center">
+    <div className="w-full max-w-md flex flex-col justify-center px-6 py-12 einblenden">
+      <button onClick={() => setSel(null)} className="text-stone-500 text-sm font-semibold mb-8 self-start hover:text-gold-700">‹ Zurück</button>
+      <div className="flex flex-col items-center mb-8">
+        <span className="w-16 h-16 rounded-full bg-stone-900 text-white text-2xl font-bold flex items-center justify-center mb-4">{sel.name[0]}</span>
+        <p className="text-xl font-bold text-stone-900">{sel.name}</p>
+        <p className="text-stone-500 text-sm mt-1">PIN eingeben</p>
+      </div>
+      <PinFeld onFertig={() => onLogin(sel.id)} />
+      <p className="text-center text-xs text-stone-400 mt-6">Dieselbe PIN wie in der Abwesenheiten-App.<br />Demo: jede 4-stellige PIN funktioniert.</p>
+    </div>
+  </div>;
   return <div className="min-h-screen flex justify-center">
     <div className="w-full max-w-md flex flex-col justify-center px-6 py-12 einblenden">
       <div className="mb-8">
@@ -805,7 +838,7 @@ function Login({ db, onLogin, onTerminal }) {
         <p className="text-stone-500 text-sm mt-1">Wer bist du?</p>
       </div>
       <div className="flex flex-col gap-2.5">
-        {aktive.map(m => <button key={m.id} onClick={() => onLogin(m.id)} className="flex items-center gap-4 bg-white border border-stone-200 rounded-[14px] px-4 py-3.5 text-left hover:border-gold-500 transition-colors">
+        {aktive.map(m => <button key={m.id} onClick={() => setSel(m)} className="flex items-center gap-4 bg-white border border-stone-200 rounded-[14px] px-4 py-3.5 text-left hover:border-gold-500 transition-colors">
           <Avatar name={m.name} />
           <span className="flex-1"><span className="block font-bold text-stone-900 text-sm">{m.name}</span><span className="block text-xs text-stone-500">{m.funktion} · {ROLLEN[m.rolle].label}</span></span>
           <span className="text-stone-300 text-lg">›</span>
@@ -813,7 +846,7 @@ function Login({ db, onLogin, onTerminal }) {
       </div>
       <button onClick={onTerminal} className="mt-5 w-full rounded-full bg-gold-500 hover:bg-gold-700 text-white py-3.5 text-sm font-bold transition-colors">⏱️ Stempel-Tablet im Salon öffnen</button>
       <div className="mt-6 rounded-[14px] bg-stone-100 border border-stone-200 p-3.5 text-xs text-stone-500 leading-relaxed">
-        <b className="text-stone-700">Demo-Anmeldung:</b> Im Prototyp wählst du einfach eine erfundene Person. Live meldet sich jede Person wie in der Abwesenheiten-App mit ihrer PIN an – die Rolle kommt aus der Datenbank, nicht aus dem Browser.
+        <b className="text-stone-700">Zwei Wege zum Stempeln:</b> am eigenen Handy (hier anmelden, die Anmeldung bleibt gespeichert) oder am Tablet im Salon. Beide Male mit derselben persönlichen PIN. In der Demo funktioniert jede PIN; live prüft der Server, und die Rolle kommt aus der Datenbank.
       </div>
       <p className="text-center text-xs text-stone-300 mt-8">Great Hair Day Wien</p>
     </div>
@@ -826,9 +859,11 @@ function Login({ db, onLogin, onTerminal }) {
 // persönlichen PIN, die der SERVER prüft (nie im Browser) – siehe CLAUDE.md Regel 4.
 function Terminal({ db, aendern, onEnde }) {
   const [wahl, setWahl] = useState(null);
+  const [pinOk, setPinOk] = useState(false);
   const [uhr, setUhr] = useState(nowHM());
+  useEffect(() => { setPinOk(false); }, [wahl]);
   useEffect(() => { const t = setInterval(() => setUhr(nowHM()), 5000); return () => clearInterval(t); }, []);
-  useEffect(() => { if (!wahl) return; const t = setTimeout(() => setWahl(null), 20000); return () => clearTimeout(t); }, [wahl]);
+  useEffect(() => { if (!wahl) return; const t = setTimeout(() => setWahl(null), 30000); return () => clearTimeout(t); }, [wahl]);
   const d = heute();
   const team = db.mitarbeiter.filter(m => m.aktiv && beschaeftigt(m, d));
   const status = m => {
@@ -858,14 +893,18 @@ function Terminal({ db, aendern, onEnde }) {
       </button>; })}
     </div>
     <div className="px-6 py-4 flex items-center justify-between text-xs text-stone-500">
-      <span>Demo ohne PIN. Live: persönliche PIN, vom Server geprüft · Uhrzeit vom Server</span>
+      <span>Live: Tablet mit eigenem Gerätezugang · PIN und Uhrzeit prüft der Server</span>
       <button onClick={onEnde} className="underline hover:text-stone-300">Tablet-Modus beenden</button>
     </div>
     {m && <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-40" onClick={() => setWahl(null)}>
       <div className="bg-stone-50 text-stone-900 rounded-[22px] p-6 w-full max-w-xl einblenden" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3"><Avatar name={m.name} /><div><div className="text-xl font-semibold">{m.name}</div><div className="text-sm text-stone-500">{st.text}</div></div>
           <button className="ml-auto p-2 rounded-full hover:bg-stone-100" onClick={() => setWahl(null)}><Icon n="x" /></button></div>
-        <div className="mt-6 flex flex-wrap gap-3">
+        {!pinOk && (st.k === "aus" || st.k === "da" || st.k === "pause") ? <div className="mt-6">
+          <p className="text-center text-sm text-stone-500 mb-4">Persönliche PIN eingeben</p>
+          <PinFeld dunkel onFertig={() => setPinOk(true)} />
+          <p className="text-center text-xs text-stone-400 mt-4">Demo: jede 4-stellige PIN. Live prüft der Server – nach 5 falschen PINs 15 Minuten Sperre.</p>
+        </div> : <div className="mt-6 flex flex-wrap gap-3">
           {st.k === "aus" && <button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen(m, "kommen")}><Icon n="play" className="w-6 h-6" />Kommen</button>}
           {st.k === "aus" && st.plan && hm2min(nowHM()) > hm2min(st.plan.b) + 30 && <button className={`${gross} bg-stone-200`} onClick={() => buchen(m, "nurGehen")}>Gehen<span className="text-sm font-normal">(Kommen vergessen)</span></button>}
           {st.k === "da" && <><button className={`${gross} bg-amber-400`} onClick={() => buchen(m, "pauseStart")}><Icon n="pause" className="w-6 h-6" />Pause</button>
@@ -873,7 +912,7 @@ function Terminal({ db, aendern, onEnde }) {
           {st.k === "pause" && <><button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen(m, "pauseEnde")}><Icon n="play" className="w-6 h-6" />Pause Ende</button>
             <button className={`${gross} bg-stone-900 text-white`} onClick={() => buchen(m, "gehen")}><Icon n="stopp" className="w-6 h-6" />Gehen</button></>}
           {(st.k === "fertig" || st.k === "abw") && <p className="text-stone-600">{st.k === "fertig" ? "Heute schon ausgestempelt. Änderungen bitte über die Zeiterfassung." : `Heute eingetragen: ${st.text}.`}</p>}
-        </div>
+        </div>}
         {db.einstellungen.autoPause && (st.k === "da" || st.k === "pause") && <p className="mt-4 text-sm text-stone-500">Pause nicht gestempelt? Beim Gehen wird sie laut Dienstplan eingetragen.</p>}
       </div>
     </div>}

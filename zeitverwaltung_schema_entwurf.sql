@@ -292,21 +292,22 @@ CREATE TRIGGER zeit_buchungen_sperre BEFORE INSERT OR UPDATE OR DELETE ON zeit_b
 --  Funktionen (RPC) – der einzige Schreibweg für Arbeitszeiten
 -- ════════════════════════════════════════════════════════════
 
--- Stempeln: Uhrzeit vom Server (Europe/Vienna), Person aus dem Login.
+-- Stempel-Logik für eine Person. INTERN – nicht für Benutzer freigegeben;
+-- aufgerufen von zeit_stempeln (Handy) und zeit_terminal_stempeln (Tablet).
+-- Uhrzeit immer vom Server (Europe/Vienna).
 -- p_aktion: 'kommen' | 'pause_start' | 'pause_ende' | 'gehen' | 'nur_gehen' (Kommen vergessen)
 -- p_auto_pause: fehlende Pause beim Gehen laut Dienstplan eintragen
-DROP FUNCTION IF EXISTS zeit_stempeln(text);
-CREATE OR REPLACE FUNCTION zeit_stempeln(p_aktion text, p_auto_pause boolean DEFAULT true) RETURNS zeit_buchungen
+CREATE OR REPLACE FUNCTION zeit__stempeln_fuer(p_person text, p_aktion text, p_auto_pause boolean) RETURNS zeit_buchungen
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
-  v_person text := abw_current_person_id();
+  v_person text := p_person;
   v_jetzt  timestamp := now() AT TIME ZONE 'Europe/Vienna';
   v_datum  date := v_jetzt::date;
   v_zeit   time := date_trunc('minute', v_jetzt)::time;
   b        zeit_buchungen;
   v_plan   zeit_modell_tage;
 BEGIN
-  IF v_person IS NULL THEN RAISE EXCEPTION 'Nicht angemeldet'; END IF;
+  IF v_person IS NULL THEN RAISE EXCEPTION 'Keine Person'; END IF;
   v_plan := zeit_plan_am(v_person, v_datum);
   SELECT * INTO b FROM zeit_buchungen WHERE person_id = v_person AND datum = v_datum FOR UPDATE;
   IF p_aktion = 'nur_gehen' THEN
@@ -315,7 +316,7 @@ BEGIN
     INSERT INTO zeit_buchungen (person_id, datum, beginn, quelle, auto)
       VALUES (v_person, v_datum, v_plan.beginn, 'stempel', ARRAY['kommen']) RETURNING * INTO b;
     INSERT INTO zeit_protokoll (von_person, person_id, datum, aktion, grund)
-      VALUES (v_person, v_person, v_datum, 'automatisch ergänzt: Kommen', 'Kommen vergessen – Beginn laut Dienstplan');
+      VALUES (abw_current_person_id(), v_person, v_datum, 'automatisch ergänzt: Kommen', 'Kommen vergessen – Beginn laut Dienstplan');
     p_aktion := 'gehen';
   END IF;
   IF p_aktion = 'kommen' THEN
@@ -341,13 +342,113 @@ BEGIN
       UPDATE zeit_buchungen SET pause_min = greatest(COALESCE(v_plan.pause_min, 0), 30), auto = auto || 'pause'::text
         WHERE id = b.id RETURNING * INTO b;
       INSERT INTO zeit_protokoll (von_person, person_id, datum, aktion, grund)
-        VALUES (v_person, v_person, v_datum, 'automatisch ergänzt: Pause', 'keine Pause gestempelt – laut Dienstplan');
+        VALUES (abw_current_person_id(), v_person, v_datum, 'automatisch ergänzt: Pause', 'keine Pause gestempelt – laut Dienstplan');
     END IF;
   ELSE
     RAISE EXCEPTION 'Unbekannte Aktion: %', p_aktion;
   END IF;
   RETURN b;
 END $$;
+
+-- HANDY: Person kommt aus dem eigenen Login
+DROP FUNCTION IF EXISTS zeit_stempeln(text);
+CREATE OR REPLACE FUNCTION zeit_stempeln(p_aktion text, p_auto_pause boolean DEFAULT true) RETURNS zeit_buchungen
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF abw_current_person_id() IS NULL THEN RAISE EXCEPTION 'Nicht angemeldet'; END IF;
+  RETURN zeit__stempeln_fuer(abw_current_person_id(), p_aktion, p_auto_pause);
+END $$;
+
+-- ════════════════════════════════════════════════════════════
+--  STEMPEL-TABLET IM SALON
+--  * Das Tablet meldet sich EINMAL mit einem eigenen Gerätezugang an
+--    (Supabase Auth, z. B. terminal.salon@…; Passwort nur die Chefin).
+--    Die Sitzung bleibt per Supabase-Refresh-Token bestehen (CLAUDE.md Regel 4).
+--  * Nur in zeit_terminals eingetragene Gerätezugänge dürfen Tablet-Funktionen
+--    nutzen. Ein Mitarbeiter-Handy kann also NICHT für andere stempeln.
+--  * Jede Person bestätigt mit ihrer persönlichen PIN – derselben wie beim
+--    Login der Abwesenheiten-App. Geprüft wird nur hier am Server gegen den
+--    Passwort-Hash in auth.users; die PIN wird nirgends gespeichert.
+--  * Nach 5 falschen PINs in 15 Minuten ist die Person 15 Minuten gesperrt.
+-- ════════════════════════════════════════════════════════════
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+
+CREATE TABLE IF NOT EXISTS zeit_terminals (
+  user_id     uuid PRIMARY KEY,          -- auth.users.id des Tablet-Zugangs
+  name        text NOT NULL,             -- z. B. 'Tablet Empfang'
+  aktiv       boolean NOT NULL DEFAULT true,
+  angelegt_am timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE zeit_terminals ENABLE ROW LEVEL SECURITY;   -- keine Policy: nur per SQL/Funktion
+
+CREATE TABLE IF NOT EXISTS zeit_pin_versuche (
+  id        bigserial PRIMARY KEY,
+  person_id text NOT NULL,
+  am        timestamptz NOT NULL DEFAULT now(),
+  ok        boolean NOT NULL
+);
+ALTER TABLE zeit_pin_versuche ENABLE ROW LEVEL SECURITY; -- keine Policy
+REVOKE ALL ON zeit_terminals, zeit_pin_versuche FROM anon, authenticated;
+
+CREATE OR REPLACE FUNCTION zeit_ist_terminal() RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (SELECT 1 FROM zeit_terminals WHERE user_id = auth.uid() AND aktiv);
+$$;
+
+-- Liste fürs Tablet: nur Vorname und heutiger Stempel-Status, keine sonstigen Daten
+CREATE OR REPLACE FUNCTION zeit_terminal_liste()
+RETURNS TABLE (person_id text, vorname text, status text, seit time)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NOT zeit_ist_terminal() THEN RAISE EXCEPTION 'Kein Stempel-Tablet'; END IF;
+  RETURN QUERY
+    SELECT t.id, split_part(trim(t.name), ' ', 1),
+           CASE WHEN b.id IS NULL THEN 'aus' WHEN b.ende IS NOT NULL THEN 'fertig'
+                WHEN b.pause_start IS NOT NULL THEN 'pause' ELSE 'da' END,
+           COALESCE(b.pause_start, b.beginn)
+    FROM abw_team t
+    LEFT JOIN zeit_buchungen b ON b.person_id = t.id AND b.datum = (now() AT TIME ZONE 'Europe/Vienna')::date
+    WHERE t.ausgeschieden_am IS NULL
+    ORDER BY t.name;
+END $$;
+
+-- PIN gegen den Login-Hash prüfen (Login-Passwort = PIN + '-ghd', siehe abwesenheiten.html)
+CREATE OR REPLACE FUNCTION zeit__pin_ok(p_person text, p_pin text) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
+DECLARE v_hash text;
+BEGIN
+  SELECT u.encrypted_password INTO v_hash
+  FROM abw_team t JOIN auth.users u
+    ON u.email = lower(replace(trim(t.name), ' ', '.')) || '.abwesenheit@greathairday.at'
+  WHERE t.id = p_person AND t.ausgeschieden_am IS NULL;
+  RETURN v_hash IS NOT NULL AND p_pin ~ '^[0-9]{4}$' AND v_hash = crypt(p_pin || '-ghd', v_hash);
+END $$;
+
+-- Stempeln am Tablet. Gibt bei falscher PIN {ok:false} zurück statt einen Fehler zu
+-- werfen – sonst würde der Fehlversuch mit zurückgerollt und die Sperre wirkte nicht.
+CREATE OR REPLACE FUNCTION zeit_terminal_stempeln(p_person text, p_pin text, p_aktion text) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE b zeit_buchungen;
+BEGIN
+  IF NOT zeit_ist_terminal() THEN RAISE EXCEPTION 'Kein Stempel-Tablet'; END IF;
+  IF (SELECT count(*) FROM zeit_pin_versuche
+      WHERE person_id = p_person AND NOT ok AND am > now() - interval '15 minutes') >= 5 THEN
+    RETURN jsonb_build_object('ok', false, 'fehler', 'Zu viele falsche PINs – bitte 15 Minuten warten');
+  END IF;
+  IF NOT zeit__pin_ok(p_person, p_pin) THEN
+    INSERT INTO zeit_pin_versuche (person_id, ok) VALUES (p_person, false);
+    RETURN jsonb_build_object('ok', false, 'fehler', 'PIN falsch');
+  END IF;
+  INSERT INTO zeit_pin_versuche (person_id, ok) VALUES (p_person, true);
+  b := zeit__stempeln_fuer(p_person, p_aktion, true);
+  RETURN jsonb_build_object('ok', true, 'beginn', b.beginn, 'ende', b.ende, 'pause_min', b.pause_min, 'auto', b.auto);
+END $$;
+
+REVOKE ALL ON FUNCTION zeit__stempeln_fuer(text, text, boolean), zeit__pin_ok(text, text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION zeit_ist_terminal(), zeit_terminal_liste(), zeit_terminal_stempeln(text, text, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION zeit_ist_terminal(), zeit_terminal_liste(), zeit_terminal_stempeln(text, text, text) TO authenticated;
+-- Tablet registrieren (einmalig, nachdem der Gerätezugang in Supabase Auth angelegt wurde):
+-- INSERT INTO zeit_terminals (user_id, name) SELECT id, 'Tablet Empfang' FROM auth.users WHERE email = '<Tablet-Zugang>';
 
 -- Direkte Änderung durch Chefin/Vorgesetzte – immer mit Grund, immer protokolliert
 CREATE OR REPLACE FUNCTION zeit_buchung_aendern(

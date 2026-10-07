@@ -79,7 +79,20 @@ Sicherheit (nach `CLAUDE.md`):
 
 Das Skript wurde lokal gegen eine nachgebaute Supabase-Umgebung getestet (zweimal hintereinander ausführbar). Geprüft wurde unter anderem: anon sieht nichts, Mitarbeiter sehen nur sich selbst und können nicht direkt schreiben, Vorgesetzte ändern nur ihr Team (nicht sich selbst), abgeschlossene Monate sind gesperrt, nur die Chefin öffnet wieder.
 
-## 4. Nächste Schritte
+## 4. Stempeln: Handy und Tablet
+
+Beide Wege laufen parallel und schreiben in dieselben Arbeitszeiten. Jede Person hat **eine** PIN – dieselbe wie in der Abwesenheiten-App.
+
+**Handy** – Person wählt sich aus, gibt die PIN ein (Supabase-Login wie in der Abwesenheiten-App), die Anmeldung bleibt gespeichert. Gestempelt wird über `zeit_stempeln()`; die Person kann nur für sich selbst stempeln.
+
+**Tablet im Salon** – einmalig einrichten:
+1. In Supabase unter *Authentication → Users* einen eigenen Zugang für das Tablet anlegen (z. B. „terminal.salon@…“ mit langem Passwort, das nur die Chefin kennt).
+2. Das Tablet per SQL freischalten: `INSERT INTO zeit_terminals (user_id, name) SELECT id, 'Tablet Empfang' FROM auth.users WHERE email = '…';`
+3. Am Tablet einmal mit diesem Zugang anmelden und die Seite auf den Startbildschirm legen; die Anmeldung bleibt gespeichert.
+
+Am Tablet: Name antippen → PIN → Kommen / Pause / Gehen. Der Server prüft die PIN gegen den Login (`zeit_terminal_stempeln`), die PIN wird nirgends gespeichert. Nach 5 falschen PINs ist die Person 15 Minuten gesperrt. Das Tablet sieht nur Vornamen und den heutigen Stempel-Status, sonst keine Daten. Ein Mitarbeiter-Handy kann die Tablet-Funktion nicht nutzen, also nicht für andere stempeln. Ein verlorenes Tablet sperrst du mit `UPDATE zeit_terminals SET aktiv = false …`.
+
+## 5. Nächste Schritte
 
 1. Offene Fragen unten klären, Schema anpassen.
 2. Schema im Supabase-Projekt ausführen, vorher `SICHERHEIT-RLS-CHECK.md` durchgehen.
@@ -87,7 +100,7 @@ Das Skript wurde lokal gegen eine nachgebaute Supabase-Umgebung getestet (zweima
 4. Saldo und Monatsabschluss-Snapshot serverseitig berechnen (eigene Funktion bzw. View), damit die Werte für die Lohnverrechnung nicht vom Browser kommen.
 5. Export für die Lohnverrechnung im gewünschten Format (z. B. BMD/RZL-CSV) ergänzen.
 
-## 5. Offene Fragen an dich
+## 6. Offene Fragen an dich
 
 1. **Vorgesetzte:** Gibt es neben dir eine Salonleitung, die Urlaub genehmigen soll? Dafür muss eine bestehende Policy von `abw_anfragen` erweitert werden (im SQL auskommentiert vorbereitet).
 2. **Dienstpläne:** geklärt – fixer Plan, keine Überstunden. Öffnungszeiten: So + Mo geschlossen, Di + Mi 9–18, Do + Fr 9–19, Sa 8–14, Di–Fr je 1 h Pause (= 40 h). Derzeit keine Teilzeit; eigene Pläne pro Person sind möglich.
@@ -95,4 +108,4 @@ Das Skript wurde lokal gegen eine nachgebaute Supabase-Umgebung getestet (zweima
 4. **Lehrlinge:** geklärt – Wien 1. Lj. 1,5 Tage, 2./3. Lj. 1 Tag; Schultage fix je Lehrling; unter/über 18 automatisch über das Geburtsdatum.
 5. **Krankenstand mit offenem Ende:** In `abw_anfragen` ist `bis` heute Pflicht. Offenes Ende erlauben (dann muss die Abwesenheiten-App damit umgehen) oder „voraussichtliches Ende“ eintragen?
 6. **Datenschutz im Kalender:** Die Abwesenheiten-App zeigt allen genehmigte Einträge inkl. Art. Sollen Kolleg/innen „Krankenstand“ weiterhin sehen oder nur „abwesend“ (so macht es der Prototyp)?
-7. **Stempeln wo:** Handy, Salon-Tablet oder beides? Das Tablet braucht einen eigenen Gerätezugang und eine persönliche PIN je Person, die der Server prüft.
+7. **Stempeln wo:** geklärt – Handy und Tablet (siehe Abschnitt 4).
