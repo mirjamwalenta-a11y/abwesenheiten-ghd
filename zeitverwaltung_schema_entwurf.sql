@@ -148,6 +148,8 @@ ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS entschieden_am timestamptz;
 ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS anteil numeric(3,2) NOT NULL DEFAULT 1;
 ALTER TABLE abw_anfragen DROP CONSTRAINT IF EXISTS abw_anfragen_anteil_check;
 ALTER TABLE abw_anfragen ADD CONSTRAINT abw_anfragen_anteil_check CHECK (anteil IN (0.5, 1));
+-- Arztbesuch u. ä. in Stunden: angerechnete Minuten (höchstens die Sollzeit des Tages)
+ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS minuten integer CHECK (minuten > 0);
 -- Berufsschultage je Lehrjahr kommen in die bestehende abw_einstellungen,
 -- Schlüssel 'bs_tage_je_lehrjahr', z. B. {"1":1.5,"2":1,"3":1,"4":1} (Wien).
 
@@ -580,7 +582,7 @@ BEGIN
     CONTINUE WHEN v_plan.beginn IS NULL OR zeit_monat_gesperrt(p.id, p_datum);
     SELECT * INTO b FROM zeit_buchungen WHERE person_id = p.id AND datum = p_datum FOR UPDATE;
     IF NOT FOUND THEN
-      -- jede genehmigte Abwesenheit (auch halbe Tage) → nichts automatisch anlegen
+      -- jede genehmigte Abwesenheit (auch halbe Tage, Arztbesuch) → nichts automatisch anlegen
       CONTINUE WHEN NOT p_auto_fehltag OR EXISTS (
         SELECT 1 FROM abw_anfragen WHERE person_id = p.id AND status = 'genehmigt' AND p_datum BETWEEN von AND bis);
       INSERT INTO zeit_buchungen (person_id, datum, beginn, ende, pause_min, quelle, auto)

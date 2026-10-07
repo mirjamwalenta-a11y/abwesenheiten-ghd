@@ -68,7 +68,7 @@ const { useState, useEffect, useMemo } = React;
 //  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
 //  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
 // ═════════════════════════════════════════════════════════════════════════════
-const LS_KEY = "ghd-zeitverwaltung-demo-v6";
+const LS_KEY = "ghd-zeitverwaltung-demo-v7";
 const SESS_KEY = "ghd-zeitverwaltung-demo-user";
 
 // ─── DATUM & ZEIT ─────────────────────────────────────────────────────────────
@@ -146,9 +146,10 @@ const ROLLEN = {
 // soll0 = an diesem Tag entfällt die Sollzeit ganz (unbezahlt).
 const ARTEN = {
   urlaub:       { label: "Urlaub",                    kurz: "U",  voll: "bg-emerald-500 text-white", hell: "bg-emerald-100 text-emerald-800", punkt: "bg-emerald-500", gutschrift: true },
-  krank:        { label: "Krankenstand",              kurz: "K",  voll: "bg-rose-500 text-white",    hell: "bg-rose-100 text-rose-800",       punkt: "bg-rose-500",    gutschrift: true, meldung: true },
-  unfall:       { label: "Arbeitsunfall",             kurz: "UF", voll: "bg-red-700 text-white",     hell: "bg-red-100 text-red-800",         punkt: "bg-red-700",     gutschrift: true, meldung: true },
-  pflege:       { label: "Pflegefreistellung",        kurz: "PF", voll: "bg-orange-500 text-white",  hell: "bg-orange-100 text-orange-800",   punkt: "bg-orange-500",  gutschrift: true, meldung: true },
+  krank:        { label: "Krankenstand",              kurz: "K",  voll: "bg-rose-500 text-white",    hell: "bg-rose-100 text-rose-800",       punkt: "bg-rose-500",    gutschrift: true, meldung: true, au: true, offen: true },
+  unfall:       { label: "Arbeitsunfall",             kurz: "UF", voll: "bg-red-700 text-white",     hell: "bg-red-100 text-red-800",         punkt: "bg-red-700",     gutschrift: true, meldung: true, au: true, offen: true },
+  pflege:       { label: "Pflegefreistellung",        kurz: "PF", voll: "bg-orange-500 text-white",  hell: "bg-orange-100 text-orange-800",   punkt: "bg-orange-500",  gutschrift: true, meldung: true, offen: true },
+  arzt:         { label: "Arztbesuch",                kurz: "AR", voll: "bg-teal-600 text-white",    hell: "bg-teal-100 text-teal-800",       punkt: "bg-teal-600",    gutschrift: true, meldung: true, stunden: true },
   sonder:       { label: "Dienstverhinderung",        kurz: "DV", voll: "bg-amber-500 text-white",   hell: "bg-amber-100 text-amber-800",     punkt: "bg-amber-500",   gutschrift: true },
   berufsschule: { label: "Berufsschule",              kurz: "BS", voll: "bg-indigo-500 text-white",  hell: "bg-indigo-100 text-indigo-800",   punkt: "bg-indigo-500",  gutschrift: true },
   fortbildung:  { label: "Fortbildung / Seminar",     kurz: "FB", voll: "bg-violet-500 text-white",  hell: "bg-violet-100 text-violet-800",   punkt: "bg-violet-500",  gutschrift: true },
@@ -264,7 +265,7 @@ function tagInfo(db, ma, d) {
   const z = zeitAm(db, ma.id, d), a = abwAm(db, ma.id, d), ft = feiertag(d);
   const soll = sollMin(db, ma, d);
   const ist = nettoMin(z);
-  const gut = a && ARTEN[a.art]?.gutschrift ? Math.round(soll * anteil(a)) : 0;
+  const gut = a && ARTEN[a.art]?.gutschrift ? gutMin(a, soll) : 0;
   // Ein Tag zählt erst ins Konto, wenn er vorbei ist oder heute bereits ausgestempelt wurde
   const abgeschlossen = d < heute() || (d === heute() && z && z.ende);
   return { d, z, a, ft, soll, ist, gut, saldo: ist + gut - soll, zaehlt: abgeschlossen && beschaeftigt(ma, d) };
@@ -396,6 +397,10 @@ function abwKalendertage(db, ma, arten, von, bis) {
 // ─── LEHRLINGE & BERUFSSCHULE ─────────────────────────────────────────────────
 // Halbe Tage: Abwesenheiten können anteil 0.5 haben (z. B. Berufsschule am Vormittag)
 function anteil(a) { return a && a.anteil ? +a.anteil : 1; }
+// Teil eines Tages abwesend (halber Schultag, Arztbesuch in Stunden) – der Rest wird gearbeitet
+function teilTag(a) { return !!a && (anteil(a) < 1 || !!a.minuten); }
+function gutMin(a, soll) { return a.minuten ? Math.min(+a.minuten, soll) : Math.round(soll * anteil(a)); }
+function abwZusatz(a) { return a.minuten ? `${fmtH(a.minuten)} h` : anteil(a) < 1 ? "½ Tag" : ""; }
 function lehrjahr(ma, d) {
   if (!ma.lehrbeginn) return null;
   const e = parseD(ma.lehrbeginn), s = parseD(d || heute());
@@ -452,14 +457,16 @@ function automatik(n) {
       if (!beschaeftigt(ma, d) || feiertag(d) || gesperrt(n, ma.id, d)) continue;
       const plan = planTag(n, ma, d); if (!plan) continue;
       const a = abwAm(n, ma.id, d);
-      if (a && (anteil(a) >= 1 || ARTEN[a.art]?.soll0)) continue;
+      if (a && (!teilTag(a) || ARTEN[a.art]?.soll0)) continue;
       let z = zeitAm(n, ma.id, d);
       if (!z) {
         if (!e.autoFehltag) continue;
         // halber Abwesenheitstag (z. B. Berufsschule vormittags): nur der Rest bis Dienstende
-        const rest = Math.round(modellSollMin(n, ma, d) * (1 - (a ? anteil(a) : 0)));
-        const beginn = a ? min2hm(hm2min(plan.e) - rest) : plan.b;
-        z = { id: uid(), maId: ma.id, datum: d, beginn, ende: plan.e, pause: a ? 0 : (+plan.p || 0), quelle: "auto", auto: ["tag"] };
+        const rest = modellSollMin(n, ma, d) - (a ? gutMin(a, modellSollMin(n, ma, d)) : 0);
+        // Restarbeitszeit nach Schule/Arzt: Pause laut Plan nur, wenn der Rest sie gesetzlich braucht
+        const restPause = a ? (rest > (jugendlich(ma, d) ? e.kjbgPauseAbMin : e.pauseAbMin) ? Math.max(+plan.p || 0, e.pauseMin) : 0) : (+plan.p || 0);
+        const beginn = a ? min2hm(hm2min(plan.e) - rest - restPause) : plan.b;
+        z = { id: uid(), maId: ma.id, datum: d, beginn, ende: plan.e, pause: restPause, quelle: "auto", auto: ["tag"] };
         n.zeiten.push(z); log(ma, d, "ganzer Tag", null, { beginn: z.beginn, ende: z.ende, pause: z.pause });
         continue;
       }
@@ -559,6 +566,7 @@ function demoDaten() {
     abw("ma1", "urlaub", `${m1}-22`, `${m1}-26`, "genehmigt", { entschiedenVon: "ma1" }),
     abw("ma6", "krank",  `${m1}-15`, `${m1}-17`, "gemeldet",  { au: true, notiz: "Grippaler Infekt" }),
     abw("ma3", "pflege", `${m1}-23`, `${m1}-23`, "gemeldet",  { notiz: "Pflege Kind" }),
+    abw("ma4", "arzt",   `${m1}-17`, `${m1}-17`, "gemeldet",  { minuten: 120 }),
     abw("ma5", "krank",  addTage(h, -1), null,   "gemeldet",  { au: false }),
     abw("ma2", "urlaub", addTage(h, 14), addTage(h, 19), "genehmigt", { entschiedenVon: "ma1", beantragtAm: addTage(h, -10) }),
     abw("ma4", "urlaub", addTage(h, 33), addTage(h, 37), "beantragt", { beantragtAm: addTage(h, -2), notiz: "Familienbesuch" }),
@@ -579,11 +587,12 @@ function demoDaten() {
     for (let d = start; d < h; d = addTage(d, 1)) {
       const soll = Math.round((+mod.tage[wd(d)] || 0) * 60);
       const a = abwAm(db0, ma.id, d);
-      if (!soll || feiertag(d) || !beschaeftigt(ma, d) || (a && anteil(a) >= 1)) continue;
+      if (!soll || feiertag(d) || !beschaeftigt(ma, d) || (a && !teilTag(a))) continue;
       const plan = planAusModell(mod, wd(d));
       if (a) { // halber Schultag: nachmittags im Salon
-        const rest = Math.round(soll * (1 - anteil(a)));
-        zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: min2hm(hm2min(plan.e) - rest), ende: plan.e, pause: 0, quelle: "stempel" });
+        const rest = soll - gutMin(a, soll);
+        const rp = rest > (jugendlich(ma, d) ? 270 : 360) ? Math.max(+plan.p || 0, 30) : 0;
+        zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: min2hm(hm2min(plan.e) - rest - rp), ende: plan.e, pause: rp, quelle: "stempel" });
         continue;
       }
       // Fixer Plan: meist pünktlich, ab und zu ein paar Minuten Abweichung
@@ -701,7 +710,7 @@ function Badge({ status, children }) {
 function ArtChip({ art, halb }) {
   const a = ARTEN[art];
   return <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap ${a?.hell || "bg-stone-100"}`}>
-    <span className={`w-1.5 h-1.5 rounded-full ${a?.punkt || "bg-stone-400"}`} />{a?.label || art}{halb ? " · ½ Tag" : ""}
+    <span className={`w-1.5 h-1.5 rounded-full ${a?.punkt || "bg-stone-400"}`} />{a?.label || art}{halb ? ` · ${typeof halb === "string" ? halb : "½ Tag"}` : ""}
   </span>;
 }
 function Kpi({ label, wert, sub, ton }) {
@@ -872,7 +881,7 @@ function Terminal({ db, aendern, onEnde }) {
   const team = db.mitarbeiter.filter(m => m.aktiv && beschaeftigt(m, d));
   const status = m => {
     const z = zeitAm(db, m.id, d), a = abwAm(db, m.id, d), plan = planTag(db, m, d);
-    if (a && anteil(a) >= 1) return { k: "abw", text: ARTEN[a.art].label, a };
+    if (a && !teilTag(a)) return { k: "abw", text: ARTEN[a.art].label, a };
     if (!z) return { k: "aus", text: plan ? `Plan ${plan.b}–${plan.e}` : "heute frei", plan };
     if (z.ende) return { k: "fertig", text: `${z.beginn}–${z.ende}` };
     if (z.pauseStart) return { k: "pause", text: `Pause seit ${z.pauseStart}` };
@@ -971,13 +980,14 @@ function Dashboard({ ctx }) {
 
   const heuteDa = aktiveTeam.map(m => ({ m, z: zeitAm(db, m.id, h), a: abwAm(db, m.id, h), soll: sollMin(db, m, h) }));
   const imDienst = heuteDa.filter(x => x.z && !x.z.ende);
-  const abwesend = heuteDa.filter(x => x.a);
+  const alleAktiv = db.mitarbeiter.filter(m => m.aktiv);
+  const abwesend = alleAktiv.map(m => ({ m, a: abwAm(db, m.id, h) })).filter(x => x.a);
   const offenAntraege = db.abwesenheiten.filter(a => a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)));
   const offenKorr = db.korrekturen.filter(k => k.status === "offen" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === k.maId)));
   const vormonat = monatVerschieben(mk, -1);
   const offeneAbschluesse = aktiveTeam.filter(m => beschaeftigt(m, `${vormonat}-01`) && !abschlussVon(db, m.id, vormonat)?.abgeschlossenAm);
   const hinweise = aktiveTeam.flatMap(m => hinweiseZeitraum(db, m, addTage(h, -30), h)).filter(x => x.stufe === "fehler");
-  const demnaechst = db.abwesenheiten.filter(a => wirksam(a) && aktiveTeam.some(m => m.id === a.maId) && a.von > h && a.von <= addTage(h, 21)).sort((a, b) => a.von.localeCompare(b.von));
+  const demnaechst = db.abwesenheiten.filter(a => wirksam(a) && alleAktiv.some(m => m.id === a.maId) && a.von > h && a.von <= addTage(h, 21)).sort((a, b) => a.von.localeCompare(b.von));
 
   return <div className="space-y-5">
     <Seitenkopf titel={`Hallo ${user.name.split(" ")[0]}`} sub={`${WT_LANG[wd(h)]}, ${fmtD(h)} · ${ROLLEN[user.rolle].label}`} />
@@ -1220,7 +1230,7 @@ function Zeiterfassung({ ctx }) {
               <td className="px-3 py-2">
                 <div className="flex flex-wrap items-center gap-1">
                   {t.ft && <span className="text-xs text-rose-700 font-medium">{t.ft.name}</span>}
-                  {t.a && <ArtChip art={t.a.art} halb={anteil(t.a) < 1} />}
+                  {t.a && <ArtChip art={t.a.art} halb={abwZusatz(t.a)} />}
                   {beantragt && !t.a && <span className="text-xs text-amber-700">{ARTEN[beantragt.art].label} beantragt</span>}
                   {korr && <Badge status="offen">Korrektur offen</Badge>}
                   {t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? <span className="text-[11px] text-stone-500" title="Manuell erfasst oder korrigiert – siehe Protokoll">✎</span> : null}
@@ -1279,32 +1289,33 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
   const auswahl = sichtbar.filter(m => (m.aktiv || m.id === bestand?.maId) && (m.id === user.id || darfVerwalten(user, m)));
   const arten = bestand || modus === "alle" ? Object.keys(ARTEN) : modus === "urlaub" ? ["urlaub"] : Object.keys(ARTEN).filter(a => a !== "urlaub");
   const [f, setF] = useState(bestand
-    ? { maId: bestand.maId, art: bestand.art, von: bestand.von, bis: bestand.bis || bestand.von, offen: !bestand.bis, au: !!bestand.au, halb: anteil(bestand) < 1, notiz: bestand.notiz || "" }
-    : { maId: vorMa || user.id, art: arten[0], von: vorDatum || heute(), bis: vorDatum || heute(), offen: false, au: false, halb: false, notiz: "" });
+    ? { maId: bestand.maId, art: bestand.art, von: bestand.von, bis: bestand.bis || bestand.von, offen: !bestand.bis, au: !!bestand.au, halb: anteil(bestand) < 1, stunden: bestand.minuten ? bestand.minuten / 60 : 2, notiz: bestand.notiz || "" }
+    : { maId: vorMa || user.id, art: arten[0], von: vorDatum || heute(), bis: vorDatum || heute(), offen: false, au: false, halb: false, stunden: 2, notiz: "" });
   const ma = db.mitarbeiter.find(m => m.id === f.maId);
   const art = ARTEN[f.art];
   const fuerAndere = f.maId !== user.id;
-  const bis = f.offen ? null : f.bis;
+  const stundenOk = !art.stunden || (+f.stunden > 0 && +f.stunden <= 12);
+  const bis = art.stunden ? f.von : art.offen && f.offen ? null : f.bis;
   const tage = f.art === "urlaub" ? urlaubsTage(db, ma, f.von, bis || f.von) : tageZw(f.von, bis || f.von).length;
   const uk = urlaubsKonto(db, ma, parseInt(f.von));
   const ftImZeitraum = tageZw(f.von, bis || f.von).filter(d => feiertag(d) && modellSollMin(db, ma, d) > 0);
   const ueberschneidung = db.abwesenheiten.filter(a => a.id !== bestand?.id && a.maId === f.maId && (wirksam(a) || a.status === "beantragt") && a.von <= (bis || "9999") && (a.bis || "9999") >= f.von);
   const kollegen = db.abwesenheiten.filter(a => a.maId !== f.maId && wirksam(a) && a.von <= (bis || f.von) && (a.bis || heute()) >= f.von && db.mitarbeiter.find(m => m.id === a.maId)?.aktiv);
   const gesperrtIn = tageZw(f.von, bis || f.von).some(d => gesperrt(db, f.maId, d));
-  const fehler = !f.von ? "Beginn angeben." : bis && bis < f.von ? "Ende liegt vor dem Beginn." : ueberschneidung.length ? "Für diesen Zeitraum gibt es bereits einen Eintrag." : gesperrtIn ? "Zeitraum liegt in einem abgeschlossenen Monat." : f.art === "urlaub" && tage === 0 ? "Im Zeitraum liegen keine Arbeitstage." : null;
+  const fehler = !f.von ? "Beginn angeben." : !stundenOk ? "Dauer zwischen 0,5 und 12 Stunden angeben." : bis && bis < f.von ? "Ende liegt vor dem Beginn." : ueberschneidung.length ? "Für diesen Zeitraum gibt es bereits einen Eintrag." : gesperrtIn ? "Zeitraum liegt in einem abgeschlossenen Monat." : f.art === "urlaub" && tage === 0 ? "Im Zeitraum liegen keine Arbeitstage." : null;
   const halbMoeglich = !art.meldung && f.art !== "urlaub" && !f.offen && f.von === f.bis;
   const neuStatus = art.meldung ? "gemeldet" : (fuerAndere && darfVerwalten(user, ma)) || (istAdmin(user) && !fuerAndere) ? "genehmigt" : "beantragt";
   const status = bestand ? (bestand.status === "beantragt" ? bestand.status : neuStatus) : neuStatus;
   // Nachgetragene Abwesenheit: automatisch ergänzte Arbeitstage („auto: ganzer Tag“) fallen weg,
   // gestempelte Tage bleiben und werden nur angezeigt
-  const ganzTag = !(halbMoeglich && f.halb);
+  const ganzTag = !(halbMoeglich && f.halb) && !art.stunden;
   const zeitraum = f.von ? tageZw(f.von, bis || (f.von > heute() ? f.von : heute())) : [];
   const autoTage = ganzTag ? zeitraum.filter(d => zeitAm(db, f.maId, d)?.auto?.includes("tag")) : [];
   const gestempelt = ganzTag ? zeitraum.filter(d => { const z = zeitAm(db, f.maId, d); return z && !z.auto?.includes("tag"); }) : [];
 
   function speichern() {
     aendern(n => {
-      const daten = { maId: f.maId, art: f.art, von: f.von, bis, status, anteil: halbMoeglich && f.halb ? 0.5 : undefined, au: art.meldung ? f.au : undefined, notiz: f.notiz };
+      const daten = { maId: f.maId, art: f.art, von: f.von, bis, status, anteil: halbMoeglich && f.halb ? 0.5 : undefined, minuten: art.stunden ? Math.round(+f.stunden * 60) : undefined, au: art.au ? f.au : undefined, notiz: f.notiz };
       if (bestand) Object.assign(n.abwesenheiten.find(a => a.id === bestand.id), daten, { geaendertVon: user.id, geaendertAm: heute() });
       else n.abwesenheiten.push({ id: uid(), ...daten, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: status === "genehmigt" ? user.id : undefined });
       if (status !== "beantragt") autoTage.forEach(d => {
@@ -1323,22 +1334,24 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
       {auswahl.length > 1 && <Feld label="Mitarbeiter/in" breit><select className={inputCls} value={f.maId} onChange={e => setF({ ...f, maId: e.target.value })}>{auswahl.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>}
       {arten.length > 1 && <Feld label="Art der Abwesenheit" breit><select className={inputCls} value={f.art} onChange={e => setF({ ...f, art: e.target.value })}>{arten.map(a => <option key={a} value={a}>{ARTEN[a].label}</option>)}</select></Feld>}
       <Feld label="Von"><input type="date" className={inputCls} value={f.von} onChange={e => setF({ ...f, von: e.target.value, bis: f.bis < e.target.value ? e.target.value : f.bis })} /></Feld>
-      <Feld label="Bis">
+      {art.stunden ? <Feld label="Dauer (Stunden)" hilfe="inkl. Weg; der Rest des Tages wird gearbeitet und gestempelt">
+        <input type="number" min="0.5" max="12" step="0.5" className={inputCls} value={f.stunden} onChange={e => setF({ ...f, stunden: e.target.value })} />
+      </Feld> : <Feld label="Bis">
         <input type="date" className={inputCls} value={f.offen ? "" : f.bis} disabled={f.offen} min={f.von} onChange={e => setF({ ...f, bis: e.target.value })} />
-        {art.meldung && <label className="flex items-center gap-2 mt-1.5 text-xs text-stone-600"><input type="checkbox" checked={f.offen} onChange={e => setF({ ...f, offen: e.target.checked })} />Ende noch offen</label>}
+        {art.offen && <label className="flex items-center gap-2 mt-1.5 text-xs text-stone-600"><input type="checkbox" checked={f.offen} onChange={e => setF({ ...f, offen: e.target.checked })} />Ende noch offen</label>}
         {halbMoeglich && <label className="flex items-center gap-2 mt-1.5 text-xs text-stone-600"><input type="checkbox" checked={f.halb} onChange={e => setF({ ...f, halb: e.target.checked })} />nur halber Tag</label>}
-      </Feld>
-      {art.meldung && <Feld label="Arbeitsunfähigkeitsbestätigung" breit hilfe={`Firmenregel: Bestätigung ab dem ${db.einstellungen.auAbTag}. Kalendertag vorlegen (änderbar unter Einstellungen).`}>
+      </Feld>}
+      {art.au && <Feld label="Arbeitsunfähigkeitsbestätigung" breit hilfe={`Firmenregel: Bestätigung ab dem ${db.einstellungen.auAbTag}. Kalendertag vorlegen (änderbar unter Einstellungen).`}>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.au} onChange={e => setF({ ...f, au: e.target.checked })} />AU-Bestätigung liegt vor</label>
       </Feld>}
-      <Feld label="Notiz (optional)" breit hilfe={art.meldung ? "Keine Diagnosen eintragen – die gehen den Betrieb nichts an." : null}><input className={inputCls} value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>
+      <Feld label="Notiz (optional)" breit hilfe={art.au || art.stunden ? "Keine Diagnosen eintragen – die gehen den Betrieb nichts an." : null}><input className={inputCls} value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>
     </div>
     <div className="mt-4 space-y-2">
       {f.art === "urlaub" ? <div className="rounded-[14px] bg-white ring-1 ring-inset ring-stone-200 p-3 text-sm grid grid-cols-3 gap-2 text-center">
         <div><div className="text-xl font-semibold tabular">{tage}</div><div className="text-xs text-stone-500">Urlaubstage</div></div>
         <div><div className="text-xl font-semibold tabular">{uk.rest}</div><div className="text-xs text-stone-500">Rest {parseInt(f.von)}</div></div>
         <div><div className={`text-xl font-semibold tabular ${uk.rest - tage < 0 ? "text-rose-700" : ""}`}>{uk.rest - tage}</div><div className="text-xs text-stone-500">danach</div></div>
-      </div> : <div className="text-sm text-stone-600">{bis ? `${tage} Kalendertage` : "Laufend – das Ende wird mit der Gesundmeldung eingetragen."}</div>}
+      </div> : art.stunden ? <div className="text-sm text-stone-600">{fmtTage(+f.stunden || 0)} Stunden werden als Arbeitszeit angerechnet (bezahlte Dienstverhinderung).</div> : <div className="text-sm text-stone-600">{bis ? `${tage} Kalendertage` : "Laufend – das Ende wird mit der Gesundmeldung eingetragen."}</div>}
       {f.art === "urlaub" && <p className="text-xs text-stone-500">Gezählt werden nur Arbeitstage laut Arbeitszeitmodell „{modellVon(db, ma).name}“. Wochenenden, Schließtage und Feiertage zählen nicht.</p>}
       {ftImZeitraum.length > 0 && <Hinweis>Feiertage im Zeitraum (nicht abgezogen): {ftImZeitraum.map(d => feiertag(d).name).join(", ")}</Hinweis>}
       {f.art === "urlaub" && uk.rest - tage < 0 && <Hinweis ton="warn">Der Antrag übersteigt den Resturlaub. Vorgriff nur nach Vereinbarung.</Hinweis>}
@@ -1464,7 +1477,7 @@ function Krankenstand({ ctx }) {
             <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{nameVon(db, a.maId)}</span><ArtChip art={a.art} /></div>
             <div className="text-xs text-stone-500 mt-0.5">{fmtZr(a.von, a.bis)} · {tag}. Tag{KRANK_ARTEN.includes(a.art) ? ` · AU ${a.au ? "liegt vor" : "fehlt"}` : ""}</div>
             {auNoetig && <div className="mt-2"><Hinweis ton="warn">AU-Bestätigung ab dem {db.einstellungen.auAbTag}. Tag erforderlich.</Hinweis></div>}
-            {darfBearbeiten(a) && ARTEN[a.art].meldung && <div className="mt-2 flex flex-wrap gap-2 no-print">
+            {darfBearbeiten(a) && ARTEN[a.art].offen && <div className="mt-2 flex flex-wrap gap-2 no-print">
               {gesund === a.id ? <GesundForm a={a} onOk={b => gesundMelden(a, b)} onAbbruch={() => setGesund(null)} /> : <>
                 <Knopf klein art="sekundaer" icon="haken" onClick={() => setGesund(a.id)}>Gesund melden</Knopf>
                 {KRANK_ARTEN.includes(a.art) && leitung && <Knopf klein art="geist" onClick={() => auSetzen(a)}>{a.au ? "AU zurücksetzen" : "AU erhalten"}</Knopf>}
@@ -1478,6 +1491,7 @@ function Krankenstand({ ctx }) {
           <p><b>Krankmeldung:</b> unverzüglich melden; eine Arbeitsunfähigkeitsbestätigung kann der Betrieb verlangen (§ 4 EFZG / § 8 Abs 8 AngG).</p>
           <p><b>Entgeltfortzahlung:</b> 6 Wochen voll, ab dem 2. Dienstjahr 8, ab dem 16. 10 und ab dem 26. 12 Wochen, danach 4 Wochen zur Hälfte – pro Arbeitsjahr.</p>
           <p><b>Pflegefreistellung:</b> bis zu einer Woche pro Arbeitsjahr (§ 16 UrlG).</p>
+          <p><b>Arztbesuch:</b> in Stunden eintragen. Ist er außerhalb der Arbeitszeit nicht möglich, gilt er als bezahlte Dienstverhinderung (Details im Kollektivvertrag).</p>
         </Karte>}
     </div>
 
@@ -1707,10 +1721,9 @@ function Kalender({ ctx }) {
     const a = abwAm(db, m.id, d), b = abwAntragAm(db, m.id, d);
     const frei = !modellSollMin(db, m, d) || feiertag(d);
     if (a) {
-      // Datensparsam: Kolleg/innen sehen nur „abwesend“, nicht ob krank
-      const zeigen = leitung || m.id === user.id || a.art === "urlaub";
-      const halb = anteil(a) < 1;
-      return zeigen ? { cls: `${halb ? ARTEN[a.art].hell : ARTEN[a.art].voll} ${frei ? "opacity-40" : ""}`, t: ARTEN[a.art].kurz + (halb ? "½" : ""), title: ARTEN[a.art].label + (halb ? " (halber Tag)" : "") } : { cls: `bg-stone-400 text-white ${frei ? "opacity-40" : ""}`, t: "A", title: "Abwesend" };
+      // Im Team ist bekannt, wer krank, auf Urlaub oder beim Arzt ist → für alle sichtbar
+      const teil = teilTag(a);
+      return { cls: `${teil ? ARTEN[a.art].hell : ARTEN[a.art].voll} ${frei ? "opacity-40" : ""}`, t: ARTEN[a.art].kurz + (anteil(a) < 1 ? "½" : ""), title: ARTEN[a.art].label + (teil ? ` (${abwZusatz(a)})` : "") };
     }
     if (b && (leitung || m.id === user.id)) return { cls: `${ARTEN[b.art].hell} streifen`, t: "?", title: `${ARTEN[b.art].label} beantragt` };
     if (frei) return { cls: "bg-stone-100", t: "" };
@@ -1746,7 +1759,6 @@ function Kalender({ ctx }) {
         <span className="inline-flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-stone-100 ring-1 ring-stone-200" />frei / Schließtag / Feiertag</span>
       </div>
     </Karte>
-    {!leitung && <p className="text-xs text-stone-500">Bei Kolleg/innen siehst du nur „A“ (abwesend) – der Grund (z. B. Krankenstand) bleibt vertraulich.</p>}
     <Karte titel={`Feiertage ${monat.slice(0, 4)}`} innen="p-0">
       <ul className="grid sm:grid-cols-2 lg:grid-cols-3 text-sm">
         {feiertage(parseInt(monat)).map(f => <li key={f.datum} className={`px-5 py-2 flex justify-between gap-2 border-b border-stone-100 ${f.datum < h ? "text-stone-400" : ""}`}><span>{f.name}</span><span className="tabular">{fmtDk(f.datum)}</span></li>)}
@@ -1772,7 +1784,7 @@ function Auswertungen({ ctx }) {
     const urlaubZr = db.abwesenheiten.filter(a => a.maId === m.id && a.art === "urlaub" && wirksam(a)).reduce((n, a) => {
       const v = a.von > von ? a.von : von, b = (a.bis || a.von) < bis ? (a.bis || a.von) : bis; return n + (v <= b ? urlaubsTage(db, m, v, b) : 0); }, 0);
     const krank = abwKalendertage(db, m, KRANK_ARTEN, von, bis);
-    const sonst = abwKalendertage(db, m, ["pflege", "sonder", "fortbildung", "za", "unbezahlt"], von, bis);
+    const sonst = abwKalendertage(db, m, ["pflege", "sonder", "fortbildung", "za", "unbezahlt", "arzt"], von, bis);
     const ab = ansicht === "monat" ? abschlussVon(db, m.id, monat) : null;
     return { m, s, konto: zeitkonto(db, m, bisKonto), uk, urlaubZr, krank, sonst, ab };
   });
@@ -1832,12 +1844,12 @@ function Auswertungen({ ctx }) {
     liste.forEach(m => tageZw(von, bisKonto).forEach(d => {
       if (!beschaeftigt(m, d)) return;
       const t = tagInfo(db, m, d); if (!t.z && !t.a && !t.soll) return;
-      tageZ.push([m.personalnr, m.name, fmtD(d), WT[wd(d)], t.z?.beginn || "", t.z?.ende || "", t.z ? t.z.pause : "", h2(t.ist), h2(t.soll), h2(t.saldo), t.a ? ARTEN[t.a.art].label + (anteil(t.a) < 1 ? " (½ Tag)" : "") : "", t.ft?.name || "", (t.z?.auto || []).map(x => AUTO_TEXT[x]).join(", "), pruefeTag(db, m, d).map(x => x.text).join(" | ")]);
+      tageZ.push([m.personalnr, m.name, fmtD(d), WT[wd(d)], t.z?.beginn || "", t.z?.ende || "", t.z ? t.z.pause : "", h2(t.ist), h2(t.soll), h2(t.saldo), t.a ? ARTEN[t.a.art].label + (teilTag(t.a) ? ` (${abwZusatz(t.a)})` : "") : "", t.ft?.name || "", (t.z?.auto || []).map(x => AUTO_TEXT[x]).join(", "), pruefeTag(db, m, d).map(x => x.text).join(" | ")]);
     }));
     const abwZ = [["Personalnr", "Name", "Art", "Von", "Bis", "Kalendertage", "Urlaubstage", "Status", "AU-Bestätigung", "Notiz"],
       ...db.abwesenheiten.filter(a => a.status !== "storniert" && liste.some(m => m.id === a.maId) && a.von <= bis && (a.bis || heute()) >= von).sort((a, b) => a.von.localeCompare(b.von)).map(a => {
         const m = db.mitarbeiter.find(x => x.id === a.maId);
-        return [m.personalnr, m.name, ARTEN[a.art].label + (anteil(a) < 1 ? " (½ Tag)" : ""), fmtD(a.von), a.bis ? fmtD(a.bis) : "offen", tageZw(a.von, a.bis || heute()).length, a.art === "urlaub" ? urlaubsTage(db, m, a.von, a.bis || a.von) : "", STATUS[a.status]?.label || a.status, KRANK_ARTEN.includes(a.art) ? (a.au ? "ja" : "nein") : "", a.notiz || ""];
+        return [m.personalnr, m.name, ARTEN[a.art].label + (teilTag(a) ? ` (${abwZusatz(a)})` : ""), fmtD(a.von), a.bis ? fmtD(a.bis) : "offen", tageZw(a.von, a.bis || heute()).length, a.art === "urlaub" ? urlaubsTage(db, m, a.von, a.bis || a.von) : "", STATUS[a.status]?.label || a.status, KRANK_ARTEN.includes(a.art) ? (a.au ? "ja" : "nein") : "", a.notiz || ""];
       })];
     const protZ = [["Zeitpunkt", "Mitarbeiter/in", "Datum", "Aktion", "Vorher", "Nachher", "Grund", "Durch"],
       ...db.protokoll.filter(q => liste.some(m => m.id === q.maId) && q.datum >= von && q.datum <= bis).map(q => [new Date(q.am).toLocaleString("de-AT"), nameVon(db, q.maId), fmtD(q.datum), q.aktion,
@@ -1939,7 +1951,7 @@ function DruckNachweise({ db, liste, monat }) {
         <table className="w-full" style={{ fontSize: 9.5 }}>
           <thead><tr className="text-left border-b border-stone-300"><th className="py-0.5">Tag</th><th>Beginn</th><th>Ende</th><th className="text-right">Pause</th><th className="text-right">Ist</th><th className="text-right">Soll</th><th className="text-right">Saldo</th><th className="pl-3">Vermerk</th></tr></thead>
           <tbody>{tage.map(d => { const t = tagInfo(db, m, d); if (!beschaeftigt(m, d)) return null;
-            const vermerk = [t.ft?.name, t.a ? ARTEN[t.a.art].label + (anteil(t.a) < 1 ? " (½)" : "") : null, t.z?.auto?.length ? `auto: ${t.z.auto.map(x => AUTO_TEXT[x]).join(", ")}` : null, t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? "korrigiert" : null].filter(Boolean).join(" · ");
+            const vermerk = [t.ft?.name, t.a ? ARTEN[t.a.art].label + (teilTag(t.a) ? ` (${abwZusatz(t.a)})` : "") : null, t.z?.auto?.length ? `auto: ${t.z.auto.map(x => AUTO_TEXT[x]).join(", ")}` : null, t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? "korrigiert" : null].filter(Boolean).join(" · ");
             return <tr key={d} className="border-b border-stone-100" style={{ color: !t.soll && !t.z ? "#A59C88" : undefined }}>
               <td className="py-[1px]">{fmtDk(d)}</td><td>{t.z?.beginn || ""}</td><td>{t.z?.ende || ""}</td><td className="text-right">{t.z ? `${t.z.pause}′` : ""}</td>
               <td className="text-right">{t.z ? fmtH(t.ist) : t.gut ? fmtH(t.gut) : ""}</td><td className="text-right">{t.soll ? fmtH(t.soll) : ""}</td>
@@ -2065,7 +2077,7 @@ function Einstellungen({ ctx }) {
             ["Abgeschlossenen Monat wieder öffnen", 1, 0, 0],
             ["Mitarbeiter anlegen, Rollen vergeben", 1, 0, 0],
             ["Einstellungen & Modelle ändern", 1, 0, 0],
-            ["Grund einer Abwesenheit von Kolleg/innen sehen", 1, 1, 0],
+            ["Abwesenheiten aller im Teamkalender sehen", 1, 1, 1],
           ].map(([t, ...r]) => <tr key={t}><td className="px-3 py-2">{t}</td>{r.map((x, i) => <td key={i} className="px-3 py-2 text-center">{x ? <Icon n="haken" className="w-4 h-4 inline text-emerald-600" /> : <span className="text-stone-300">–</span>}</td>)}</tr>)}
         </Tabelle>
         <p className="px-5 py-3 text-xs text-stone-500">Vorgesetzte genehmigen nur für Personen, bei denen sie als Vorgesetzte/r eingetragen sind – nie für sich selbst. In der Live-Version setzt die Datenbank (RLS) das durch.</p>
