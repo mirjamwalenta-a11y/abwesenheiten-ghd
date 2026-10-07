@@ -107,6 +107,8 @@ Am Tablet: Name antippen → PIN → Kommen / Pause / Gehen. Der Server prüft d
 
 ## 6. Offene Fragen an dich
 
+- **Urlaub im Ein-/Austrittsjahr:** geklärt – aliquot nach Kalendertagen (so rechnen Jahresabschluss, Beschäftigungsstand und Austritt).
+
 1. **Vorgesetzte:** Gibt es neben dir eine Salonleitung, die Urlaub genehmigen soll? Dafür muss eine bestehende Policy von `abw_anfragen` erweitert werden (im SQL auskommentiert vorbereitet).
 2. **Dienstpläne:** geklärt – fixer Plan, keine Überstunden. Öffnungszeiten: So + Mo geschlossen, Di + Mi 9–18, Do + Fr 9–19, Sa 8–14, Di–Fr je 1 h Pause (= 40 h). Derzeit keine Teilzeit; eigene Pläne pro Person sind möglich.
 3. **Pausen-Vereinbarung:** Es gibt nur den Kollektivvertrag, keinen eigenen Dienstvertrag. Daher ist die automatische Pause vorerst **aus** (Einstellung „Schriftliche Pausen-Vereinbarung liegt vor“); Pausen werden gestempelt. Mit einer kurzen schriftlichen Pausen-Vereinbarung je Person (§ 26 Abs 5 AZG) kann sie eingeschaltet werden. Dienstzettel liegt vor. Vorlage für die Pausen-Vereinbarung: 30 min fix eingeteilt + 30 min frei innerhalb eines Zeitfensters (Di–Fr) – nach Unterschrift den Schalter in den Einstellungen setzen.
