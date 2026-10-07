@@ -1,0 +1,1597 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8"/>
+  <!-- Prototyp: verbindet sich bewusst mit KEINER Datenbank (connect-src 'self').
+       Erst wenn zeitverwaltung_schema_entwurf.sql inkl. RLS steht, wird Supabase angebunden. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; font-src 'self' data:; base-uri 'self'; form-action 'self'"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="theme-color" content="#1c1917">
+  <title>Zeitverwaltung · Great Hair Day</title>
+  <link rel="icon" type="image/png" href="icon-512.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { -webkit-tap-highlight-color: transparent; }
+    body { background: #fafaf9; color: #1c1917; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .tabular { font-variant-numeric: tabular-nums; }
+    .streifen { background-image: repeating-linear-gradient(135deg, transparent 0 4px, rgba(0,0,0,.08) 4px 6px); }
+    .print-only { display: none; }
+    @media print {
+      @page { size: A4 landscape; margin: 12mm; }
+      body { background: #fff; }
+      .no-print { display: none !important; }
+      .print-only { display: block !important; }
+      .print-full { margin: 0 !important; padding: 0 !important; max-width: none !important; }
+      .shadow-sm, .shadow, .shadow-lg { box-shadow: none !important; }
+      table { font-size: 10px; }
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  ZEITVERWALTUNG · PROTOTYP
+//  Alle Daten sind erfundene Demo-Daten und liegen nur im Browser (localStorage).
+//  Die Rollenprüfungen hier blenden nur Oberfläche ein/aus — die echte Absicherung
+//  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
+//  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
+// ═════════════════════════════════════════════════════════════════════════════
+const LS_KEY = "ghd-zeitverwaltung-demo-v1";
+const SESS_KEY = "ghd-zeitverwaltung-demo-user";
+
+// ─── DATUM & ZEIT ─────────────────────────────────────────────────────────────
+const pad = n => String(n).padStart(2, "0");
+function datStr(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function parseD(s) { return new Date(s + "T00:00:00"); }
+function heute() { return datStr(new Date()); }
+function addTage(s, n) { const d = parseD(s); d.setDate(d.getDate() + n); return datStr(d); }
+// Wochentag-Index Mo=0 … So=6
+function wd(s) { return (parseD(s).getDay() + 6) % 7; }
+const WT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+const WT_LANG = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+function fmtD(s) { return s ? parseD(s).toLocaleDateString("de-AT", { day: "2-digit", month: "2-digit", year: "numeric" }) : "–"; }
+function fmtDk(s) { return `${WT[wd(s)]} ${parseD(s).toLocaleDateString("de-AT", { day: "2-digit", month: "2-digit" })}`; }
+function fmtZr(v, b) { return !b ? `ab ${fmtD(v)}` : v === b ? fmtD(v) : `${fmtD(v)} – ${fmtD(b)}`; }
+function monatKey(s) { return s.slice(0, 7); }
+function fmtMonat(mk) { const [y, m] = mk.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("de-AT", { month: "long", year: "numeric" }); }
+function monatVerschieben(mk, n) { const [y, m] = mk.split("-").map(Number); const d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${pad(d.getMonth()+1)}`; }
+function tageImMonat(mk) { const [y, m] = mk.split("-").map(Number); const n = new Date(y, m, 0).getDate(); return Array.from({ length: n }, (_, i) => `${mk}-${pad(i+1)}`); }
+function tageZw(v, b) { const t = []; for (let d = v; d <= b; d = addTage(d, 1)) t.push(d); return t; }
+function hm2min(s) { if (!s) return null; const [h, m] = s.split(":").map(Number); return h * 60 + m; }
+function min2hm(m) { m = Math.round(m); return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; }
+function nowHM() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+// Dauer in Stunden:Minuten, optional mit Vorzeichen
+function fmtH(min, vorzeichen = false) {
+  const m = Math.round(min || 0), a = Math.abs(m);
+  const s = `${Math.floor(a / 60)}:${pad(a % 60)}`;
+  if (vorzeichen) return m > 0 ? `+${s}` : m < 0 ? `−${s}` : "±0:00";
+  return m < 0 ? `−${s}` : s;
+}
+function fmtDez(min) { return ((min || 0) / 60).toFixed(2).replace(".", ","); }
+function uid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); }
+function dienstjahre(eintritt, stichtag) {
+  if (!eintritt) return 0;
+  const e = parseD(eintritt), s = parseD(stichtag || heute());
+  let j = s.getFullYear() - e.getFullYear();
+  if (s.getMonth() < e.getMonth() || (s.getMonth() === e.getMonth() && s.getDate() < e.getDate())) j--;
+  return Math.max(0, j);
+}
+
+// ─── ÖSTERREICHISCHE FEIERTAGE (gleich wie abwesenheiten.html) ────────────────
+function ostern(j) {
+  const a=j%19,b=Math.floor(j/100),c=j%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),
+        g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,
+        l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),
+        mo=Math.floor((h+l-7*m+114)/31),ta=((h+l-7*m+114)%31)+1;
+  return new Date(j, mo-1, ta);
+}
+function feiertageJahr(j) {
+  const o = ostern(j);
+  const add = n => { const x = new Date(o); x.setDate(x.getDate() + n); return datStr(x); };
+  const fix = (m, t) => `${j}-${pad(m)}-${pad(t)}`;
+  return [
+    { datum: fix(1,1), name: "Neujahr" }, { datum: fix(1,6), name: "Heilige Drei Könige" },
+    { datum: add(1), name: "Ostermontag" }, { datum: fix(5,1), name: "Staatsfeiertag" },
+    { datum: add(39), name: "Christi Himmelfahrt" }, { datum: add(50), name: "Pfingstmontag" },
+    { datum: add(60), name: "Fronleichnam" }, { datum: fix(8,15), name: "Mariä Himmelfahrt" },
+    { datum: fix(10,26), name: "Nationalfeiertag" }, { datum: fix(11,1), name: "Allerheiligen" },
+    { datum: fix(12,8), name: "Mariä Empfängnis" }, { datum: fix(12,25), name: "Christtag" },
+    { datum: fix(12,26), name: "Stefanitag" },
+  ].sort((a, b) => a.datum.localeCompare(b.datum));
+}
+const FT_CACHE = {};
+function feiertage(j) { if (!FT_CACHE[j]) FT_CACHE[j] = feiertageJahr(j); return FT_CACHE[j]; }
+function feiertag(d) { return feiertage(parseInt(d)).find(f => f.datum === d) || null; }
+
+// ─── STAMMDATEN-KONSTANTEN ────────────────────────────────────────────────────
+const ROLLEN = {
+  admin:       { label: "Administrator",  kurz: "Admin" },
+  vorgesetzt:  { label: "Vorgesetzte/r",  kurz: "Leitung" },
+  mitarbeiter: { label: "Mitarbeiter/in", kurz: "Team" },
+};
+// meldung = sofort wirksam (Status „gemeldet“), sonst Antrag mit Genehmigung.
+// gutschrift = der Tag zählt im Zeitkonto als erfüllt (Ausfallprinzip).
+// soll0 = an diesem Tag entfällt die Sollzeit ganz (unbezahlt).
+const ARTEN = {
+  urlaub:       { label: "Urlaub",                    kurz: "U",  voll: "bg-emerald-500 text-white", hell: "bg-emerald-100 text-emerald-800", punkt: "bg-emerald-500", gutschrift: true },
+  krank:        { label: "Krankenstand",              kurz: "K",  voll: "bg-rose-500 text-white",    hell: "bg-rose-100 text-rose-800",       punkt: "bg-rose-500",    gutschrift: true, meldung: true },
+  unfall:       { label: "Arbeitsunfall",             kurz: "UF", voll: "bg-red-700 text-white",     hell: "bg-red-100 text-red-800",         punkt: "bg-red-700",     gutschrift: true, meldung: true },
+  pflege:       { label: "Pflegefreistellung",        kurz: "PF", voll: "bg-orange-500 text-white",  hell: "bg-orange-100 text-orange-800",   punkt: "bg-orange-500",  gutschrift: true, meldung: true },
+  sonder:       { label: "Dienstverhinderung",        kurz: "DV", voll: "bg-amber-500 text-white",   hell: "bg-amber-100 text-amber-800",     punkt: "bg-amber-500",   gutschrift: true },
+  berufsschule: { label: "Berufsschule",              kurz: "BS", voll: "bg-indigo-500 text-white",  hell: "bg-indigo-100 text-indigo-800",   punkt: "bg-indigo-500",  gutschrift: true },
+  fortbildung:  { label: "Fortbildung / Seminar",     kurz: "FB", voll: "bg-violet-500 text-white",  hell: "bg-violet-100 text-violet-800",   punkt: "bg-violet-500",  gutschrift: true },
+  za:           { label: "Zeitausgleich",             kurz: "ZA", voll: "bg-sky-500 text-white",     hell: "bg-sky-100 text-sky-800",         punkt: "bg-sky-500",     gutschrift: false },
+  unbezahlt:    { label: "Unbezahlter Urlaub",        kurz: "UU", voll: "bg-stone-500 text-white",   hell: "bg-stone-200 text-stone-700",     punkt: "bg-stone-500",   gutschrift: false, soll0: true },
+};
+const KRANK_ARTEN = ["krank", "unfall"];
+const STATUS = {
+  beantragt: { label: "Beantragt",  cls: "bg-amber-50 text-amber-800 ring-amber-200" },
+  genehmigt: { label: "Genehmigt",  cls: "bg-emerald-50 text-emerald-800 ring-emerald-200" },
+  gemeldet:  { label: "Gemeldet",   cls: "bg-sky-50 text-sky-800 ring-sky-200" },
+  abgelehnt: { label: "Abgelehnt",  cls: "bg-rose-50 text-rose-800 ring-rose-200" },
+  storniert: { label: "Storniert",  cls: "bg-stone-100 text-stone-600 ring-stone-200" },
+  offen:     { label: "Offen",      cls: "bg-amber-50 text-amber-800 ring-amber-200" },
+};
+function wirksam(a) { return a.status === "genehmigt" || a.status === "gemeldet"; }
+
+const STANDARD_EINSTELLUNGEN = {
+  firmenname: "A Great Hair Day",
+  kollektivvertrag: "KV für das Friseurgewerbe (Arbeiter/innen bzw. Angestellte) – Werte jährlich prüfen",
+  vollzeitWoche: 40,           // Normalarbeitszeit lt. AZG/KV (h/Woche)
+  pauseAbMin: 360,             // § 11 AZG: Ruhepause bei mehr als 6 h
+  pauseMin: 30,
+  tagNormalMin: 480,           // 8 h Tagesnormalarbeitszeit
+  tagWarnMin: 600,             // über 10 h: nur als Überstunden zulässig
+  tagMaxMin: 720,              // 12 h Höchstgrenze (§ 9 AZG)
+  ruhezeitMin: 660,            // § 12 AZG: 11 h tägliche Ruhezeit
+  wocheWarnMin: 2880,          // 48 h Durchschnitt (§ 9 Abs 4 AZG)
+  wocheMaxMin: 3600,           // 60 h Höchstgrenze
+  kjbgPauseAbMin: 270,         // § 15 KJBG: 30 min bei mehr als 4,5 h
+  kjbgTagMaxMin: 540,          // § 11 KJBG: 8 h, bei Verteilung bis 9 h
+  kjbgWocheMaxMin: 2400,       // 40 h
+  kjbgRuhezeitMin: 720,        // § 16 KJBG: 12 h
+  zuschlagUeberstunden: 50,    // § 10 AZG
+  zuschlagMehrarbeit: 25,      // § 19d AZG (Teilzeit)
+  urlaubBasisTage: 25,         // UrlG: 5 Wochen = 25 Arbeitstage bei 5-Tage-Woche
+  auAbTag: 4,                  // Firmenregel: AU-Bestätigung ab dem x. Krankenstandstag
+  schliesstage: [0, 6],        // Mo, So
+  kontoStart: null,
+};
+
+// ─── BERECHNUNGEN ─────────────────────────────────────────────────────────────
+function modellVon(db, ma) { return db.modelle.find(m => m.id === ma.modellId) || db.modelle[0]; }
+function wochenStd(modell) { return modell.tage.reduce((s, h) => s + (+h || 0), 0); }
+function tageProWoche(modell) { return modell.tage.filter(h => +h > 0).length; }
+function beschaeftigt(ma, d) { return (!ma.eintritt || d >= ma.eintritt) && (!ma.austritt || d <= ma.austritt); }
+function abwAm(db, maId, d) { return db.abwesenheiten.find(a => a.maId === maId && wirksam(a) && d >= a.von && d <= (a.bis || heute())); }
+function abwAntragAm(db, maId, d) { return db.abwesenheiten.find(a => a.maId === maId && a.status === "beantragt" && d >= a.von && d <= (a.bis || a.von)); }
+function zeitAm(db, maId, d) { return db.zeiten.find(z => z.maId === maId && z.datum === d); }
+function modellSollMin(db, ma, d) { return Math.round((+modellVon(db, ma).tage[wd(d)] || 0) * 60); }
+
+function sollMin(db, ma, d) {
+  if (!beschaeftigt(ma, d) || feiertag(d)) return 0;
+  const a = abwAm(db, ma.id, d);
+  if (a && ARTEN[a.art]?.soll0) return 0;
+  return modellSollMin(db, ma, d);
+}
+function nettoMin(z) {
+  if (!z || !z.beginn) return 0;
+  const jetzt = hm2min(nowHM());
+  const ende = z.ende ? hm2min(z.ende) : (z.datum === heute() ? jetzt : hm2min(z.beginn));
+  const laufendePause = (!z.ende && z.pauseStart) ? Math.max(0, jetzt - hm2min(z.pauseStart)) : 0;
+  return Math.max(0, ende - hm2min(z.beginn) - (z.pause || 0) - laufendePause);
+}
+function tagInfo(db, ma, d) {
+  const z = zeitAm(db, ma.id, d), a = abwAm(db, ma.id, d), ft = feiertag(d);
+  const soll = sollMin(db, ma, d);
+  const ist = nettoMin(z);
+  const gut = a && ARTEN[a.art]?.gutschrift ? soll : 0;
+  // Ein Tag zählt erst ins Konto, wenn er vorbei ist oder heute bereits ausgestempelt wurde
+  const abgeschlossen = d < heute() || (d === heute() && z && z.ende);
+  return { d, z, a, ft, soll, ist, gut, saldo: ist + gut - soll, zaehlt: abgeschlossen && beschaeftigt(ma, d) };
+}
+// Summen über einen Zeitraum; Mehrarbeit/Überstunden vereinfacht pro Kalenderwoche
+function summe(db, ma, von, bis) {
+  const vz = (db.einstellungen.vollzeitWoche || 40) * 60;
+  const s = { soll: 0, ist: 0, gut: 0, saldo: 0, mehrarbeit: 0, ueberstunden: 0 };
+  let woche = { plus: 0, soll: 0 };
+  const wocheAbschliessen = () => {
+    if (woche.plus > 0) {
+      // Teilzeit: Stunden bis zur Vollzeit-Normalarbeitszeit sind Mehrarbeit, darüber Überstunden
+      const luecke = Math.max(0, vz - modellSollWoche);
+      const mehr = Math.min(woche.plus, luecke);
+      s.mehrarbeit += mehr; s.ueberstunden += woche.plus - mehr;
+    }
+    woche = { plus: 0, soll: 0 };
+  };
+  const modellSollWoche = Math.round(wochenStd(modellVon(db, ma)) * 60);
+  for (const d of tageZw(von, bis)) {
+    const t = tagInfo(db, ma, d);
+    if (t.zaehlt) {
+      s.soll += t.soll; s.ist += t.ist; s.gut += t.gut; s.saldo += t.saldo;
+      woche.plus += t.saldo;
+    }
+    if (wd(d) === 6) wocheAbschliessen();
+  }
+  wocheAbschliessen();
+  return s;
+}
+function kontoStart(db, ma) {
+  const st = db.einstellungen.kontoStart || "2000-01-01";
+  return ma.eintritt && ma.eintritt > st ? ma.eintritt : st;
+}
+function zeitkonto(db, ma, bis) {
+  const von = kontoStart(db, ma);
+  if (bis < von) return ma.saldoStart || 0;
+  return (ma.saldoStart || 0) + summe(db, ma, von, bis).saldo;
+}
+
+// Arbeitszeit-Prüfung nach AZG / ARG / KJBG für einen Tag
+function pruefeTag(db, ma, d) {
+  const e = db.einstellungen, z = zeitAm(db, ma.id, d), h = [];
+  if (!z || !z.beginn || !z.ende) return h;
+  const kj = !!ma.kjbg, netto = nettoMin(z), pause = z.pause || 0;
+  const pauseAb = kj ? e.kjbgPauseAbMin : e.pauseAbMin;
+  if (netto > pauseAb && pause < e.pauseMin)
+    h.push({ stufe: "fehler", text: `Ruhepause zu kurz: ${pause} min bei ${fmtH(netto)} h (${kj ? "§ 15 KJBG" : "§ 11 AZG"}: mind. ${e.pauseMin} min)` });
+  if (kj) {
+    if (netto > e.kjbgTagMaxMin) h.push({ stufe: "fehler", text: `Tagesarbeitszeit ${fmtH(netto)} h über KJBG-Grenze (${fmtH(e.kjbgTagMaxMin)} h)` });
+    if (hm2min(z.ende) > 20 * 60) h.push({ stufe: "fehler", text: "Nachtruhe Jugendliche: Arbeit nach 20:00 Uhr (§ 17 KJBG)" });
+  } else {
+    if (netto > e.tagMaxMin) h.push({ stufe: "fehler", text: `Tageshöchstarbeitszeit überschritten: ${fmtH(netto)} h (max. ${fmtH(e.tagMaxMin)} h, § 9 AZG)` });
+    else if (netto > e.tagWarnMin) h.push({ stufe: "warn", text: `Mehr als ${fmtH(e.tagWarnMin)} h – nur als Überstunden zulässig` });
+  }
+  const vortag = zeitAm(db, ma.id, addTage(d, -1));
+  if (vortag && vortag.ende) {
+    const ruhe = 1440 - hm2min(vortag.ende) + hm2min(z.beginn);
+    const minRuhe = kj ? e.kjbgRuhezeitMin : e.ruhezeitMin;
+    if (ruhe < minRuhe) h.push({ stufe: "fehler", text: `Tägliche Ruhezeit nur ${fmtH(ruhe)} h (mind. ${fmtH(minRuhe)} h, ${kj ? "§ 16 KJBG" : "§ 12 AZG"})` });
+  }
+  if (wd(d) === 6 || feiertag(d)) h.push({ stufe: "warn", text: "Arbeit an Sonn-/Feiertag – Ausnahme und Entgelt nach ARG prüfen" });
+  return h;
+}
+function pruefeWoche(db, ma, montag) {
+  const e = db.einstellungen;
+  const summeW = tageZw(montag, addTage(montag, 6)).reduce((s, d) => s + nettoMin(zeitAm(db, ma.id, d)), 0);
+  const max = ma.kjbg ? e.kjbgWocheMaxMin : e.wocheMaxMin;
+  if (summeW > max) return { stufe: "fehler", text: `Wochenarbeitszeit ${fmtH(summeW)} h über Höchstgrenze ${fmtH(max)} h` };
+  if (!ma.kjbg && summeW > e.wocheWarnMin) return { stufe: "warn", text: `Wochenarbeitszeit ${fmtH(summeW)} h – Durchschnitt von 48 h im Blick behalten` };
+  return null;
+}
+function hinweiseZeitraum(db, ma, von, bis) {
+  const out = [];
+  for (const d of tageZw(von, bis)) {
+    pruefeTag(db, ma, d).forEach(x => out.push({ ...x, d, ma }));
+    if (wd(d) === 0) { const w = pruefeWoche(db, ma, d); if (w) out.push({ ...w, d, ma, woche: true }); }
+  }
+  return out;
+}
+
+// Urlaub: gezählt werden Arbeitstage laut Arbeitszeitmodell, ohne Feiertage
+function urlaubsTage(db, ma, von, bis) {
+  if (!von || !bis || bis < von) return 0;
+  const m = modellVon(db, ma);
+  return tageZw(von, bis).filter(d => +m.tage[wd(d)] > 0 && !feiertag(d) && beschaeftigt(ma, d)).length;
+}
+function vorschlagUrlaubstage(db, ma) {
+  const basis = dienstjahre(ma.eintritt) >= 25 ? 30 : (db.einstellungen.urlaubBasisTage || 25);
+  return Math.round(basis * tageProWoche(modellVon(db, ma)) / 5);
+}
+function urlaubsKonto(db, ma, jahr) {
+  const von = `${jahr}-01-01`, bis = `${jahr}-12-31`, h = heute();
+  let konsumiert = 0, geplant = 0, beantragt = 0;
+  db.abwesenheiten.filter(a => a.maId === ma.id && a.art === "urlaub").forEach(a => {
+    const v = a.von > von ? a.von : von, b = (a.bis || a.von) < bis ? (a.bis || a.von) : bis;
+    if (v > b) return;
+    if (a.status === "beantragt") { beantragt += urlaubsTage(db, ma, v, b); return; }
+    if (!wirksam(a)) return;
+    if (b < h) konsumiert += urlaubsTage(db, ma, v, b);
+    else if (v >= h) geplant += urlaubsTage(db, ma, v, b);
+    else { konsumiert += urlaubsTage(db, ma, v, addTage(h, -1)); geplant += urlaubsTage(db, ma, h, b); }
+  });
+  const anspruch = +ma.urlaubstage || 0;
+  const uebertrag = jahr === new Date().getFullYear() ? (+ma.urlaubUebertrag || 0) : 0;
+  return { anspruch, uebertrag, konsumiert, geplant, beantragt, rest: anspruch + uebertrag - konsumiert - geplant };
+}
+// Abwesenheits-Tage (Kalendertage) einer Art in einem Zeitraum
+function abwKalendertage(db, ma, arten, von, bis) {
+  let n = 0;
+  db.abwesenheiten.filter(a => a.maId === ma.id && arten.includes(a.art) && wirksam(a)).forEach(a => {
+    const v = a.von > von ? a.von : von;
+    const ende = a.bis || heute();
+    const b = ende < bis ? ende : bis;
+    if (v <= b) n += tageZw(v, b).length;
+  });
+  return n;
+}
+// Entgeltfortzahlung bei Krankheit (§ 8 AngG / EFZG, seit 2018 vereinheitlicht)
+function efzWochen(ma) {
+  const j = dienstjahre(ma.eintritt);
+  return j < 1 ? 6 : j < 15 ? 8 : j < 25 ? 10 : 12;
+}
+
+// ─── BERECHTIGUNGEN (nur Oberfläche! Echte Prüfung: RLS im Schema-Entwurf) ───
+function istLeitung(u) { return u.rolle === "admin" || u.rolle === "vorgesetzt"; }
+function istAdmin(u) { return u.rolle === "admin"; }
+function sichtbareMA(db, u) {
+  if (u.rolle === "admin") return db.mitarbeiter;
+  if (u.rolle === "vorgesetzt") return db.mitarbeiter.filter(m => m.id === u.id || m.vorgesetzterId === u.id);
+  return db.mitarbeiter.filter(m => m.id === u.id);
+}
+// Genehmigen/Bearbeiten: Admin bei allen, Vorgesetzte nur bei direkt Unterstellten (nie bei sich selbst)
+function darfVerwalten(u, ma) {
+  if (u.rolle === "admin") return true;
+  return u.rolle === "vorgesetzt" && ma.vorgesetzterId === u.id && ma.id !== u.id;
+}
+function abschlussVon(db, maId, mk) { return db.abschluesse.find(a => a.maId === maId && a.monat === mk); }
+function gesperrt(db, maId, d) { return !!abschlussVon(db, maId, monatKey(d))?.abgeschlossenAm; }
+function nameVon(db, id) { return db.mitarbeiter.find(m => m.id === id)?.name || "–"; }
+
+// ─── DEMO-DATEN ───────────────────────────────────────────────────────────────
+function zufall(seed) { let s = seed; return () => { s = (s * 1664525 + 1013904223) % 4294967296; return s / 4294967296; }; }
+function demoDaten() {
+  const r = zufall(20261007);
+  const zw = (a, b) => a + Math.floor(r() * (b - a + 1));
+  const h = heute(), jetzt = new Date();
+  const m2 = monatKey(h), m1 = monatVerschieben(m2, -1), m0 = monatVerschieben(m2, -2);
+  const start = `${m0}-01`;
+  const modelle = [
+    { id: "vz40",     name: "Vollzeit 40 h · Di–Sa",           tage: [0, 8, 8, 8, 8, 8, 0],       beginn: "09:00" },
+    { id: "vz40lang", name: "Vollzeit 40 h · langer Do/Fr",    tage: [0, 8, 7, 9.5, 9.5, 6, 0],   beginn: "09:00" },
+    { id: "tz30",     name: "Teilzeit 30 h · Mi–Sa",           tage: [0, 0, 7.5, 7.5, 7.5, 7.5, 0], beginn: "09:00" },
+    { id: "tz20",     name: "Teilzeit 20 h · Do–Sa",           tage: [0, 0, 0, 7, 7, 6, 0],       beginn: "10:00" },
+    { id: "lehre",    name: "Lehrling 40 h (inkl. Berufsschule)", tage: [0, 8, 8, 8, 8, 8, 0],    beginn: "09:00" },
+  ];
+  // Erfundene Personen – keine echten Mitarbeiter/innen
+  const mitarbeiter = [
+    { id: "ma1", name: "Sophie Lindner",   personalnr: "P-001", abteilung: "Leitung",    funktion: "Inhaberin",          eintritt: "2012-03-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 3, vorgesetzterId: null,  rolle: "admin",       aktiv: true },
+    { id: "ma2", name: "Katharina Moser",  personalnr: "P-002", abteilung: "Styling",    funktion: "Salonleitung",       eintritt: "2016-09-01", modellId: "vz40lang", urlaubstage: 25, urlaubUebertrag: 5, vorgesetzterId: "ma1", rolle: "vorgesetzt",  aktiv: true },
+    { id: "ma3", name: "Julia Pichler",    personalnr: "P-003", abteilung: "Styling",    funktion: "Stylistin",          eintritt: "2019-02-15", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 2, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
+    { id: "ma4", name: "Elena Novak",      personalnr: "P-004", abteilung: "Coloration", funktion: "Coloristin",         eintritt: "2021-05-01", modellId: "tz30",     urlaubstage: 20, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
+    { id: "ma5", name: "Mario Gruber",     personalnr: "P-005", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2023-01-09", modellId: "vz40lang", urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
+    { id: "ma6", name: "Lisa Wagner",      personalnr: "P-006", abteilung: "Rezeption",  funktion: "Rezeption",          eintritt: "2024-03-01", modellId: "tz20",     urlaubstage: 15, urlaubUebertrag: 1, vorgesetzterId: "ma1", rolle: "mitarbeiter", aktiv: true },
+    { id: "ma7", name: "Nina Hofer",       personalnr: "P-007", abteilung: "Ausbildung", funktion: "Lehrling 2. Lj.",    eintritt: "2025-09-01", modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, kjbg: true },
+    { id: "ma8", name: "Tobias Reiter",    personalnr: "P-008", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2020-04-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: false, austritt: `${m0}-15` },
+  ].map(m => ({ saldoStart: 0, kjbg: false, ...m }));
+
+  const abw = (maId, art, von, bis, status, extra = {}) => ({ id: uid(), maId, art, von, bis, status, beantragtAm: addTage(von, -14) < start ? start : addTage(von, -14), notiz: "", ...extra });
+  const abwesenheiten = [
+    abw("ma3", "urlaub", `${m0}-11`, `${m0}-16`, "genehmigt", { entschiedenVon: "ma2" }),
+    abw("ma5", "urlaub", `${m1}-04`, `${m1}-09`, "genehmigt", { entschiedenVon: "ma2" }),
+    abw("ma1", "urlaub", `${m1}-22`, `${m1}-26`, "genehmigt", { entschiedenVon: "ma1" }),
+    abw("ma6", "krank",  `${m1}-15`, `${m1}-17`, "gemeldet",  { au: true, notiz: "Grippaler Infekt" }),
+    abw("ma3", "pflege", `${m1}-23`, `${m1}-23`, "gemeldet",  { notiz: "Pflege Kind" }),
+    abw("ma5", "krank",  addTage(h, -1), null,   "gemeldet",  { au: false }),
+    abw("ma2", "urlaub", addTage(h, 14), addTage(h, 19), "genehmigt", { entschiedenVon: "ma1", beantragtAm: addTage(h, -10) }),
+    abw("ma4", "urlaub", addTage(h, 33), addTage(h, 37), "beantragt", { beantragtAm: addTage(h, -2), notiz: "Familienbesuch" }),
+    abw("ma3", "urlaub", addTage(h, 21), addTage(h, 23), "beantragt", { beantragtAm: addTage(h, -1) }),
+    abw("ma4", "za",     addTage(h, 7),  addTage(h, 7),  "beantragt", { beantragtAm: h, notiz: "Zeitausgleich Überstunden" }),
+    abw("ma2", "fortbildung", `${m1}-28`, `${m1}-28`, "genehmigt", { entschiedenVon: "ma1", notiz: "Coloration-Seminar" }),
+  ];
+  // Lehrling: Berufsschule jeden Dienstag
+  for (let d = start; d <= addTage(h, 60); d = addTage(d, 1))
+    if (wd(d) === 1 && !feiertag(d)) abwesenheiten.push(abw("ma7", "berufsschule", d, d, "genehmigt", { entschiedenVon: "ma2" }));
+
+  const db0 = { modelle, mitarbeiter, abwesenheiten, zeiten: [], korrekturen: [], abschluesse: [], protokoll: [],
+    einstellungen: { ...STANDARD_EINSTELLUNGEN, kontoStart: start } };
+
+  const zeiten = [];
+  for (const ma of mitarbeiter) {
+    const mod = modellVon(db0, ma);
+    for (let d = start; d < h; d = addTage(d, 1)) {
+      const soll = Math.round((+mod.tage[wd(d)] || 0) * 60);
+      if (!soll || feiertag(d) || !beschaeftigt(ma, d) || abwAm(db0, ma.id, d)) continue;
+      const b = hm2min(mod.beginn) + zw(-3, 2) * 5;
+      let netto = soll + zw(-4, 9) * 5;
+      let pause = soll >= 360 ? [30, 30, 45, 60][zw(0, 3)] : 0;
+      if (ma.kjbg) netto = Math.min(netto, 480);
+      zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: min2hm(b), ende: min2hm(b + netto + pause), pause, quelle: "stempel" });
+    }
+  }
+  // Ein paar realistische Auffälligkeiten für die AZG-Prüfung
+  const ma5Tage = zeiten.filter(z => z.maId === "ma5" && monatKey(z.datum) === m1);
+  if (ma5Tage[3]) { ma5Tage[3].pause = 15; }
+  const ma3Tage = zeiten.filter(z => z.maId === "ma3" && monatKey(z.datum) === m1);
+  if (ma3Tage[6]) { ma3Tage[6].beginn = "08:30"; ma3Tage[6].ende = "20:00"; ma3Tage[6].pause = 30; }
+
+  // Heute: wer laut Modell arbeitet, ist schon eingestempelt (außer der Inhaberin – zum Ausprobieren)
+  for (const ma of mitarbeiter) {
+    if (ma.id === "ma1" || !ma.aktiv) continue;
+    const mod = modellVon(db0, ma);
+    if (!+mod.tage[wd(h)] || feiertag(h) || abwAm(db0, ma.id, h)) continue;
+    const b = hm2min(mod.beginn) + zw(-2, 1) * 5;
+    if (jetzt.getHours() * 60 + jetzt.getMinutes() < b) continue;
+    zeiten.push({ id: uid(), maId: ma.id, datum: h, beginn: min2hm(b), ende: null, pause: 0, pauseStart: null, quelle: "stempel" });
+  }
+
+  // Monatsabschluss: vorletzter Monat abgeschlossen, letzter Monat teilweise bestätigt
+  const abschluesse = [];
+  for (const ma of mitarbeiter.filter(m => beschaeftigt(m, `${m0}-01`))) {
+    abschluesse.push({ maId: ma.id, monat: m0, bestaetigtAm: `${m1}-02`, abgeschlossenAm: `${m1}-03`, abgeschlossenVon: "ma1" });
+  }
+  abschluesse.push({ maId: "ma3", monat: m1, bestaetigtAm: `${m2}-01` });
+  abschluesse.push({ maId: "ma4", monat: m1, bestaetigtAm: `${m2}-02` });
+
+  // Offener Korrekturantrag
+  const letzteJulia = zeiten.filter(z => z.maId === "ma3" && z.ende && z.datum < h && !abschluesse.some(a => a.maId === "ma3" && a.monat === monatKey(z.datum) && a.abgeschlossenAm)).slice(-1)[0];
+  const korrekturen = [];
+  if (letzteJulia) korrekturen.push({ id: uid(), maId: "ma3", datum: letzteJulia.datum, zeitId: letzteJulia.id,
+    alt: { beginn: letzteJulia.beginn, ende: letzteJulia.ende, pause: letzteJulia.pause },
+    neu: { beginn: letzteJulia.beginn, ende: min2hm(hm2min(letzteJulia.ende) + 30), pause: letzteJulia.pause },
+    grund: "Letzte Kundin hat länger gedauert, Ausstempeln vergessen.", status: "offen", von: "ma3", am: h });
+
+  return { ...db0, zeiten, abschluesse, korrekturen, version: 1 };
+}
+function ladeDb() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) { const db = JSON.parse(raw); if (db && db.version === 1) return { ...db, einstellungen: { ...STANDARD_EINSTELLUNGEN, ...db.einstellungen } }; }
+  } catch (e) { /* privat-Modus o.ä.: einfach Demo-Daten */ }
+  return demoDaten();
+}
+
+// ─── ICONS ────────────────────────────────────────────────────────────────────
+const ICON_PFADE = {
+  dashboard: <><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></>,
+  uhr: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
+  sonne: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></>,
+  kreuz: <><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/></>,
+  personen: <><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14.5c2.5.2 4.3 1.9 5 4.5"/></>,
+  kalender: <><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></>,
+  balken: <><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></>,
+  regler: <><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></>,
+  abmelden: <><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10"/></>,
+  menu: <><path d="M4 6h16M4 12h16M4 18h16"/></>,
+  links: <><path d="M15 18l-6-6 6-6"/></>,
+  rechts: <><path d="M9 6l6 6-6 6"/></>,
+  plus: <><path d="M12 5v14M5 12h14"/></>,
+  haken: <><path d="M5 12.5l4.5 4.5L19 7"/></>,
+  x: <><path d="M6 6l12 12M18 6L6 18"/></>,
+  schloss: <><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></>,
+  stift: <><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4"/></>,
+  download: <><path d="M12 4v11M7 10l5 5 5-5M4 20h16"/></>,
+  drucker: <><path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/></>,
+  warnung: <><path d="M12 3l9.5 17h-19L12 3z"/><path d="M12 10v4M12 17.5v.01"/></>,
+  info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></>,
+  play: <><path d="M7 5l12 7-12 7V5z"/></>,
+  pause: <><path d="M8 5v14M16 5v14"/></>,
+  stopp: <><rect x="6" y="6" width="12" height="12" rx="1.5"/></>,
+};
+function Icon({ n, className = "w-5 h-5" }) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">{ICON_PFADE[n]}</svg>;
+}
+
+// ─── UI-BAUSTEINE ─────────────────────────────────────────────────────────────
+function Karte({ titel, aktion, children, className = "", innen = "p-5" }) {
+  return <section className={`bg-white rounded-xl border border-stone-200 shadow-sm ${className}`}>
+    {titel && <div className="flex items-center justify-between gap-3 px-5 pt-4 pb-3 border-b border-stone-100">
+      <h2 className="font-semibold text-stone-900 text-[15px]">{titel}</h2>{aktion}
+    </div>}
+    <div className={innen}>{children}</div>
+  </section>;
+}
+function Knopf({ children, onClick, art = "primaer", klein, icon, disabled, type = "button", title }) {
+  const stil = {
+    primaer: "bg-stone-900 text-white hover:bg-stone-700",
+    sekundaer: "bg-white text-stone-800 ring-1 ring-inset ring-stone-300 hover:bg-stone-50",
+    gruen: "bg-emerald-600 text-white hover:bg-emerald-700",
+    rot: "bg-white text-rose-700 ring-1 ring-inset ring-rose-200 hover:bg-rose-50",
+    geist: "text-stone-600 hover:bg-stone-100",
+  }[art];
+  return <button type={type} title={title} disabled={disabled} onClick={onClick}
+    className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${klein ? "text-xs px-2.5 py-1.5" : "text-sm px-3.5 py-2"} ${stil}`}>
+    {icon && <Icon n={icon} className={klein ? "w-3.5 h-3.5" : "w-4 h-4"} />}{children}
+  </button>;
+}
+function Badge({ status, children }) {
+  const s = STATUS[status];
+  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset whitespace-nowrap ${s ? s.cls : "bg-stone-100 text-stone-700 ring-stone-200"}`}>{children || s?.label || status}</span>;
+}
+function ArtChip({ art }) {
+  const a = ARTEN[art];
+  return <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap ${a?.hell || "bg-stone-100"}`}>
+    <span className={`w-1.5 h-1.5 rounded-full ${a?.punkt || "bg-stone-400"}`} />{a?.label || art}
+  </span>;
+}
+function Kpi({ label, wert, sub, ton }) {
+  const farbe = ton === "pos" ? "text-emerald-700" : ton === "neg" ? "text-rose-700" : "text-stone-900";
+  return <div className="bg-white rounded-xl border border-stone-200 shadow-sm px-4 py-3.5">
+    <div className="text-xs font-medium text-stone-500 uppercase tracking-wide">{label}</div>
+    <div className={`mt-1 text-2xl font-semibold tabular ${farbe}`}>{wert}</div>
+    {sub && <div className="mt-0.5 text-xs text-stone-500">{sub}</div>}
+  </div>;
+}
+function Feld({ label, children, hilfe, breit }) {
+  return <label className={`block ${breit ? "sm:col-span-2" : ""}`}>
+    <span className="block text-xs font-medium text-stone-600 mb-1">{label}</span>
+    {children}
+    {hilfe && <span className="block text-xs text-stone-500 mt-1">{hilfe}</span>}
+  </label>;
+}
+const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-stone-900/20 focus:border-stone-500 disabled:bg-stone-100 disabled:text-stone-500";
+const inputKlein = inputCls.replace("w-full ", "");
+function Modal({ titel, onClose, children, fuss, breit }) {
+  useEffect(() => {
+    const f = e => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", f); return () => window.removeEventListener("keydown", f);
+  }, []);
+  return <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-stone-900/40 p-0 sm:p-4 no-print" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+    <div className={`bg-white w-full ${breit ? "sm:max-w-2xl" : "sm:max-w-lg"} rounded-t-2xl sm:rounded-2xl shadow-xl max-h-[92vh] flex flex-col`}>
+      <div className="flex items-center justify-between px-5 py-4 border-b border-stone-100">
+        <h3 className="font-semibold text-stone-900">{titel}</h3>
+        <button onClick={onClose} className="p-1 rounded-md text-stone-500 hover:bg-stone-100" aria-label="Schließen"><Icon n="x" /></button>
+      </div>
+      <div className="px-5 py-4 overflow-y-auto">{children}</div>
+      {fuss && <div className="px-5 py-3 border-t border-stone-100 flex flex-wrap justify-end gap-2">{fuss}</div>}
+    </div>
+  </div>;
+}
+function Hinweis({ ton = "info", children }) {
+  const s = { info: "bg-sky-50 text-sky-900 ring-sky-200", warn: "bg-amber-50 text-amber-900 ring-amber-200", fehler: "bg-rose-50 text-rose-900 ring-rose-200", ok: "bg-emerald-50 text-emerald-900 ring-emerald-200" }[ton];
+  return <div className={`flex gap-2.5 rounded-lg px-3 py-2.5 text-sm ring-1 ring-inset ${s}`}>
+    <Icon n={ton === "info" || ton === "ok" ? "info" : "warnung"} className="w-4 h-4 mt-0.5 shrink-0" /><div>{children}</div>
+  </div>;
+}
+function Leer({ text }) { return <div className="py-8 text-center text-sm text-stone-500">{text}</div>; }
+function MonatWahl({ monat, setMonat }) {
+  return <div className="inline-flex items-center rounded-lg ring-1 ring-inset ring-stone-300 bg-white">
+    <button className="p-2 text-stone-600 hover:bg-stone-50 rounded-l-lg" onClick={() => setMonat(monatVerschieben(monat, -1))} aria-label="Vormonat"><Icon n="links" className="w-4 h-4" /></button>
+    <span className="px-2 text-sm font-medium w-36 text-center capitalize">{fmtMonat(monat)}</span>
+    <button className="p-2 text-stone-600 hover:bg-stone-50 rounded-r-lg" onClick={() => setMonat(monatVerschieben(monat, 1))} aria-label="Folgemonat"><Icon n="rechts" className="w-4 h-4" /></button>
+  </div>;
+}
+function MaWahl({ liste, wert, setWert, alle }) {
+  return <select className={`${inputKlein}`} value={wert} onChange={e => setWert(e.target.value)}>
+    {alle && <option value="">Alle Mitarbeiter/innen</option>}
+    {liste.map(m => <option key={m.id} value={m.id}>{m.name}{!m.aktiv ? " (inaktiv)" : ""}</option>)}
+  </select>;
+}
+function Avatar({ name, klein }) {
+  const ini = name.split(" ").map(t => t[0]).slice(0, 2).join("");
+  return <span className={`inline-flex items-center justify-center rounded-full bg-stone-200 text-stone-700 font-semibold shrink-0 ${klein ? "w-7 h-7 text-[11px]" : "w-9 h-9 text-xs"}`}>{ini}</span>;
+}
+function Seitenkopf({ titel, sub, children }) {
+  return <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-5">
+    <div><h1 className="text-xl sm:text-2xl font-semibold text-stone-900">{titel}</h1>{sub && <p className="text-sm text-stone-500 mt-0.5">{sub}</p>}</div>
+    {children && <div className="flex flex-wrap items-center gap-2 no-print">{children}</div>}
+  </div>;
+}
+function Tabelle({ kopf, children, fuss }) {
+  return <div className="overflow-x-auto">
+    <table className="w-full text-sm">
+      <thead><tr className="text-left text-xs font-medium text-stone-500 uppercase tracking-wide border-b border-stone-200">
+        {kopf.map((k, i) => <th key={i} className={`px-3 py-2.5 font-medium whitespace-nowrap ${typeof k === "object" ? k.cls : ""}`}>{typeof k === "object" ? k.t : k}</th>)}
+      </tr></thead>
+      <tbody className="divide-y divide-stone-100">{children}</tbody>
+      {fuss && <tfoot>{fuss}</tfoot>}
+    </table>
+  </div>;
+}
+
+function csvExport(dateiname, zeilen) {
+  const esc = v => { const s = String(v ?? ""); return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const text = "﻿" + zeilen.map(z => z.map(esc).join(";")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a"); a.href = url; a.download = dateiname; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ─── LOGIN ────────────────────────────────────────────────────────────────────
+function Login({ db, onLogin }) {
+  const aktive = db.mitarbeiter.filter(m => m.aktiv);
+  return <div className="min-h-screen flex items-center justify-center bg-stone-100 p-4">
+    <div className="w-full max-w-md">
+      <div className="text-center mb-6">
+        <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-stone-900 text-white mb-3"><Icon n="uhr" className="w-6 h-6" /></div>
+        <h1 className="text-2xl font-semibold">Zeitverwaltung</h1>
+        <p className="text-sm text-stone-500">{db.einstellungen.firmenname}</p>
+      </div>
+      <Karte>
+        <Hinweis ton="warn"><b>Demo-Anmeldung.</b> Im Prototyp wählst du einfach eine erfundene Person aus. In der Live-Version meldet sich jede Person mit eigenem Zugang über Supabase Auth an – die Rolle kommt dann aus der Datenbank, nicht aus dem Browser.</Hinweis>
+        <div className="mt-4 space-y-1.5">
+          {aktive.map(m => <button key={m.id} onClick={() => onLogin(m.id)} className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 ring-1 ring-inset ring-stone-200 hover:bg-stone-50 hover:ring-stone-300 text-left">
+            <Avatar name={m.name} />
+            <span className="flex-1"><span className="block text-sm font-medium">{m.name}</span><span className="block text-xs text-stone-500">{m.funktion}</span></span>
+            <span className="text-xs text-stone-500">{ROLLEN[m.rolle].label}</span>
+          </button>)}
+        </div>
+      </Karte>
+    </div>
+  </div>;
+}
+
+// ─── STEMPELUHR ───────────────────────────────────────────────────────────────
+function Stempeluhr({ ctx }) {
+  const { db, user, aendern } = ctx;
+  const d = heute(), z = zeitAm(db, user.id, d), a = abwAm(db, user.id, d);
+  const soll = sollMin(db, user, d), netto = nettoMin(z);
+  const zustand = !z ? "aus" : z.ende ? "fertig" : z.pauseStart ? "pause" : "arbeit";
+  const pauseBisher = (z?.pause || 0) + (z?.pauseStart && !z?.ende ? Math.max(0, hm2min(nowHM()) - hm2min(z.pauseStart)) : 0);
+  const pauseAb = user.kjbg ? db.einstellungen.kjbgPauseAbMin : db.einstellungen.pauseAbMin;
+
+  function stempel(aktion) {
+    const t = nowHM();
+    aendern(n => {
+      let x = n.zeiten.find(q => q.maId === user.id && q.datum === d);
+      if (aktion === "kommen") n.zeiten.push({ id: uid(), maId: user.id, datum: d, beginn: t, ende: null, pause: 0, pauseStart: null, quelle: "stempel" });
+      if (aktion === "pauseStart") x.pauseStart = t;
+      if (aktion === "pauseEnde") { x.pause += Math.max(0, hm2min(t) - hm2min(x.pauseStart)); x.pauseStart = null; }
+      if (aktion === "gehen") {
+        if (x.pauseStart) { x.pause += Math.max(0, hm2min(t) - hm2min(x.pauseStart)); x.pauseStart = null; }
+        x.ende = t;
+      }
+    }, { kommen: `Arbeitsbeginn ${t} erfasst`, pauseStart: `Pause ab ${t}`, pauseEnde: `Pause beendet (${t})`, gehen: `Arbeitsende ${t} erfasst` }[aktion]);
+  }
+  return <Karte titel="Stempeluhr" aktion={<span className="text-xs text-stone-500">{WT_LANG[wd(d)]}, {fmtD(d)}</span>}>
+    <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+      <div className="flex-1">
+        <div className="flex items-center gap-2 text-sm">
+          <span className={`w-2.5 h-2.5 rounded-full ${zustand === "arbeit" ? "bg-emerald-500 animate-pulse" : zustand === "pause" ? "bg-amber-500" : "bg-stone-300"}`} />
+          <span className="font-medium">{{ aus: "Nicht eingestempelt", arbeit: `Im Dienst seit ${z?.beginn}`, pause: `In Pause seit ${z?.pauseStart}`, fertig: `Dienst beendet (${z?.beginn} – ${z?.ende})` }[zustand]}</span>
+        </div>
+        <div className="mt-2 flex items-baseline gap-4">
+          <div><div className="text-3xl font-semibold tabular">{fmtH(netto)}</div><div className="text-xs text-stone-500">Arbeitszeit heute</div></div>
+          <div><div className="text-lg font-medium tabular text-stone-600">{fmtH(soll)}</div><div className="text-xs text-stone-500">Soll</div></div>
+          <div><div className="text-lg font-medium tabular text-stone-600">{pauseBisher} min</div><div className="text-xs text-stone-500">Pause</div></div>
+        </div>
+        {a && <div className="mt-2"><ArtChip art={a.art} /></div>}
+        {zustand !== "aus" && zustand !== "fertig" && netto > pauseAb - 30 && pauseBisher < db.einstellungen.pauseMin &&
+          <div className="mt-3"><Hinweis ton="warn">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({user.kjbg ? "§ 15 KJBG" : "§ 11 AZG"}).</Hinweis></div>}
+      </div>
+      <div className="flex flex-wrap gap-2 no-print">
+        {zustand === "aus" && <Knopf art="gruen" icon="play" onClick={() => stempel("kommen")} disabled={gesperrt(db, user.id, d)}>Kommen</Knopf>}
+        {zustand === "arbeit" && <><Knopf art="sekundaer" icon="pause" onClick={() => stempel("pauseStart")}>Pause</Knopf><Knopf icon="stopp" onClick={() => stempel("gehen")}>Gehen</Knopf></>}
+        {zustand === "pause" && <><Knopf art="gruen" icon="play" onClick={() => stempel("pauseEnde")}>Pause beenden</Knopf><Knopf icon="stopp" onClick={() => stempel("gehen")}>Gehen</Knopf></>}
+        {zustand === "fertig" && <span className="text-xs text-stone-500 max-w-[14rem]">Änderungen bitte als Korrektur unter „Zeiterfassung“.</span>}
+      </div>
+    </div>
+    <p className="mt-4 text-xs text-stone-400">Live-Version: Die Uhrzeit setzt der Server (nicht das Gerät), damit Stempelzeiten nicht verstellt werden können.</p>
+  </Karte>;
+}
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+function Dashboard({ ctx }) {
+  const { db, user, sichtbar, setSeite } = ctx;
+  const h = heute(), jahr = new Date().getFullYear(), mk = monatKey(h);
+  const konto = zeitkonto(db, user, h);
+  const uk = urlaubsKonto(db, user, jahr);
+  const naechsterUrlaub = db.abwesenheiten.filter(a => a.maId === user.id && a.art === "urlaub" && wirksam(a) && a.von >= h).sort((a, b) => a.von.localeCompare(b.von))[0];
+  const aktiveTeam = sichtbar.filter(m => m.aktiv);
+  const leitung = istLeitung(user);
+
+  const heuteDa = aktiveTeam.map(m => ({ m, z: zeitAm(db, m.id, h), a: abwAm(db, m.id, h), soll: sollMin(db, m, h) }));
+  const imDienst = heuteDa.filter(x => x.z && !x.z.ende);
+  const abwesend = heuteDa.filter(x => x.a);
+  const offenAntraege = db.abwesenheiten.filter(a => a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)));
+  const offenKorr = db.korrekturen.filter(k => k.status === "offen" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === k.maId)));
+  const vormonat = monatVerschieben(mk, -1);
+  const offeneAbschluesse = aktiveTeam.filter(m => beschaeftigt(m, `${vormonat}-01`) && !abschlussVon(db, m.id, vormonat)?.abgeschlossenAm);
+  const hinweise = aktiveTeam.flatMap(m => hinweiseZeitraum(db, m, addTage(h, -30), h)).filter(x => x.stufe === "fehler");
+  const demnaechst = db.abwesenheiten.filter(a => wirksam(a) && aktiveTeam.some(m => m.id === a.maId) && a.von > h && a.von <= addTage(h, 21)).sort((a, b) => a.von.localeCompare(b.von));
+
+  return <div className="space-y-5">
+    <Seitenkopf titel={`Hallo ${user.name.split(" ")[0]}`} sub={`${WT_LANG[wd(h)]}, ${fmtD(h)} · ${ROLLEN[user.rolle].label}`} />
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <Kpi label="Mein Zeitkonto" wert={fmtH(konto, true)} sub="Stand bis gestern" ton={konto >= 0 ? "pos" : "neg"} />
+      <Kpi label="Resturlaub" wert={`${uk.rest} T`} sub={`${uk.konsumiert} verbraucht · ${uk.geplant} geplant`} />
+      {leitung ? <>
+        <Kpi label="Heute im Dienst" wert={`${imDienst.length} / ${heuteDa.filter(x => x.soll > 0).length}`} sub="eingestempelt / laut Plan" />
+        <Kpi label="Offene Aufgaben" wert={offenAntraege.length + offenKorr.length} sub={`${offenAntraege.length} Anträge · ${offenKorr.length} Korrekturen`} ton={offenAntraege.length + offenKorr.length ? "neg" : undefined} />
+      </> : <>
+        <Kpi label="Nächster Urlaub" wert={naechsterUrlaub ? fmtD(naechsterUrlaub.von).slice(0, 6) : "–"} sub={naechsterUrlaub ? `${urlaubsTage(db, user, naechsterUrlaub.von, naechsterUrlaub.bis)} Urlaubstage` : "nichts geplant"} />
+        <Kpi label="Monat bisher" wert={fmtH(summe(db, user, `${mk}-01`, h).saldo, true)} sub={fmtMonat(mk)} />
+      </>}
+    </div>
+
+    <div className="grid lg:grid-cols-3 gap-5">
+      <div className="lg:col-span-2 space-y-5">
+        <Stempeluhr ctx={ctx} />
+        {leitung && <Karte titel="Heute im Salon" innen="p-0">
+          {heuteDa.filter(x => x.soll > 0 || x.z || x.a).length === 0 ? <Leer text="Heute ist laut Arbeitszeitmodellen niemand eingeplant (Schließtag/Feiertag)." /> :
+          <ul className="divide-y divide-stone-100">
+            {heuteDa.filter(x => x.soll > 0 || x.z || x.a).map(({ m, z, a, soll }) => <li key={m.id} className="flex items-center gap-3 px-5 py-2.5">
+              <Avatar name={m.name} klein />
+              <div className="flex-1 min-w-0"><div className="text-sm font-medium truncate">{m.name}</div><div className="text-xs text-stone-500">{m.funktion} · Soll {fmtH(soll)} h</div></div>
+              {a ? <ArtChip art={a.art} /> : z && !z.ende ? <span className="text-xs font-medium text-emerald-700 inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500" />seit {z.beginn}{z.pauseStart ? " · Pause" : ""}</span>
+                : z ? <span className="text-xs text-stone-500">{z.beginn}–{z.ende}</span> : <span className="text-xs text-amber-700">noch nicht eingestempelt</span>}
+            </li>)}
+          </ul>}
+        </Karte>}
+      </div>
+      <div className="space-y-5">
+        {leitung && <Karte titel="Zu erledigen" innen="p-0">
+          <ul className="divide-y divide-stone-100 text-sm">
+            <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("urlaub")}><span>Urlaubs- & Abwesenheitsanträge</span><b className="tabular">{offenAntraege.length}</b></li>
+            <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Zeitkorrekturen prüfen</span><b className="tabular">{offenKorr.length}</b></li>
+            <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("zeit")}><span>Monatsabschluss {fmtMonat(vormonat)}</span><b className="tabular">{offeneAbschluesse.length} offen</b></li>
+            <li className="px-5 py-3 flex justify-between gap-2 cursor-pointer hover:bg-stone-50" onClick={() => setSeite("krank")}><span>AU-Bestätigungen ausständig</span><b className="tabular">{db.abwesenheiten.filter(a => KRANK_ARTEN.includes(a.art) && wirksam(a) && !a.au && aktiveTeam.some(m => m.id === a.maId)).length}</b></li>
+          </ul>
+        </Karte>}
+        <Karte titel="Heute abwesend" innen="p-0">
+          {abwesend.length === 0 ? <Leer text="Niemand abwesend." /> : <ul className="divide-y divide-stone-100">
+            {abwesend.map(({ m, a }) => <li key={m.id} className="px-5 py-2.5 flex items-center justify-between gap-2"><span className="text-sm">{m.name}</span><ArtChip art={a.art} /></li>)}
+          </ul>}
+        </Karte>
+        <Karte titel="Nächste 3 Wochen" innen="p-0">
+          {demnaechst.length === 0 ? <Leer text="Keine geplanten Abwesenheiten." /> : <ul className="divide-y divide-stone-100">
+            {demnaechst.slice(0, 8).map(a => <li key={a.id} className="px-5 py-2.5"><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{nameVon(db, a.maId)}</span><ArtChip art={a.art} /></div><div className="text-xs text-stone-500 mt-0.5">{fmtZr(a.von, a.bis)}</div></li>)}
+          </ul>}
+        </Karte>
+        {leitung && hinweise.length > 0 && <Karte titel="Arbeitszeitgesetz · letzte 30 Tage" innen="p-4 space-y-2">
+          {hinweise.slice(0, 4).map((x, i) => <Hinweis key={i} ton="fehler"><b>{x.ma.name}</b>, {fmtDk(x.d)}: {x.text}</Hinweis>)}
+          {hinweise.length > 4 && <p className="text-xs text-stone-500">… und {hinweise.length - 4} weitere (siehe Zeiterfassung).</p>}
+        </Karte>}
+      </div>
+    </div>
+  </div>;
+}
+
+// ─── ZEITERFASSUNG ────────────────────────────────────────────────────────────
+function ZeitDialog({ ctx, ma, datum, onClose }) {
+  const { db, user, aendern } = ctx;
+  const z = zeitAm(db, ma.id, datum);
+  const direkt = darfVerwalten(user, ma) || (istAdmin(user) && ma.id === user.id);
+  const [f, setF] = useState({ beginn: z?.beginn || modellVon(db, ma).beginn || "09:00", ende: z?.ende || "", pause: z?.pause ?? 30, notiz: z?.notiz || "", grund: "" });
+  const [loeschen, setLoeschen] = useState(false);
+  const netto = f.beginn && f.ende ? hm2min(f.ende) - hm2min(f.beginn) - (+f.pause || 0) : 0;
+  const fehler = loeschen ? (!f.grund.trim() ? "Bitte einen Grund angeben." : null)
+    : !f.beginn || !f.ende ? "Beginn und Ende angeben." : hm2min(f.ende) <= hm2min(f.beginn) ? "Ende muss nach Beginn liegen." : netto < 0 ? "Pause länger als Anwesenheit." : !f.grund.trim() ? "Bitte einen Grund angeben (wird protokolliert)." : null;
+
+  function speichern() {
+    const neu = loeschen ? null : { beginn: f.beginn, ende: f.ende, pause: +f.pause || 0 };
+    const alt = z ? { beginn: z.beginn, ende: z.ende, pause: z.pause } : null;
+    if (direkt) {
+      aendern(n => {
+        const i = n.zeiten.findIndex(q => q.id === z?.id);
+        if (loeschen) n.zeiten.splice(i, 1);
+        else if (i >= 0) Object.assign(n.zeiten[i], neu, { notiz: f.notiz, quelle: "korrektur", pauseStart: null });
+        else n.zeiten.push({ id: uid(), maId: ma.id, datum, ...neu, notiz: f.notiz, quelle: "manuell" });
+        n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: ma.id, datum, aktion: loeschen ? "gelöscht" : z ? "korrigiert" : "nachgetragen", alt, neu, grund: f.grund });
+      }, "Zeiteintrag gespeichert und protokolliert");
+    } else {
+      aendern(n => {
+        n.korrekturen.push({ id: uid(), maId: ma.id, datum, zeitId: z?.id || null, alt, neu, grund: f.grund, status: "offen", von: user.id, am: heute() });
+      }, "Korrekturantrag gesendet");
+    }
+    onClose();
+  }
+  return <Modal titel={`${direkt ? (z ? "Zeiteintrag bearbeiten" : "Zeit nachtragen") : "Korrektur beantragen"} · ${fmtDk(datum)}`} onClose={onClose}
+    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>{direkt ? "Speichern" : "Antrag senden"}</Knopf></>}>
+    <div className="space-y-4">
+      <div className="text-sm text-stone-600">{ma.name} · Soll an diesem Tag: <b>{fmtH(sollMin(db, ma, datum))} h</b></div>
+      {!loeschen && <div className="grid grid-cols-3 gap-3">
+        <Feld label="Beginn"><input type="time" className={inputCls} value={f.beginn} onChange={e => setF({ ...f, beginn: e.target.value })} /></Feld>
+        <Feld label="Ende"><input type="time" className={inputCls} value={f.ende} onChange={e => setF({ ...f, ende: e.target.value })} /></Feld>
+        <Feld label="Pause (min)"><input type="number" min="0" step="5" className={inputCls} value={f.pause} onChange={e => setF({ ...f, pause: e.target.value })} /></Feld>
+      </div>}
+      {!loeschen && f.ende && <div className="text-sm">Arbeitszeit netto: <b className="tabular">{fmtH(Math.max(0, netto))} h</b></div>}
+      {!loeschen && <Feld label="Notiz (optional)"><input className={inputCls} value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>}
+      <Feld label="Grund der Änderung" hilfe="Pflichtfeld – jede Änderung wird mit Zeitpunkt, Person und Grund protokolliert (Nachvollziehbarkeit der Aufzeichnungen, § 26 AZG).">
+        <textarea rows="2" className={inputCls} value={f.grund} onChange={e => setF({ ...f, grund: e.target.value })} />
+      </Feld>
+      {direkt && z && <label className="flex items-center gap-2 text-sm text-rose-700"><input type="checkbox" checked={loeschen} onChange={e => setLoeschen(e.target.checked)} />Eintrag löschen</label>}
+      {!direkt && <Hinweis>Deine Vorgesetzte bzw. die Verwaltung prüft den Antrag. Erst nach Genehmigung wird die Zeit geändert.</Hinweis>}
+      {fehler && <p className="text-xs text-rose-700">{fehler}</p>}
+    </div>
+  </Modal>;
+}
+
+function KorrekturListe({ ctx, liste }) {
+  const { db, user, aendern } = ctx;
+  function entscheiden(k, ok) {
+    aendern(n => {
+      const x = n.korrekturen.find(q => q.id === k.id);
+      x.status = ok ? "genehmigt" : "abgelehnt"; x.entschiedenVon = user.id; x.entschiedenAm = heute();
+      if (!ok) return;
+      const i = n.zeiten.findIndex(q => q.maId === k.maId && q.datum === k.datum);
+      if (!k.neu) { if (i >= 0) n.zeiten.splice(i, 1); }
+      else if (i >= 0) Object.assign(n.zeiten[i], k.neu, { quelle: "korrektur", pauseStart: null });
+      else n.zeiten.push({ id: uid(), maId: k.maId, datum: k.datum, ...k.neu, quelle: "korrektur" });
+      n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: k.maId, datum: k.datum, aktion: "Korrekturantrag genehmigt", alt: k.alt, neu: k.neu, grund: k.grund });
+    }, ok ? "Korrektur übernommen" : "Korrektur abgelehnt");
+  }
+  const t = v => v ? `${v.beginn}–${v.ende || "…"} · ${v.pause} min` : "kein Eintrag";
+  return <ul className="divide-y divide-stone-100">
+    {liste.map(k => <li key={k.id} className="px-5 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="flex-1 text-sm">
+        <div className="font-medium">{nameVon(db, k.maId)} · {fmtDk(k.datum)}</div>
+        <div className="text-xs text-stone-600 mt-0.5 tabular"><span className="line-through text-stone-400">{t(k.alt)}</span> → <b>{t(k.neu)}</b></div>
+        <div className="text-xs text-stone-500 mt-0.5">„{k.grund}“</div>
+      </div>
+      {gesperrt(db, k.maId, k.datum) ? <span className="text-xs text-stone-500">Monat abgeschlossen</span> : <div className="flex gap-2">
+        <Knopf klein art="rot" icon="x" onClick={() => entscheiden(k, false)}>Ablehnen</Knopf>
+        <Knopf klein art="gruen" icon="haken" onClick={() => entscheiden(k, true)}>Übernehmen</Knopf>
+      </div>}
+    </li>)}
+  </ul>;
+}
+
+function Monatsabschluss({ ctx, ma, monat, summeMonat, konto }) {
+  const { db, user, aendern } = ctx;
+  const ab = abschlussVon(db, ma.id, monat);
+  const vorbei = monat < monatKey(heute());
+  const offeneKorr = db.korrekturen.filter(k => k.maId === ma.id && k.status === "offen" && monatKey(k.datum) === monat).length;
+  const laufend = db.zeiten.some(z => z.maId === ma.id && monatKey(z.datum) === monat && !z.ende);
+  const darfAbschliessen = darfVerwalten(user, ma) || (istAdmin(user) && ma.id === user.id);
+  const [grund, setGrund] = useState(null);
+
+  function setze(fn, text) { aendern(n => { let x = n.abschluesse.find(a => a.maId === ma.id && a.monat === monat); if (!x) { x = { maId: ma.id, monat }; n.abschluesse.push(x); } fn(x, n); }, text); }
+  const schritt = (fertig, titel, sub) => <div className="flex items-start gap-3">
+    <span className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${fertig ? "bg-emerald-600 text-white" : "ring-1 ring-stone-300 text-transparent"}`}><Icon n="haken" className="w-3.5 h-3.5" /></span>
+    <div><div className="text-sm font-medium">{titel}</div><div className="text-xs text-stone-500">{sub}</div></div>
+  </div>;
+
+  return <Karte titel="Monatsabschluss" aktion={ab?.abgeschlossenAm ? <Badge status="genehmigt">Abgeschlossen</Badge> : <Badge status="offen">Offen</Badge>}>
+    <div className="space-y-3">
+      {schritt(!!ab?.bestaetigtAm, "Bestätigung durch Mitarbeiter/in", ab?.bestaetigtAm ? `am ${fmtD(ab.bestaetigtAm)}` : "Zeiten geprüft und bestätigt")}
+      {schritt(!!ab?.abgeschlossenAm, "Abschluss durch Vorgesetzte/Verwaltung", ab?.abgeschlossenAm ? `am ${fmtD(ab.abgeschlossenAm)} von ${nameVon(db, ab.abgeschlossenVon)} · Saldo ${fmtH(ab.saldoMonat ?? summeMonat.saldo, true)}` : "Monat wird gesperrt, Saldo geht ins Zeitkonto")}
+    </div>
+    {!vorbei && !ab?.abgeschlossenAm && <p className="mt-4 text-xs text-stone-500">Der Abschluss ist ab dem 1. des Folgemonats möglich.</p>}
+    {vorbei && !ab?.abgeschlossenAm && (offeneKorr > 0 || laufend) && <div className="mt-4"><Hinweis ton="warn">{offeneKorr > 0 ? `${offeneKorr} offene Korrekturanträge. ` : ""}{laufend ? "Ein Tag hat noch kein Arbeitsende." : ""} Bitte zuerst klären.</Hinweis></div>}
+    <div className="mt-4 flex flex-wrap gap-2 no-print">
+      {vorbei && !ab?.bestaetigtAm && !ab?.abgeschlossenAm && ma.id === user.id &&
+        <Knopf art="sekundaer" icon="haken" onClick={() => setze(x => { x.bestaetigtAm = heute(); }, "Monat bestätigt")}>Zeiten bestätigen</Knopf>}
+      {vorbei && !ab?.abgeschlossenAm && darfAbschliessen &&
+        <Knopf icon="schloss" disabled={offeneKorr > 0 || laufend} onClick={() => setze(x => { x.abgeschlossenAm = heute(); x.abgeschlossenVon = user.id; x.saldoMonat = summeMonat.saldo; x.kontoStand = konto; }, "Monat abgeschlossen")}>
+          Monat abschließen{!ab?.bestaetigtAm ? " (ohne Bestätigung)" : ""}</Knopf>}
+      {ab?.abgeschlossenAm && istAdmin(user) && grund === null && <Knopf art="rot" klein onClick={() => setGrund("")}>Wieder öffnen</Knopf>}
+    </div>
+    {grund !== null && <div className="mt-3 flex gap-2">
+      <input className={inputCls} placeholder="Grund für das Öffnen (Pflicht)" value={grund} onChange={e => setGrund(e.target.value)} />
+      <Knopf art="rot" disabled={!grund.trim()} onClick={() => { setze((x, n) => { delete x.abgeschlossenAm; delete x.abgeschlossenVon; n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: ma.id, datum: `${monat}-01`, aktion: "Monat wieder geöffnet", grund }); }, "Monat wieder geöffnet"); setGrund(null); }}>Öffnen</Knopf>
+    </div>}
+  </Karte>;
+}
+
+function Zeiterfassung({ ctx }) {
+  const { db, user, sichtbar } = ctx;
+  const [maId, setMaId] = useState(user.id);
+  const [monat, setMonat] = useState(monatKey(heute()));
+  const [dialog, setDialog] = useState(null);
+  const [protokollOffen, setProtokollOffen] = useState(false);
+  const ma = db.mitarbeiter.find(m => m.id === maId) || user;
+  const tage = tageImMonat(monat);
+  const sm = summe(db, ma, tage[0], tage[tage.length - 1]);
+  const konto = zeitkonto(db, ma, tage[tage.length - 1] < heute() ? tage[tage.length - 1] : heute());
+  const hinweise = hinweiseZeitraum(db, ma, tage[0], tage[tage.length - 1]);
+  const istGesperrt = !!abschlussVon(db, ma.id, monat)?.abgeschlossenAm;
+  const eigene = ma.id === user.id;
+  const direkt = darfVerwalten(user, ma) || (istAdmin(user) && eigene);
+  const offeneKorr = db.korrekturen.filter(k => k.status === "offen" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === k.maId)));
+  const meineKorr = db.korrekturen.filter(k => k.maId === ma.id && monatKey(k.datum) === monat);
+  const protokoll = db.protokoll.filter(p => p.maId === ma.id && monatKey(p.datum) === monat);
+
+  return <div className="space-y-5">
+    <Seitenkopf titel="Zeiterfassung" sub="Arbeitsbeginn, -ende und Pausen · Aufzeichnungspflicht nach § 26 AZG">
+      {sichtbar.length > 1 && <MaWahl liste={sichtbar} wert={maId} setWert={setMaId} />}
+      <MonatWahl monat={monat} setMonat={setMonat} />
+      <Knopf art="sekundaer" icon="drucker" onClick={() => window.print()}>Nachweis drucken</Knopf>
+    </Seitenkopf>
+    <div className="print-only mb-3">
+      <div className="text-lg font-semibold">Arbeitszeitnachweis {fmtMonat(monat)}</div>
+      <div className="text-sm">{db.einstellungen.firmenname} · {ma.name} ({ma.personalnr}) · {modellVon(db, ma).name}</div>
+    </div>
+
+    {eigene && monat === monatKey(heute()) && <div className="no-print"><Stempeluhr ctx={ctx} /></div>}
+
+    {offeneKorr.length > 0 && <Karte titel={`Offene Korrekturanträge (${offeneKorr.length})`} innen="p-0" className="no-print"><KorrekturListe ctx={ctx} liste={offeneKorr} /></Karte>}
+
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <Kpi label="Soll" wert={fmtH(sm.soll)} sub="bis heute" />
+      <Kpi label="Ist" wert={fmtH(sm.ist)} sub="gearbeitet" />
+      <Kpi label="Abwesenheit" wert={fmtH(sm.gut)} sub="angerechnet" />
+      <Kpi label="Saldo Monat" wert={fmtH(sm.saldo, true)} ton={sm.saldo >= 0 ? "pos" : "neg"} sub={sm.ueberstunden || sm.mehrarbeit ? `ÜS ${fmtH(sm.ueberstunden)} · MA ${fmtH(sm.mehrarbeit)}` : " "} />
+      <Kpi label="Zeitkonto" wert={fmtH(konto, true)} ton={konto >= 0 ? "pos" : "neg"} sub="kumuliert" />
+    </div>
+
+    <div className="grid xl:grid-cols-3 gap-5">
+      <Karte className="xl:col-span-2" innen="p-0" titel={<span className="flex items-center gap-2">{ma.name} · <span className="capitalize">{fmtMonat(monat)}</span>{istGesperrt && <Icon n="schloss" className="w-4 h-4 text-stone-500" />}</span>}
+        aktion={<span className="text-xs text-stone-500">{modellVon(db, ma).name}</span>}>
+        <Tabelle kopf={["Tag", "Beginn", "Ende", { t: "Pause", cls: "text-right" }, { t: "Ist", cls: "text-right" }, { t: "Soll", cls: "text-right" }, { t: "Saldo", cls: "text-right" }, "Info", { t: "", cls: "no-print" }]}>
+          {tage.map(d => {
+            const t = tagInfo(db, ma, d), hw = pruefeTag(db, ma, d), beantragt = abwAntragAm(db, ma.id, d);
+            const korr = db.korrekturen.find(k => k.maId === ma.id && k.datum === d && k.status === "offen");
+            const frei = !t.soll && !t.z;
+            const zukunft = d > heute();
+            const darfAktion = !istGesperrt && !zukunft && beschaeftigt(ma, d) && !korr && (direkt || (eigene && !frei));
+            return <tr key={d} className={`${frei ? "bg-stone-50/70 text-stone-400" : ""} ${d === heute() ? "bg-amber-50/60" : ""}`}>
+              <td className="px-3 py-2 whitespace-nowrap font-medium tabular">{fmtDk(d)}</td>
+              <td className="px-3 py-2 tabular">{t.z?.beginn || ""}</td>
+              <td className="px-3 py-2 tabular">{t.z ? (t.z.ende || <span className="text-emerald-700">läuft</span>) : ""}</td>
+              <td className="px-3 py-2 tabular text-right">{t.z ? `${t.z.pause}′` : ""}</td>
+              <td className="px-3 py-2 tabular text-right">{t.z ? fmtH(t.ist) : t.gut ? <span className="text-stone-500">{fmtH(t.gut)}</span> : ""}</td>
+              <td className="px-3 py-2 tabular text-right">{t.soll ? fmtH(t.soll) : ""}</td>
+              <td className={`px-3 py-2 tabular text-right font-medium ${!t.zaehlt || (!t.soll && !t.ist) ? "text-stone-300" : t.saldo > 0 ? "text-emerald-700" : t.saldo < 0 ? "text-rose-700" : "text-stone-500"}`}>{t.zaehlt && (t.soll || t.ist) ? fmtH(t.saldo, true) : ""}</td>
+              <td className="px-3 py-2">
+                <div className="flex flex-wrap items-center gap-1">
+                  {t.ft && <span className="text-xs text-rose-700 font-medium">{t.ft.name}</span>}
+                  {t.a && <ArtChip art={t.a.art} />}
+                  {beantragt && !t.a && <span className="text-xs text-amber-700">{ARTEN[beantragt.art].label} beantragt</span>}
+                  {korr && <Badge status="offen">Korrektur offen</Badge>}
+                  {t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? <span className="text-[11px] text-stone-500" title="Manuell erfasst oder korrigiert – siehe Protokoll">✎</span> : null}
+                  {hw.map((x, i) => <span key={i} title={x.text} className={`inline-flex ${x.stufe === "fehler" ? "text-rose-600" : "text-amber-600"}`}><Icon n="warnung" className="w-4 h-4" /></span>)}
+                  {!t.z && !t.a && t.soll > 0 && t.zaehlt && <span className="text-xs text-rose-700">fehlt</span>}
+                </div>
+              </td>
+              <td className="px-2 py-1.5 text-right no-print">
+                {darfAktion && <button onClick={() => setDialog(d)} className="p-1.5 rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900" title={direkt ? "Bearbeiten" : "Korrektur beantragen"}><Icon n="stift" className="w-4 h-4" /></button>}
+              </td>
+            </tr>;
+          })}
+        </Tabelle>
+        <div className="print-only px-3 pt-10">
+          <div className="flex justify-between gap-10 text-xs">
+            <div className="flex-1 border-t border-stone-400 pt-1">Datum, Unterschrift Mitarbeiter/in</div>
+            <div className="flex-1 border-t border-stone-400 pt-1">Datum, Unterschrift Arbeitgeber/in</div>
+          </div>
+        </div>
+      </Karte>
+
+      <div className="space-y-5">
+        <Monatsabschluss key={ma.id + monat} ctx={ctx} ma={ma} monat={monat} summeMonat={sm} konto={konto} />
+        <Karte titel="Prüfung AZG / KJBG" aktion={ma.kjbg ? <span className="text-xs font-medium text-indigo-700">Jugendliche/r · KJBG</span> : null} innen="p-4 space-y-2">
+          {hinweise.length === 0 ? <Hinweis ton="ok">Keine Auffälligkeiten bei Pausen, Höchstarbeitszeit und Ruhezeit.</Hinweis> :
+            hinweise.map((x, i) => <Hinweis key={i} ton={x.stufe === "fehler" ? "fehler" : "warn"}>{x.woche ? `Woche ab ${fmtDk(x.d)}` : fmtDk(x.d)}: {x.text}</Hinweis>)}
+        </Karte>
+        {meineKorr.length > 0 && <Karte titel="Korrekturanträge" innen="p-0">
+          <ul className="divide-y divide-stone-100">{meineKorr.map(k => <li key={k.id} className="px-5 py-2.5 flex items-center justify-between gap-2 text-sm">
+            <span>{fmtDk(k.datum)} <span className="text-xs text-stone-500">„{k.grund}“</span></span><Badge status={k.status} />
+          </li>)}</ul>
+        </Karte>}
+        <Karte titel="Änderungsprotokoll" aktion={<button className="text-xs text-stone-600 hover:underline no-print" onClick={() => setProtokollOffen(!protokollOffen)}>{protokollOffen ? "ausblenden" : `${protokoll.length} Einträge`}</button>} innen={protokollOffen ? "p-0" : "p-0 hidden"}>
+          {protokoll.length === 0 ? <Leer text="Keine Änderungen in diesem Monat." /> : <ul className="divide-y divide-stone-100 text-xs">
+            {protokoll.slice().reverse().map(p => <li key={p.id} className="px-5 py-2.5">
+              <div className="font-medium text-stone-800">{fmtDk(p.datum)} · {p.aktion}</div>
+              <div className="text-stone-500">{new Date(p.am).toLocaleString("de-AT")} · {nameVon(db, p.von)}{p.alt || p.neu ? ` · ${p.alt ? `${p.alt.beginn}–${p.alt.ende}` : "neu"} → ${p.neu ? `${p.neu.beginn}–${p.neu.ende}` : "gelöscht"}` : ""}</div>
+              {p.grund && <div className="text-stone-600">„{p.grund}“</div>}
+            </li>)}
+          </ul>}
+        </Karte>
+      </div>
+    </div>
+    {dialog && <ZeitDialog ctx={ctx} ma={ma} datum={dialog} onClose={() => setDialog(null)} />}
+  </div>;
+}
+
+// ─── ABWESENHEITS-DIALOG (Urlaub, Krankenstand, sonstige) ────────────────────
+function AbwDialog({ ctx, modus, onClose }) {
+  const { db, user, sichtbar, aendern } = ctx;
+  const auswahl = sichtbar.filter(m => m.aktiv && (m.id === user.id || darfVerwalten(user, m)));
+  const arten = modus === "urlaub" ? ["urlaub"] : Object.keys(ARTEN).filter(a => a !== "urlaub");
+  const [f, setF] = useState({ maId: user.id, art: arten[0], von: heute(), bis: heute(), offen: false, au: false, notiz: "" });
+  const ma = db.mitarbeiter.find(m => m.id === f.maId);
+  const art = ARTEN[f.art];
+  const fuerAndere = f.maId !== user.id;
+  const bis = f.offen ? null : f.bis;
+  const tage = f.art === "urlaub" ? urlaubsTage(db, ma, f.von, bis || f.von) : tageZw(f.von, bis || f.von).length;
+  const uk = urlaubsKonto(db, ma, parseInt(f.von));
+  const ftImZeitraum = tageZw(f.von, bis || f.von).filter(d => feiertag(d) && +modellVon(db, ma).tage[wd(d)] > 0);
+  const ueberschneidung = db.abwesenheiten.filter(a => a.maId === f.maId && (wirksam(a) || a.status === "beantragt") && a.von <= (bis || "9999") && (a.bis || "9999") >= f.von);
+  const kollegen = db.abwesenheiten.filter(a => a.maId !== f.maId && wirksam(a) && a.von <= (bis || f.von) && (a.bis || heute()) >= f.von && db.mitarbeiter.find(m => m.id === a.maId)?.aktiv);
+  const gesperrtIn = tageZw(f.von, bis || f.von).some(d => gesperrt(db, f.maId, d));
+  const fehler = !f.von ? "Beginn angeben." : bis && bis < f.von ? "Ende liegt vor dem Beginn." : ueberschneidung.length ? "Für diesen Zeitraum gibt es bereits einen Eintrag." : gesperrtIn ? "Zeitraum liegt in einem abgeschlossenen Monat." : f.art === "urlaub" && tage === 0 ? "Im Zeitraum liegen keine Arbeitstage." : null;
+  const status = art.meldung ? "gemeldet" : (fuerAndere && darfVerwalten(user, ma)) || (istAdmin(user) && !fuerAndere) ? "genehmigt" : "beantragt";
+
+  function speichern() {
+    aendern(n => {
+      n.abwesenheiten.push({ id: uid(), maId: f.maId, art: f.art, von: f.von, bis, status, au: art.meldung ? f.au : undefined, notiz: f.notiz, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: status === "genehmigt" ? user.id : undefined });
+    }, status === "beantragt" ? "Antrag gesendet" : "Eintrag gespeichert");
+    onClose();
+  }
+  return <Modal titel={modus === "urlaub" ? "Urlaub beantragen" : "Krankmeldung / Abwesenheit erfassen"} onClose={onClose}
+    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>{status === "beantragt" ? "Antrag senden" : status === "gemeldet" ? "Melden" : "Eintragen"}</Knopf></>}>
+    <div className="grid sm:grid-cols-2 gap-4">
+      {auswahl.length > 1 && <Feld label="Mitarbeiter/in" breit><select className={inputCls} value={f.maId} onChange={e => setF({ ...f, maId: e.target.value })}>{auswahl.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>}
+      {modus !== "urlaub" && <Feld label="Art der Abwesenheit" breit><select className={inputCls} value={f.art} onChange={e => setF({ ...f, art: e.target.value })}>{arten.map(a => <option key={a} value={a}>{ARTEN[a].label}</option>)}</select></Feld>}
+      <Feld label="Von"><input type="date" className={inputCls} value={f.von} onChange={e => setF({ ...f, von: e.target.value, bis: f.bis < e.target.value ? e.target.value : f.bis })} /></Feld>
+      <Feld label="Bis">
+        <input type="date" className={inputCls} value={f.offen ? "" : f.bis} disabled={f.offen} min={f.von} onChange={e => setF({ ...f, bis: e.target.value })} />
+        {art.meldung && <label className="flex items-center gap-2 mt-1.5 text-xs text-stone-600"><input type="checkbox" checked={f.offen} onChange={e => setF({ ...f, offen: e.target.checked })} />Ende noch offen</label>}
+      </Feld>
+      {art.meldung && <Feld label="Arbeitsunfähigkeitsbestätigung" breit hilfe={`Firmenregel: Bestätigung ab dem ${db.einstellungen.auAbTag}. Kalendertag vorlegen (änderbar unter Einstellungen).`}>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.au} onChange={e => setF({ ...f, au: e.target.checked })} />AU-Bestätigung liegt vor</label>
+      </Feld>}
+      <Feld label="Notiz (optional)" breit hilfe={art.meldung ? "Keine Diagnosen eintragen – die gehen den Betrieb nichts an." : null}><input className={inputCls} value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>
+    </div>
+    <div className="mt-4 space-y-2">
+      {f.art === "urlaub" ? <div className="rounded-lg bg-stone-50 ring-1 ring-inset ring-stone-200 p-3 text-sm grid grid-cols-3 gap-2 text-center">
+        <div><div className="text-xl font-semibold tabular">{tage}</div><div className="text-xs text-stone-500">Urlaubstage</div></div>
+        <div><div className="text-xl font-semibold tabular">{uk.rest}</div><div className="text-xs text-stone-500">Rest {parseInt(f.von)}</div></div>
+        <div><div className={`text-xl font-semibold tabular ${uk.rest - tage < 0 ? "text-rose-700" : ""}`}>{uk.rest - tage}</div><div className="text-xs text-stone-500">danach</div></div>
+      </div> : <div className="text-sm text-stone-600">{bis ? `${tage} Kalendertage` : "Laufend – das Ende wird mit der Gesundmeldung eingetragen."}</div>}
+      {f.art === "urlaub" && <p className="text-xs text-stone-500">Gezählt werden nur Arbeitstage laut Arbeitszeitmodell „{modellVon(db, ma).name}“. Wochenenden, Schließtage und Feiertage zählen nicht.</p>}
+      {ftImZeitraum.length > 0 && <Hinweis>Feiertage im Zeitraum (nicht abgezogen): {ftImZeitraum.map(d => feiertag(d).name).join(", ")}</Hinweis>}
+      {f.art === "urlaub" && uk.rest - tage < 0 && <Hinweis ton="warn">Der Antrag übersteigt den Resturlaub. Vorgriff nur nach Vereinbarung.</Hinweis>}
+      {kollegen.length > 0 && <Hinweis ton="warn">Gleichzeitig abwesend: {[...new Set(kollegen.map(a => nameVon(db, a.maId)))].join(", ")}</Hinweis>}
+      {status === "genehmigt" && fuerAndere && <Hinweis>Du trägst als Vorgesetzte/r ein – der Eintrag gilt sofort als genehmigt.</Hinweis>}
+      {fehler && <p className="text-xs text-rose-700">{fehler}</p>}
+    </div>
+  </Modal>;
+}
+
+function AntragListe({ ctx, liste }) {
+  const { db, user, aendern } = ctx;
+  function entscheiden(a, status) { aendern(n => { const x = n.abwesenheiten.find(q => q.id === a.id); x.status = status; x.entschiedenVon = user.id; x.entschiedenAm = heute(); }, status === "genehmigt" ? "Antrag genehmigt" : "Antrag abgelehnt"); }
+  return <ul className="divide-y divide-stone-100">
+    {liste.map(a => {
+      const ma = db.mitarbeiter.find(m => m.id === a.maId);
+      const kollegen = db.abwesenheiten.filter(x => x.maId !== a.maId && wirksam(x) && x.von <= (a.bis || a.von) && (x.bis || heute()) >= a.von);
+      return <li key={a.id} className="px-5 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+        <Avatar name={ma.name} klein />
+        <div className="flex-1 text-sm">
+          <div className="font-medium flex flex-wrap items-center gap-2">{ma.name} <ArtChip art={a.art} /></div>
+          <div className="text-xs text-stone-600 mt-0.5">{fmtZr(a.von, a.bis)} · {a.art === "urlaub" ? `${urlaubsTage(db, ma, a.von, a.bis)} Urlaubstage · Rest danach ${urlaubsKonto(db, ma, parseInt(a.von)).rest - urlaubsTage(db, ma, a.von, a.bis)}` : `${tageZw(a.von, a.bis || a.von).length} Tag${tageZw(a.von, a.bis || a.von).length === 1 ? "" : "e"}`}{a.notiz ? ` · „${a.notiz}“` : ""}</div>
+          {kollegen.length > 0 && <div className="text-xs text-amber-700 mt-0.5">Gleichzeitig weg: {[...new Set(kollegen.map(x => nameVon(db, x.maId)))].join(", ")}</div>}
+        </div>
+        <div className="flex gap-2">
+          <Knopf klein art="rot" icon="x" onClick={() => entscheiden(a, "abgelehnt")}>Ablehnen</Knopf>
+          <Knopf klein art="gruen" icon="haken" onClick={() => entscheiden(a, "genehmigt")}>Genehmigen</Knopf>
+        </div>
+      </li>;
+    })}
+  </ul>;
+}
+
+// ─── URLAUB ───────────────────────────────────────────────────────────────────
+function Urlaub({ ctx }) {
+  const { db, user, sichtbar, aendern } = ctx;
+  const [jahr, setJahr] = useState(new Date().getFullYear());
+  const [dialog, setDialog] = useState(false);
+  const uk = urlaubsKonto(db, user, jahr);
+  const offen = db.abwesenheiten.filter(a => a.art === "urlaub" && a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)));
+  const liste = db.abwesenheiten.filter(a => a.art === "urlaub" && sichtbar.some(m => m.id === a.maId) && (a.von.startsWith(jahr) || (a.bis || "").startsWith(jahr))).sort((a, b) => b.von.localeCompare(a.von));
+  const leitung = istLeitung(user);
+  function stornieren(a) { aendern(n => { n.abwesenheiten.find(q => q.id === a.id).status = "storniert"; }, "Urlaub storniert"); }
+
+  return <div className="space-y-5">
+    <Seitenkopf titel="Urlaub" sub="Anträge, Genehmigung und Urlaubskonto (Urlaubsjahr = Kalenderjahr)">
+      <select className={`${inputKlein}`} value={jahr} onChange={e => setJahr(+e.target.value)}>{[jahr - 1, jahr, jahr + 1].map(j => <option key={j}>{j}</option>)}</select>
+      <Knopf icon="plus" onClick={() => setDialog(true)}>Urlaub beantragen</Knopf>
+    </Seitenkopf>
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <Kpi label="Anspruch" wert={uk.anspruch} sub="Tage" />
+      <Kpi label="Übertrag" wert={uk.uebertrag} sub="aus Vorjahr" />
+      <Kpi label="Verbraucht" wert={uk.konsumiert} sub="Tage" />
+      <Kpi label="Geplant" wert={uk.geplant} sub="genehmigt" />
+      <Kpi label="Beantragt" wert={uk.beantragt} sub="offen" />
+      <Kpi label="Rest" wert={uk.rest} ton={uk.rest < 0 ? "neg" : "pos"} sub="verfügbar" />
+    </div>
+    {offen.length > 0 && <Karte titel={`Zur Genehmigung (${offen.length})`} innen="p-0"><AntragListe ctx={ctx} liste={offen} /></Karte>}
+    <div className="grid xl:grid-cols-5 gap-5">
+      <Karte titel="Urlaubsanträge" className={leitung ? "xl:col-span-3" : "xl:col-span-5"} innen="p-0">
+        {liste.length === 0 ? <Leer text="Keine Urlaube in diesem Jahr." /> :
+        <Tabelle kopf={["Mitarbeiter/in", "Zeitraum", { t: "Tage", cls: "text-right" }, "Status", ""]}>
+          {liste.map(a => { const ma = db.mitarbeiter.find(m => m.id === a.maId); const darf = (a.maId === user.id && a.status === "beantragt") || (darfVerwalten(user, ma) && a.status !== "storniert" && a.status !== "abgelehnt" && a.von >= heute()); return <tr key={a.id}>
+            <td className="px-3 py-2.5 font-medium whitespace-nowrap">{ma.name}</td>
+            <td className="px-3 py-2.5 whitespace-nowrap tabular">{fmtZr(a.von, a.bis)}</td>
+            <td className="px-3 py-2.5 text-right tabular">{urlaubsTage(db, ma, a.von, a.bis)}</td>
+            <td className="px-3 py-2.5"><Badge status={a.status} />{a.entschiedenVon && a.status !== "beantragt" && <span className="block text-[11px] text-stone-500 mt-0.5">von {nameVon(db, a.entschiedenVon)}</span>}</td>
+            <td className="px-3 py-2.5 text-right">{darf && <Knopf klein art="geist" onClick={() => stornieren(a)}>Stornieren</Knopf>}</td>
+          </tr>; })}
+        </Tabelle>}
+      </Karte>
+      {leitung && <Karte titel={`Urlaubskonten ${jahr}`} className="xl:col-span-2" innen="p-0">
+        <Tabelle kopf={["Name", { t: "Anspr.", cls: "text-right" }, { t: "Verbr.", cls: "text-right" }, { t: "Gepl.", cls: "text-right" }, { t: "Rest", cls: "text-right" }]}>
+          {sichtbar.filter(m => m.aktiv).map(m => { const k = urlaubsKonto(db, m, jahr); return <tr key={m.id}>
+            <td className="px-3 py-2.5 whitespace-nowrap">{m.name}</td>
+            <td className="px-3 py-2.5 text-right tabular">{k.anspruch + k.uebertrag}</td>
+            <td className="px-3 py-2.5 text-right tabular">{k.konsumiert}</td>
+            <td className="px-3 py-2.5 text-right tabular">{k.geplant}{k.beantragt ? <span className="text-amber-700"> +{k.beantragt}</span> : ""}</td>
+            <td className={`px-3 py-2.5 text-right tabular font-semibold ${k.rest < 0 ? "text-rose-700" : ""}`}>{k.rest}</td>
+          </tr>; })}
+        </Tabelle>
+        <p className="px-5 py-3 text-xs text-stone-500">Anspruch inkl. Übertrag. Urlaub verjährt nach § 4 Abs 5 UrlG zwei Jahre nach Ende des Urlaubsjahres, in dem er entstanden ist.</p>
+      </Karte>}
+    </div>
+    {dialog && <AbwDialog ctx={ctx} modus="urlaub" onClose={() => setDialog(false)} />}
+  </div>;
+}
+
+// ─── KRANKENSTAND / ABWESENHEITEN ─────────────────────────────────────────────
+function Krankenstand({ ctx }) {
+  const { db, user, sichtbar, aendern } = ctx;
+  const [dialog, setDialog] = useState(false);
+  const [filterArt, setFilterArt] = useState("");
+  const [gesund, setGesund] = useState(null);
+  const jahr = new Date().getFullYear(), h = heute();
+  const leitung = istLeitung(user);
+  const alle = db.abwesenheiten.filter(a => a.art !== "urlaub" && sichtbar.some(m => m.id === a.maId));
+  const laufend = alle.filter(a => wirksam(a) && a.von <= h && (!a.bis || a.bis >= h));
+  const offen = alle.filter(a => a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)));
+  const liste = alle.filter(a => (!filterArt || a.art === filterArt) && a.art !== "berufsschule" || (filterArt === "berufsschule" && a.art === "berufsschule")).sort((a, b) => b.von.localeCompare(a.von));
+  const darfBearbeiten = a => a.maId === user.id || darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId));
+
+  function gesundMelden(a, bis) { aendern(n => { n.abwesenheiten.find(q => q.id === a.id).bis = bis; }, "Gesundmeldung eingetragen"); setGesund(null); }
+  function auSetzen(a) { aendern(n => { const x = n.abwesenheiten.find(q => q.id === a.id); x.au = !x.au; }, "AU-Status geändert"); }
+  function stornieren(a) { aendern(n => { n.abwesenheiten.find(q => q.id === a.id).status = "storniert"; }, "Eintrag storniert"); }
+
+  return <div className="space-y-5">
+    <Seitenkopf titel="Krankenstand & Abwesenheiten" sub="Krankmeldungen, Pflegefreistellung, Zeitausgleich, Berufsschule und mehr">
+      <Knopf icon="plus" onClick={() => setDialog(true)}>Krankmeldung / Abwesenheit</Knopf>
+    </Seitenkopf>
+    <div className="grid lg:grid-cols-2 gap-5">
+      <Karte titel="Derzeit abwesend" innen="p-0">
+        {laufend.length === 0 ? <Leer text="Aktuell niemand abwesend." /> : <ul className="divide-y divide-stone-100">
+          {laufend.map(a => { const tag = tageZw(a.von, h).length; const auNoetig = KRANK_ARTEN.includes(a.art) && !a.au && tag >= db.einstellungen.auAbTag; return <li key={a.id} className="px-5 py-3">
+            <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{nameVon(db, a.maId)}</span><ArtChip art={a.art} /></div>
+            <div className="text-xs text-stone-500 mt-0.5">{fmtZr(a.von, a.bis)} · {tag}. Tag{KRANK_ARTEN.includes(a.art) ? ` · AU ${a.au ? "liegt vor" : "fehlt"}` : ""}</div>
+            {auNoetig && <div className="mt-2"><Hinweis ton="warn">AU-Bestätigung ab dem {db.einstellungen.auAbTag}. Tag erforderlich.</Hinweis></div>}
+            {darfBearbeiten(a) && ARTEN[a.art].meldung && <div className="mt-2 flex flex-wrap gap-2 no-print">
+              {gesund === a.id ? <GesundForm a={a} onOk={b => gesundMelden(a, b)} onAbbruch={() => setGesund(null)} /> : <>
+                <Knopf klein art="sekundaer" icon="haken" onClick={() => setGesund(a.id)}>Gesund melden</Knopf>
+                {KRANK_ARTEN.includes(a.art) && leitung && <Knopf klein art="geist" onClick={() => auSetzen(a)}>{a.au ? "AU zurücksetzen" : "AU erhalten"}</Knopf>}
+              </>}
+            </div>}
+          </li>; })}
+        </ul>}
+      </Karte>
+      {offen.length > 0 ? <Karte titel={`Zur Genehmigung (${offen.length})`} innen="p-0"><AntragListe ctx={ctx} liste={offen} /></Karte> :
+        <Karte titel="Gut zu wissen" innen="p-5 space-y-2 text-sm text-stone-700">
+          <p><b>Krankmeldung:</b> unverzüglich melden; eine Arbeitsunfähigkeitsbestätigung kann der Betrieb verlangen (§ 4 EFZG / § 8 Abs 8 AngG).</p>
+          <p><b>Entgeltfortzahlung:</b> 6 Wochen voll, ab dem 2. Dienstjahr 8, ab dem 16. 10 und ab dem 26. 12 Wochen, danach 4 Wochen zur Hälfte – pro Arbeitsjahr.</p>
+          <p><b>Pflegefreistellung:</b> bis zu einer Woche pro Arbeitsjahr (§ 16 UrlG).</p>
+        </Karte>}
+    </div>
+
+    {leitung && <Karte titel={`Krankenstandstage ${jahr}`} innen="p-0">
+      <Tabelle kopf={["Name", { t: "Kalendertage", cls: "text-right" }, { t: "Fälle", cls: "text-right" }, { t: "Pflegefr.", cls: "text-right" }, { t: "Dienstjahre", cls: "text-right" }, { t: "EFZ voll", cls: "text-right" }]}>
+        {sichtbar.filter(m => m.aktiv).map(m => {
+          const kt = abwKalendertage(db, m, KRANK_ARTEN, `${jahr}-01-01`, `${jahr}-12-31`);
+          const faelle = db.abwesenheiten.filter(a => a.maId === m.id && KRANK_ARTEN.includes(a.art) && wirksam(a) && a.von.startsWith(jahr)).length;
+          const efz = efzWochen(m) * 7;
+          return <tr key={m.id}>
+            <td className="px-3 py-2.5 whitespace-nowrap">{m.name}</td>
+            <td className="px-3 py-2.5 text-right tabular font-medium">{kt}</td>
+            <td className="px-3 py-2.5 text-right tabular">{faelle}</td>
+            <td className="px-3 py-2.5 text-right tabular">{abwKalendertage(db, m, ["pflege"], `${jahr}-01-01`, `${jahr}-12-31`)}</td>
+            <td className="px-3 py-2.5 text-right tabular">{dienstjahre(m.eintritt)}</td>
+            <td className="px-3 py-2.5 text-right tabular"><span className={kt > efz ? "text-rose-700 font-medium" : ""}>{efzWochen(m)} Wo.</span></td>
+          </tr>;
+        })}
+      </Tabelle>
+      <p className="px-5 py-3 text-xs text-stone-500">Kalenderjahr als Näherung. Die Entgeltfortzahlung rechnet nach Arbeitsjahr (ab Eintritt) – die Lohnverrechnung ist maßgeblich.</p>
+    </Karte>}
+
+    <Karte titel="Alle Einträge" aktion={<select className={`${inputKlein} py-1 text-xs`} value={filterArt} onChange={e => setFilterArt(e.target.value)}>
+      <option value="">Alle Arten (ohne Berufsschule)</option>{Object.keys(ARTEN).filter(a => a !== "urlaub").map(a => <option key={a} value={a}>{ARTEN[a].label}</option>)}</select>} innen="p-0">
+      {liste.length === 0 ? <Leer text="Keine Einträge." /> :
+      <Tabelle kopf={["Mitarbeiter/in", "Art", "Zeitraum", { t: "Tage", cls: "text-right" }, "AU", "Status", ""]}>
+        {liste.slice(0, 60).map(a => <tr key={a.id}>
+          <td className="px-3 py-2.5 whitespace-nowrap font-medium">{nameVon(db, a.maId)}</td>
+          <td className="px-3 py-2.5"><ArtChip art={a.art} /></td>
+          <td className="px-3 py-2.5 whitespace-nowrap tabular">{fmtZr(a.von, a.bis)}</td>
+          <td className="px-3 py-2.5 text-right tabular">{tageZw(a.von, a.bis || heute()).length}</td>
+          <td className="px-3 py-2.5 text-xs">{KRANK_ARTEN.includes(a.art) ? (a.au ? "✓" : <span className="text-amber-700">fehlt</span>) : ""}</td>
+          <td className="px-3 py-2.5"><Badge status={a.status} /></td>
+          <td className="px-3 py-2.5 text-right">{darfBearbeiten(a) && (a.status === "beantragt" || (darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)) && a.status !== "storniert" && !gesperrt(db, a.maId, a.von))) && <Knopf klein art="geist" onClick={() => stornieren(a)}>Stornieren</Knopf>}</td>
+        </tr>)}
+      </Tabelle>}
+    </Karte>
+    {dialog && <AbwDialog ctx={ctx} modus="abw" onClose={() => setDialog(false)} />}
+  </div>;
+}
+function GesundForm({ a, onOk, onAbbruch }) {
+  const [bis, setBis] = useState(addTage(heute(), -1) < a.von ? a.von : addTage(heute(), -1));
+  return <div className="flex flex-wrap items-center gap-2 text-xs">
+    <span>Letzter Abwesenheitstag:</span>
+    <input type="date" className={`${inputKlein} py-1`} value={bis} min={a.von} onChange={e => setBis(e.target.value)} />
+    <Knopf klein onClick={() => onOk(bis)}>Speichern</Knopf><Knopf klein art="geist" onClick={onAbbruch}>Abbrechen</Knopf>
+  </div>;
+}
+
+// ─── MITARBEITER ──────────────────────────────────────────────────────────────
+function MaDialog({ ctx, ma, onClose }) {
+  const { db, user, aendern } = ctx;
+  const neu = !ma;
+  const [f, setF] = useState(ma ? { ...ma } : { id: uid(), name: "", personalnr: `P-${pad(db.mitarbeiter.length + 1).padStart(3, "0")}`, abteilung: "", funktion: "", eintritt: heute(), modellId: db.modelle[0].id, urlaubstage: 25, urlaubUebertrag: 0, saldoStart: 0, vorgesetzterId: user.id, rolle: "mitarbeiter", aktiv: true, kjbg: false });
+  const set = (k, v) => setF({ ...f, [k]: v });
+  const vorschlag = vorschlagUrlaubstage(db, f);
+  const fehler = !f.name.trim() ? "Name fehlt." : db.mitarbeiter.some(m => m.id !== f.id && m.personalnr === f.personalnr) ? "Personalnummer bereits vergeben." : null;
+  function speichern() {
+    aendern(n => { const i = n.mitarbeiter.findIndex(m => m.id === f.id); const d = { ...f, urlaubstage: +f.urlaubstage || 0, urlaubUebertrag: +f.urlaubUebertrag || 0, saldoStart: +f.saldoStart || 0 }; if (i >= 0) n.mitarbeiter[i] = d; else n.mitarbeiter.push(d); }, neu ? "Mitarbeiter/in angelegt" : "Änderungen gespeichert");
+    onClose();
+  }
+  return <Modal breit titel={neu ? "Neue/r Mitarbeiter/in" : f.name} onClose={onClose}
+    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>Speichern</Knopf></>}>
+    <div className="grid sm:grid-cols-2 gap-4">
+      <Feld label="Name"><input className={inputCls} value={f.name} onChange={e => set("name", e.target.value)} /></Feld>
+      <Feld label="Personalnummer"><input className={inputCls} value={f.personalnr} onChange={e => set("personalnr", e.target.value)} /></Feld>
+      <Feld label="Abteilung"><input className={inputCls} list="abteilungen" value={f.abteilung} onChange={e => set("abteilung", e.target.value)} />
+        <datalist id="abteilungen">{[...new Set(db.mitarbeiter.map(m => m.abteilung))].map(a => <option key={a} value={a} />)}</datalist></Feld>
+      <Feld label="Funktion"><input className={inputCls} value={f.funktion} onChange={e => set("funktion", e.target.value)} /></Feld>
+      <Feld label="Eintrittsdatum"><input type="date" className={inputCls} value={f.eintritt || ""} onChange={e => set("eintritt", e.target.value)} /></Feld>
+      <Feld label="Austrittsdatum" hilfe="Leer lassen, solange beschäftigt."><input type="date" className={inputCls} value={f.austritt || ""} onChange={e => set("austritt", e.target.value || undefined)} /></Feld>
+      <Feld label="Arbeitszeitmodell" breit hilfe={`${wochenStd(modellVon(db, f))} Wochenstunden · ${modellVon(db, f).tage.map((h, i) => +h ? `${WT[i]} ${h}` : null).filter(Boolean).join(" · ")}`}>
+        <select className={inputCls} value={f.modellId} onChange={e => set("modellId", e.target.value)}>{db.modelle.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
+      <Feld label="Urlaubstage / Jahr" hilfe={`Vorschlag nach UrlG: ${vorschlag} (aliquot zu ${tageProWoche(modellVon(db, f))} Arbeitstagen/Woche${dienstjahre(f.eintritt) >= 25 ? ", 6. Urlaubswoche" : ""})`}>
+        <div className="flex gap-2"><input type="number" className={inputCls} value={f.urlaubstage} onChange={e => set("urlaubstage", e.target.value)} />{+f.urlaubstage !== vorschlag && <Knopf art="sekundaer" klein onClick={() => set("urlaubstage", vorschlag)}>übernehmen</Knopf>}</div></Feld>
+      <Feld label="Resturlaub Vorjahr"><input type="number" className={inputCls} value={f.urlaubUebertrag} onChange={e => set("urlaubUebertrag", e.target.value)} /></Feld>
+      <Feld label="Vorgesetzte/r"><select className={inputCls} value={f.vorgesetzterId || ""} onChange={e => set("vorgesetzterId", e.target.value || null)}>
+        <option value="">– keine/r –</option>{db.mitarbeiter.filter(m => m.id !== f.id && m.aktiv && m.rolle !== "mitarbeiter").map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
+      <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || f.id === user.id} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
+      <Feld label="Zeitkonto-Übertrag (Minuten)" hilfe="Saldo aus dem alten System beim Start"><input type="number" className={inputCls} value={f.saldoStart} onChange={e => set("saldoStart", e.target.value)} /></Feld>
+      <div className="space-y-2 pt-5">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.kjbg} onChange={e => set("kjbg", e.target.checked)} />Jugendliche/r unter 18 (KJBG-Regeln)</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.aktiv} disabled={f.id === user.id} onChange={e => set("aktiv", e.target.checked)} />Aktiv (kann sich anmelden)</label>
+      </div>
+    </div>
+    {fehler && <p className="mt-3 text-xs text-rose-700">{fehler}</p>}
+  </Modal>;
+}
+function Mitarbeiter({ ctx }) {
+  const { db, user, sichtbar } = ctx;
+  const [suche, setSuche] = useState("");
+  const [nurAktiv, setNurAktiv] = useState(true);
+  const [dialog, setDialog] = useState(null);
+  const jahr = new Date().getFullYear();
+  const liste = sichtbar.filter(m => (!nurAktiv || m.aktiv) && `${m.name} ${m.personalnr} ${m.abteilung} ${m.funktion}`.toLowerCase().includes(suche.toLowerCase()));
+  return <div className="space-y-5">
+    <Seitenkopf titel={istLeitung(user) ? "Mitarbeiter" : "Mein Profil"} sub={istLeitung(user) ? `${db.mitarbeiter.filter(m => m.aktiv).length} aktive Mitarbeiter/innen` : "Deine Stammdaten – Änderungen bitte über die Verwaltung"}>
+      {istLeitung(user) && <><input className={`${inputKlein} w-48`} placeholder="Suchen …" value={suche} onChange={e => setSuche(e.target.value)} />
+        <label className="flex items-center gap-1.5 text-sm text-stone-600"><input type="checkbox" checked={nurAktiv} onChange={e => setNurAktiv(e.target.checked)} />nur aktive</label></>}
+      {istAdmin(user) && <Knopf icon="plus" onClick={() => setDialog("neu")}>Neu</Knopf>}
+    </Seitenkopf>
+    <Karte innen="p-0">
+      <Tabelle kopf={["Name", "Pers.-Nr.", "Abteilung", "Eintritt", "Modell", { t: "Std./Wo.", cls: "text-right" }, { t: "Urlaub", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, "Vorgesetzte/r", "Rolle", ""]}>
+        {liste.map(m => { const konto = zeitkonto(db, m, heute()); const k = urlaubsKonto(db, m, jahr); return <tr key={m.id} className={m.aktiv ? "" : "text-stone-400"}>
+          <td className="px-3 py-2.5"><div className="flex items-center gap-2.5"><Avatar name={m.name} klein /><div><div className="font-medium whitespace-nowrap">{m.name}{m.kjbg && <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 rounded px-1">KJBG</span>}</div><div className="text-xs text-stone-500">{m.funktion}</div></div></div></td>
+          <td className="px-3 py-2.5 tabular">{m.personalnr}</td>
+          <td className="px-3 py-2.5">{m.abteilung}</td>
+          <td className="px-3 py-2.5 tabular whitespace-nowrap">{fmtD(m.eintritt)}</td>
+          <td className="px-3 py-2.5 text-xs">{modellVon(db, m).name}</td>
+          <td className="px-3 py-2.5 text-right tabular">{wochenStd(modellVon(db, m))}</td>
+          <td className="px-3 py-2.5 text-right tabular whitespace-nowrap">{k.rest} / {k.anspruch + k.uebertrag}</td>
+          <td className={`px-3 py-2.5 text-right tabular ${konto < 0 ? "text-rose-700" : "text-emerald-700"}`}>{fmtH(konto, true)}</td>
+          <td className="px-3 py-2.5 whitespace-nowrap">{m.vorgesetzterId ? nameVon(db, m.vorgesetzterId) : "–"}</td>
+          <td className="px-3 py-2.5 text-xs whitespace-nowrap">{m.aktiv ? ROLLEN[m.rolle].label : `ausgetreten ${fmtD(m.austritt)}`}</td>
+          <td className="px-3 py-2.5 text-right">{istAdmin(user) && <button onClick={() => setDialog(m)} className="p-1.5 rounded-md text-stone-500 hover:bg-stone-100" title="Bearbeiten"><Icon n="stift" className="w-4 h-4" /></button>}</td>
+        </tr>; })}
+      </Tabelle>
+    </Karte>
+    {istAdmin(user) && <p className="text-xs text-stone-500">Ausgetretene werden deaktiviert statt gelöscht – Arbeitszeitaufzeichnungen und Lohnunterlagen müssen aufbewahrt werden (u. a. § 132 BAO: 7 Jahre).</p>}
+    {dialog && <MaDialog ctx={ctx} ma={dialog === "neu" ? null : dialog} onClose={() => setDialog(null)} />}
+  </div>;
+}
+
+// ─── KALENDER ─────────────────────────────────────────────────────────────────
+function Kalender({ ctx }) {
+  const { db, sichtbar, user } = ctx;
+  const [monat, setMonat] = useState(monatKey(heute()));
+  // Teamkalender: alle Aktiven sehen genehmigte Abwesenheiten aller (ohne Art bei Krankenstand für Nicht-Leitung)
+  const team = (istLeitung(user) ? sichtbar : db.mitarbeiter).filter(m => m.aktiv || tageImMonat(monat).some(d => beschaeftigt(m, d)));
+  const tage = tageImMonat(monat), h = heute();
+  const leitung = istLeitung(user);
+  const zelle = (m, d) => {
+    if (!beschaeftigt(m, d)) return { cls: "bg-stone-100", t: "" };
+    const a = abwAm(db, m.id, d), b = abwAntragAm(db, m.id, d);
+    const frei = !(+modellVon(db, m).tage[wd(d)]) || feiertag(d);
+    if (a) {
+      // Datensparsam: Kolleg/innen sehen nur „abwesend“, nicht ob krank
+      const zeigen = leitung || m.id === user.id || a.art === "urlaub";
+      return zeigen ? { cls: `${ARTEN[a.art].voll} ${frei ? "opacity-40" : ""}`, t: ARTEN[a.art].kurz, title: ARTEN[a.art].label } : { cls: `bg-stone-400 text-white ${frei ? "opacity-40" : ""}`, t: "A", title: "Abwesend" };
+    }
+    if (b && (leitung || m.id === user.id)) return { cls: `${ARTEN[b.art].hell} streifen`, t: "?", title: `${ARTEN[b.art].label} beantragt` };
+    if (frei) return { cls: "bg-stone-100", t: "" };
+    return { cls: "", t: "" };
+  };
+  return <div className="space-y-5">
+    <Seitenkopf titel="Teamkalender" sub="Urlaub, Krankenstand und Abwesenheiten auf einen Blick">
+      <MonatWahl monat={monat} setMonat={setMonat} />
+    </Seitenkopf>
+    <Karte innen="p-0">
+      <div className="overflow-x-auto">
+        <table className="text-xs border-separate border-spacing-0 w-full">
+          <thead><tr>
+            <th className="sticky left-0 z-10 bg-white text-left px-3 py-2 font-medium text-stone-500 border-b border-stone-200 min-w-[9rem]">Mitarbeiter/in</th>
+            {tage.map(d => { const ft = feiertag(d); return <th key={d} title={ft?.name} className={`px-0 py-1.5 font-medium border-b border-stone-200 min-w-[1.9rem] ${ft ? "text-rose-600" : wd(d) >= 5 ? "text-stone-400" : "text-stone-500"} ${d === h ? "bg-amber-100" : ""}`}>
+              <div>{WT[wd(d)].slice(0, 2)}</div><div className="tabular text-stone-800 font-semibold">{parseInt(d.slice(8))}</div></th>; })}
+          </tr></thead>
+          <tbody>
+            {team.map(m => <tr key={m.id}>
+              <td className="sticky left-0 z-10 bg-white px-3 py-1.5 border-b border-stone-100 whitespace-nowrap font-medium text-stone-800">{m.name}</td>
+              {tage.map(d => { const z = zelle(m, d); return <td key={d} className={`border-b border-l border-stone-100 p-0.5 ${d === h ? "bg-amber-50" : ""}`}>
+                <div title={z.title} className={`h-7 rounded flex items-center justify-center font-semibold ${z.cls}`}>{z.t}</div></td>; })}
+            </tr>)}
+            <tr><td className="sticky left-0 bg-white px-3 py-1.5 text-stone-500">Abwesend</td>
+              {tage.map(d => { const n = team.filter(m => abwAm(db, m.id, d) && +modellVon(db, m).tage[wd(d)] && !feiertag(d)).length; return <td key={d} className={`text-center py-1.5 tabular font-medium ${n >= 3 ? "text-rose-700" : "text-stone-500"}`}>{n || ""}</td>; })}</tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-2 px-5 py-3 border-t border-stone-100 text-xs text-stone-600">
+        {Object.entries(ARTEN).map(([k, a]) => <span key={k} className="inline-flex items-center gap-1.5"><span className={`w-4 h-4 rounded text-[9px] font-bold flex items-center justify-center ${a.voll}`}>{a.kurz}</span>{a.label}</span>)}
+        <span className="inline-flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-amber-100 streifen" />beantragt</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-4 h-4 rounded bg-stone-100 ring-1 ring-stone-200" />frei / Schließtag / Feiertag</span>
+      </div>
+    </Karte>
+    {!leitung && <p className="text-xs text-stone-500">Bei Kolleg/innen siehst du nur „A“ (abwesend) – der Grund (z. B. Krankenstand) bleibt vertraulich.</p>}
+    <Karte titel={`Feiertage ${monat.slice(0, 4)}`} innen="p-0">
+      <ul className="grid sm:grid-cols-2 lg:grid-cols-3 text-sm">
+        {feiertage(parseInt(monat)).map(f => <li key={f.datum} className={`px-5 py-2 flex justify-between gap-2 border-b border-stone-100 ${f.datum < h ? "text-stone-400" : ""}`}><span>{f.name}</span><span className="tabular">{fmtDk(f.datum)}</span></li>)}
+      </ul>
+    </Karte>
+  </div>;
+}
+
+// ─── AUSWERTUNGEN ─────────────────────────────────────────────────────────────
+function Auswertungen({ ctx }) {
+  const { db, user, sichtbar } = ctx;
+  const [ansicht, setAnsicht] = useState("monat");
+  const [monat, setMonat] = useState(monatVerschieben(monatKey(heute()), -1));
+  const [jahr, setJahr] = useState(new Date().getFullYear());
+  const tage = tageImMonat(monat);
+  const von = ansicht === "monat" ? tage[0] : `${jahr}-01-01`;
+  const bis = ansicht === "monat" ? tage[tage.length - 1] : `${jahr}-12-31`;
+  const bisKonto = bis < heute() ? bis : heute();
+  const liste = sichtbar.filter(m => tageZw(von, bis).some(d => beschaeftigt(m, d)));
+  const zeilen = liste.map(m => {
+    const s = summe(db, m, von, bis);
+    const uk = urlaubsKonto(db, m, parseInt(von));
+    const urlaubZr = db.abwesenheiten.filter(a => a.maId === m.id && a.art === "urlaub" && wirksam(a)).reduce((n, a) => {
+      const v = a.von > von ? a.von : von, b = (a.bis || a.von) < bis ? (a.bis || a.von) : bis; return n + (v <= b ? urlaubsTage(db, m, v, b) : 0); }, 0);
+    const krank = abwKalendertage(db, m, KRANK_ARTEN, von, bis);
+    const sonst = abwKalendertage(db, m, ["pflege", "sonder", "fortbildung", "za", "unbezahlt"], von, bis);
+    const ab = ansicht === "monat" ? abschlussVon(db, m.id, monat) : null;
+    return { m, s, konto: zeitkonto(db, m, bisKonto), uk, urlaubZr, krank, sonst, ab };
+  });
+  const sum = k => zeilen.reduce((n, z) => n + k(z), 0);
+
+  function exportieren() {
+    const kopf = ["Personalnr", "Name", "Arbeitszeitmodell", "Soll (h)", "Ist (h)", "Abwesenheit angerechnet (h)", "Saldo Zeitraum (h)", "Zeitkonto (h)", "Mehrarbeit (h)", "Überstunden (h)", "Urlaubstage", "Resturlaub", "Krankenstand (KT)", "Sonstige Abwesenheit (KT)"];
+    if (ansicht === "monat") kopf.push("Monatsabschluss");
+    csvExport(`auswertung_${ansicht === "monat" ? monat : jahr}.csv`, [kopf, ...zeilen.map(z => {
+      const r = [z.m.personalnr, z.m.name, modellVon(db, z.m).name, fmtDez(z.s.soll), fmtDez(z.s.ist), fmtDez(z.s.gut), fmtDez(z.s.saldo), fmtDez(z.konto), fmtDez(z.s.mehrarbeit), fmtDez(z.s.ueberstunden), z.urlaubZr, z.uk.rest, z.krank, z.sonst];
+      if (ansicht === "monat") r.push(z.ab?.abgeschlossenAm ? `abgeschlossen ${fmtD(z.ab.abgeschlossenAm)}` : "offen");
+      return r;
+    })]);
+  }
+  function exportZeiten() {
+    const zz = [["Personalnr", "Name", "Datum", "Wochentag", "Beginn", "Ende", "Pause (min)", "Ist (h)", "Soll (h)", "Saldo (h)", "Abwesenheit", "Feiertag", "Hinweise AZG"]];
+    liste.forEach(m => tageZw(von, bis < heute() ? bis : heute()).forEach(d => {
+      const t = tagInfo(db, m, d); if (!t.z && !t.a && !t.soll) return;
+      zz.push([m.personalnr, m.name, fmtD(d), WT[wd(d)], t.z?.beginn || "", t.z?.ende || "", t.z ? t.z.pause : "", fmtDez(t.ist), fmtDez(t.soll), fmtDez(t.saldo), t.a ? ARTEN[t.a.art].label : "", t.ft?.name || "", pruefeTag(db, m, d).map(x => x.text).join(" | ")]);
+    }));
+    csvExport(`arbeitszeiten_${ansicht === "monat" ? monat : jahr}.csv`, zz);
+  }
+  const zt = (v, vz) => <span className={vz ? (v > 0 ? "text-emerald-700" : v < 0 ? "text-rose-700" : "") : ""}>{fmtH(v, vz)}</span>;
+
+  return <div className="space-y-5 print-full">
+    <Seitenkopf titel="Auswertungen" sub="Arbeitszeitkonto, Überstunden, Urlaub und Krankenstand">
+      <div className="inline-flex rounded-lg ring-1 ring-inset ring-stone-300 bg-white p-0.5">
+        {[["monat", "Monat"], ["jahr", "Jahr"]].map(([k, l]) => <button key={k} onClick={() => setAnsicht(k)} className={`px-3 py-1.5 text-sm rounded-md ${ansicht === k ? "bg-stone-900 text-white" : "text-stone-600"}`}>{l}</button>)}
+      </div>
+      {ansicht === "monat" ? <MonatWahl monat={monat} setMonat={setMonat} /> :
+        <select className={`${inputKlein}`} value={jahr} onChange={e => setJahr(+e.target.value)}>{[jahr - 1, jahr, jahr + 1].map(j => <option key={j}>{j}</option>)}</select>}
+      <Knopf art="sekundaer" icon="download" onClick={exportieren}>Excel (CSV)</Knopf>
+      <Knopf art="sekundaer" icon="download" onClick={exportZeiten}>Tageswerte (CSV)</Knopf>
+      <Knopf art="sekundaer" icon="drucker" onClick={() => window.print()}>PDF</Knopf>
+    </Seitenkopf>
+    <div className="print-only text-lg font-semibold mb-2">{db.einstellungen.firmenname} · Auswertung {ansicht === "monat" ? fmtMonat(monat) : jahr}</div>
+
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <Kpi label="Ist-Stunden" wert={fmtH(sum(z => z.s.ist))} sub={`Soll ${fmtH(sum(z => z.s.soll))}`} />
+      <Kpi label="Überstunden" wert={fmtH(sum(z => z.s.ueberstunden))} sub={`+ Mehrarbeit ${fmtH(sum(z => z.s.mehrarbeit))}`} />
+      <Kpi label="Urlaubstage" wert={sum(z => z.urlaubZr)} sub="im Zeitraum" />
+      <Kpi label="Krankenstandstage" wert={sum(z => z.krank)} sub="Kalendertage" />
+    </div>
+
+    <Karte innen="p-0" titel={ansicht === "monat" ? <span className="capitalize">Monatsübersicht {fmtMonat(monat)}</span> : `Jahresübersicht ${jahr}`}>
+      <Tabelle kopf={["Mitarbeiter/in", { t: "Soll", cls: "text-right" }, { t: "Ist", cls: "text-right" }, { t: "Abw.", cls: "text-right" }, { t: "Saldo", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, { t: "Mehrarb.", cls: "text-right" }, { t: "Überst.", cls: "text-right" }, { t: "Urlaub", cls: "text-right" }, { t: "Rest", cls: "text-right" }, { t: "Krank", cls: "text-right" }, { t: "Sonst.", cls: "text-right" }, ...(ansicht === "monat" ? ["Abschluss"] : [])]}
+        fuss={<tr className="border-t-2 border-stone-200 font-semibold tabular">
+          <td className="px-3 py-2.5">Summe</td>
+          <td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.soll))}</td><td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.ist))}</td><td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.gut))}</td>
+          <td className="px-3 py-2.5 text-right">{zt(sum(z => z.s.saldo), true)}</td><td className="px-3 py-2.5 text-right">{zt(sum(z => z.konto), true)}</td>
+          <td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.mehrarbeit))}</td><td className="px-3 py-2.5 text-right">{fmtH(sum(z => z.s.ueberstunden))}</td>
+          <td className="px-3 py-2.5 text-right">{sum(z => z.urlaubZr)}</td><td className="px-3 py-2.5 text-right">{sum(z => z.uk.rest)}</td><td className="px-3 py-2.5 text-right">{sum(z => z.krank)}</td><td className="px-3 py-2.5 text-right">{sum(z => z.sonst)}</td>{ansicht === "monat" && <td />}
+        </tr>}>
+        {zeilen.map(z => <tr key={z.m.id} className="tabular">
+          <td className="px-3 py-2.5 whitespace-nowrap"><div className="font-medium">{z.m.name}</div><div className="text-xs text-stone-500">{modellVon(db, z.m).name}</div></td>
+          <td className="px-3 py-2.5 text-right">{fmtH(z.s.soll)}</td>
+          <td className="px-3 py-2.5 text-right">{fmtH(z.s.ist)}</td>
+          <td className="px-3 py-2.5 text-right text-stone-500">{fmtH(z.s.gut)}</td>
+          <td className="px-3 py-2.5 text-right font-medium">{zt(z.s.saldo, true)}</td>
+          <td className="px-3 py-2.5 text-right font-medium">{zt(z.konto, true)}</td>
+          <td className="px-3 py-2.5 text-right">{z.s.mehrarbeit ? fmtH(z.s.mehrarbeit) : "–"}</td>
+          <td className="px-3 py-2.5 text-right">{z.s.ueberstunden ? fmtH(z.s.ueberstunden) : "–"}</td>
+          <td className="px-3 py-2.5 text-right">{z.urlaubZr || "–"}</td>
+          <td className="px-3 py-2.5 text-right">{z.uk.rest}</td>
+          <td className="px-3 py-2.5 text-right">{z.krank || "–"}</td>
+          <td className="px-3 py-2.5 text-right">{z.sonst || "–"}</td>
+          {ansicht === "monat" && <td className="px-3 py-2.5">{z.ab?.abgeschlossenAm ? <Badge status="genehmigt">Abgeschlossen</Badge> : z.ab?.bestaetigtAm ? <Badge status="gemeldet">Bestätigt</Badge> : <Badge status="offen">Offen</Badge>}</td>}
+        </tr>)}
+      </Tabelle>
+    </Karte>
+    <p className="text-xs text-stone-500">
+      Saldo = Ist + angerechnete Abwesenheit − Soll. Mehrarbeit/Überstunden sind vereinfacht aus positiven Wochensalden berechnet: bei Teilzeit bis zur Normalarbeitszeit ({db.einstellungen.vollzeitWoche} h) Mehrarbeit (Zuschlag {db.einstellungen.zuschlagMehrarbeit} %, entfällt bei Ausgleich im Quartal), darüber Überstunden ({db.einstellungen.zuschlagUeberstunden} %). Durchrechnungszeiträume und KV-Sonderregeln müssen mit der Lohnverrechnung abgestimmt werden.
+    </p>
+  </div>;
+}
+
+// ─── EINSTELLUNGEN ────────────────────────────────────────────────────────────
+function Einstellungen({ ctx }) {
+  const { db, user, aendern, setDb } = ctx;
+  const admin = istAdmin(user);
+  const e = db.einstellungen;
+  const setE = (k, v) => aendern(n => { n.einstellungen[k] = v; });
+  const minFeld = (k, label, hilfe) => <Feld label={label} hilfe={hilfe}>
+    <div className="flex items-center gap-2"><input type="number" className={inputCls} disabled={!admin} value={e[k] / 60} step="0.5" onChange={ev => setE(k, Math.round(+ev.target.value * 60))} /><span className="text-xs text-stone-500">h</span></div></Feld>;
+  const [modellNeu, setModellNeu] = useState(null);
+  function modellSpeichern(m) { aendern(n => { const i = n.modelle.findIndex(x => x.id === m.id); if (i >= 0) n.modelle[i] = m; else n.modelle.push(m); }, "Arbeitszeitmodell gespeichert"); setModellNeu(null); }
+
+  return <div className="space-y-5">
+    <Seitenkopf titel="Einstellungen" sub={admin ? "Arbeitszeitmodelle, gesetzliche Grenzen und Firmenregeln" : "Nur lesend – Änderungen durch die Administration"} />
+    <Karte titel="Arbeitszeitmodelle" aktion={admin && <Knopf klein icon="plus" onClick={() => setModellNeu({ id: uid(), name: "Neues Modell", tage: [0, 8, 8, 8, 8, 8, 0], beginn: "09:00" })}>Modell</Knopf>} innen="p-0">
+      <Tabelle kopf={["Name", ...WT.map(t => ({ t, cls: "text-center" })), { t: "Std./Wo.", cls: "text-right" }, { t: "Personen", cls: "text-right" }, ""]}>
+        {db.modelle.map(m => <tr key={m.id}>
+          <td className="px-3 py-2.5 font-medium whitespace-nowrap">{m.name}</td>
+          {m.tage.map((h, i) => <td key={i} className={`px-2 py-2.5 text-center tabular ${+h ? "" : "text-stone-300"}`}>{+h ? String(h).replace(".", ",") : "–"}</td>)}
+          <td className="px-3 py-2.5 text-right tabular font-semibold">{String(wochenStd(m)).replace(".", ",")}</td>
+          <td className="px-3 py-2.5 text-right tabular">{db.mitarbeiter.filter(x => x.modellId === m.id && x.aktiv).length}</td>
+          <td className="px-3 py-2.5 text-right">{admin && <button onClick={() => setModellNeu({ ...m, tage: [...m.tage] })} className="p-1.5 rounded-md text-stone-500 hover:bg-stone-100"><Icon n="stift" className="w-4 h-4" /></button>}</td>
+        </tr>)}
+      </Tabelle>
+      <p className="px-5 py-3 text-xs text-stone-500">Änderungen an einem Modell wirken rückwirkend auf alle offenen Monate. In der Live-Version bekommt jede Zuordnung ein „gültig ab“-Datum.</p>
+    </Karte>
+
+    <div className="grid lg:grid-cols-2 gap-5">
+      <Karte titel="Gesetzliche Grenzen (AZG / ARG)">
+        <div className="grid sm:grid-cols-2 gap-4">
+          {minFeld("tagNormalMin", "Tagesnormalarbeitszeit", "§ 3 AZG: 8 h")}
+          <Feld label="Wöchentliche Normalarbeitszeit" hilfe="lt. KV prüfen"><div className="flex items-center gap-2"><input type="number" className={inputCls} disabled={!admin} value={e.vollzeitWoche} onChange={ev => setE("vollzeitWoche", +ev.target.value)} /><span className="text-xs text-stone-500">h</span></div></Feld>
+          {minFeld("pauseAbMin", "Ruhepause ab", "§ 11 AZG: mehr als 6 h")}
+          <Feld label="Mindestpause" hilfe="30 min, teilbar in 2×15 oder 3×10 min"><div className="flex items-center gap-2"><input type="number" className={inputCls} disabled={!admin} value={e.pauseMin} onChange={ev => setE("pauseMin", +ev.target.value)} /><span className="text-xs text-stone-500">min</span></div></Feld>
+          {minFeld("tagWarnMin", "Warnung ab (Tag)", "über 10 h nur mit Überstunden")}
+          {minFeld("tagMaxMin", "Tageshöchstarbeitszeit", "§ 9 AZG: 12 h")}
+          {minFeld("ruhezeitMin", "Tägliche Ruhezeit", "§ 12 AZG: 11 h")}
+          {minFeld("wocheMaxMin", "Wochenhöchstarbeitszeit", "§ 9 AZG: 60 h, Ø 48 h in 17 Wochen")}
+        </div>
+      </Karte>
+      <Karte titel="Jugendliche (KJBG)">
+        <div className="grid sm:grid-cols-2 gap-4">
+          {minFeld("kjbgPauseAbMin", "Ruhepause ab", "§ 15 KJBG: mehr als 4,5 h")}
+          {minFeld("kjbgTagMaxMin", "Tageshöchstarbeitszeit", "§ 11 KJBG: 8 h (9 h bei Verteilung)")}
+          {minFeld("kjbgWocheMaxMin", "Wochenarbeitszeit", "§ 11 KJBG: 40 h")}
+          {minFeld("kjbgRuhezeitMin", "Tägliche Ruhezeit", "§ 16 KJBG: 12 h")}
+        </div>
+        <p className="mt-4 text-xs text-stone-500">Berufsschulzeit wird nach KJBG auf die Arbeitszeit angerechnet – im Kalender als „Berufsschule“ eintragen, sie wird voll angerechnet.</p>
+      </Karte>
+      <Karte titel="Urlaub, Zuschläge & Firmenregeln">
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Feld label="Urlaubsanspruch (5-Tage-Woche)" hilfe="§ 2 UrlG: 25 Arbeitstage, ab 25 Dienstjahren 30"><input type="number" className={inputCls} disabled={!admin} value={e.urlaubBasisTage} onChange={ev => setE("urlaubBasisTage", +ev.target.value)} /></Feld>
+          <Feld label="AU-Bestätigung ab Tag" hilfe="Firmenregel / Dienstvertrag"><input type="number" className={inputCls} disabled={!admin} value={e.auAbTag} onChange={ev => setE("auAbTag", +ev.target.value)} /></Feld>
+          <Feld label="Überstundenzuschlag %" hilfe="§ 10 AZG: 50 %"><input type="number" className={inputCls} disabled={!admin} value={e.zuschlagUeberstunden} onChange={ev => setE("zuschlagUeberstunden", +ev.target.value)} /></Feld>
+          <Feld label="Mehrarbeitszuschlag % (Teilzeit)" hilfe="§ 19d AZG: 25 %"><input type="number" className={inputCls} disabled={!admin} value={e.zuschlagMehrarbeit} onChange={ev => setE("zuschlagMehrarbeit", +ev.target.value)} /></Feld>
+          <Feld label="Kollektivvertrag" breit><input className={inputCls} disabled={!admin} value={e.kollektivvertrag} onChange={ev => setE("kollektivvertrag", ev.target.value)} /></Feld>
+          <Feld label="Schließtage" breit hilfe="Für die Kalenderdarstellung. Die Sollzeit kommt aus dem Arbeitszeitmodell.">
+            <div className="flex flex-wrap gap-1.5">{WT.map((t, i) => { const an = e.schliesstage.includes(i); return <button key={i} disabled={!admin} onClick={() => setE("schliesstage", an ? e.schliesstage.filter(x => x !== i) : [...e.schliesstage, i])} className={`w-10 py-1.5 rounded-md text-sm ring-1 ring-inset ${an ? "bg-stone-900 text-white ring-stone-900" : "bg-white ring-stone-300 text-stone-700"}`}>{t}</button>; })}</div>
+          </Feld>
+        </div>
+      </Karte>
+      <Karte titel="Rollen & Berechtigungen" innen="p-0">
+        <Tabelle kopf={["Funktion", { t: "Admin", cls: "text-center" }, { t: "Leitung", cls: "text-center" }, { t: "Team", cls: "text-center" }]}>
+          {[
+            ["Eigene Zeiten stempeln & ansehen", 1, 1, 1],
+            ["Korrektur der eigenen Zeit beantragen", 1, 1, 1],
+            ["Zeiten des eigenen Teams ändern (mit Grund)", 1, 1, 0],
+            ["Urlaub/Abwesenheit des Teams genehmigen", 1, 1, 0],
+            ["Monat abschließen", 1, 1, 0],
+            ["Abgeschlossenen Monat wieder öffnen", 1, 0, 0],
+            ["Mitarbeiter anlegen, Rollen vergeben", 1, 0, 0],
+            ["Einstellungen & Modelle ändern", 1, 0, 0],
+            ["Grund einer Abwesenheit von Kolleg/innen sehen", 1, 1, 0],
+          ].map(([t, ...r]) => <tr key={t}><td className="px-3 py-2">{t}</td>{r.map((x, i) => <td key={i} className="px-3 py-2 text-center">{x ? <Icon n="haken" className="w-4 h-4 inline text-emerald-600" /> : <span className="text-stone-300">–</span>}</td>)}</tr>)}
+        </Tabelle>
+        <p className="px-5 py-3 text-xs text-stone-500">Vorgesetzte genehmigen nur für Personen, bei denen sie als Vorgesetzte/r eingetragen sind – nie für sich selbst. In der Live-Version setzt die Datenbank (RLS) das durch.</p>
+      </Karte>
+    </div>
+    {admin && <Karte titel="Demo-Daten">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+        <p className="text-sm text-stone-600">Alle Daten liegen nur in diesem Browser. Zurücksetzen erzeugt frische, erfundene Beispieldaten.</p>
+        <Knopf art="rot" onClick={() => { if (confirm("Alle Demo-Daten in diesem Browser zurücksetzen?")) setDb(demoDaten()); }}>Zurücksetzen</Knopf>
+      </div>
+    </Karte>}
+    {modellNeu && <ModellDialog modell={modellNeu} onSave={modellSpeichern} onClose={() => setModellNeu(null)} />}
+  </div>;
+}
+function ModellDialog({ modell, onSave, onClose }) {
+  const [m, setM] = useState(modell);
+  return <Modal titel="Arbeitszeitmodell" onClose={onClose} fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={() => onSave({ ...m, tage: m.tage.map(h => +String(h).replace(",", ".") || 0) })} disabled={!m.name.trim()}>Speichern</Knopf></>}>
+    <div className="space-y-4">
+      <Feld label="Bezeichnung"><input className={inputCls} value={m.name} onChange={e => setM({ ...m, name: e.target.value })} /></Feld>
+      <Feld label="Sollstunden je Wochentag">
+        <div className="grid grid-cols-7 gap-1.5">{WT.map((t, i) => <div key={i} className="text-center"><div className="text-xs text-stone-500 mb-1">{t}</div>
+          <input className={`${inputCls} px-1 text-center`} value={m.tage[i]} onChange={e => { const tg = [...m.tage]; tg[i] = e.target.value; setM({ ...m, tage: tg }); }} /></div>)}</div>
+      </Feld>
+      <Feld label="Üblicher Arbeitsbeginn"><input type="time" className={inputCls} value={m.beginn} onChange={e => setM({ ...m, beginn: e.target.value })} /></Feld>
+      <div className="text-sm">Summe: <b>{m.tage.reduce((s, h) => s + (+String(h).replace(",", ".") || 0), 0)} h/Woche</b></div>
+    </div>
+  </Modal>;
+}
+
+// ─── APP-RAHMEN ───────────────────────────────────────────────────────────────
+const NAV = [
+  { id: "dashboard",  label: "Dashboard",     icon: "dashboard" },
+  { id: "zeit",       label: "Zeiterfassung", icon: "uhr" },
+  { id: "urlaub",     label: "Urlaub",        icon: "sonne" },
+  { id: "krank",      label: "Krankenstand",  icon: "kreuz" },
+  { id: "mitarbeiter",label: "Mitarbeiter",   icon: "personen" },
+  { id: "kalender",   label: "Kalender",      icon: "kalender" },
+  { id: "auswertung", label: "Auswertungen",  icon: "balken" },
+  { id: "einstellung",label: "Einstellungen", icon: "regler" },
+];
+
+function App() {
+  const [db, setDb] = useState(ladeDb);
+  const [userId, setUserId] = useState(() => { try { return sessionStorage.getItem(SESS_KEY); } catch (e) { return null; } });
+  const [seite, setSeiteRoh] = useState("dashboard");
+  const [navOffen, setNavOffen] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [, setTick] = useState(0);
+  useEffect(() => { try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch (e) { /* ohne Speicher weiter */ } }, [db]);
+  useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 30000); return () => clearInterval(t); }, []);
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
+
+  const user = db.mitarbeiter.find(m => m.id === userId && m.aktiv);
+  function login(id) { try { sessionStorage.setItem(SESS_KEY, id); } catch (e) { } setUserId(id); setSeiteRoh("dashboard"); }
+  function logout() { try { sessionStorage.removeItem(SESS_KEY); } catch (e) { } setUserId(null); }
+  if (!user) return <Login db={db} onLogin={login} />;
+
+  const setSeite = s => { setSeiteRoh(s); setNavOffen(false); window.scrollTo(0, 0); };
+  const aendern = (fn, meldung) => { setDb(prev => { const n = JSON.parse(JSON.stringify(prev)); fn(n); return n; }); if (meldung) setToast(meldung); };
+  const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite };
+  const badges = {
+    urlaub: db.abwesenheiten.filter(a => a.art === "urlaub" && a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId))).length,
+    krank: db.abwesenheiten.filter(a => a.art !== "urlaub" && a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId))).length,
+    zeit: db.korrekturen.filter(k => k.status === "offen" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === k.maId))).length,
+  };
+  const Seite = { dashboard: Dashboard, zeit: Zeiterfassung, urlaub: Urlaub, krank: Krankenstand, mitarbeiter: Mitarbeiter, kalender: Kalender, auswertung: Auswertungen, einstellung: Einstellungen }[seite];
+  const navLabel = n => n.id === "mitarbeiter" && !istLeitung(user) ? "Mein Profil" : n.label;
+
+  const navInhalt = <>
+    <div className="flex items-center gap-2.5 px-5 h-16 border-b border-white/10">
+      <div className="w-8 h-8 rounded-lg bg-white text-stone-900 flex items-center justify-center"><Icon n="uhr" className="w-5 h-5" /></div>
+      <div className="leading-tight"><div className="text-sm font-semibold text-white">Zeitverwaltung</div><div className="text-[11px] text-stone-400">{db.einstellungen.firmenname}</div></div>
+    </div>
+    <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
+      {NAV.map(n => <button key={n.id} onClick={() => setSeite(n.id)}
+        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition ${seite === n.id ? "bg-white/10 text-white" : "text-stone-400 hover:text-white hover:bg-white/5"}`}>
+        <Icon n={n.icon} className="w-[18px] h-[18px]" /><span className="flex-1 text-left">{navLabel(n)}</span>
+        {badges[n.id] > 0 && <span className="min-w-[1.25rem] h-5 px-1 rounded-full bg-amber-400 text-stone-900 text-[11px] font-bold flex items-center justify-center">{badges[n.id]}</span>}
+      </button>)}
+    </nav>
+    <div className="p-3 border-t border-white/10">
+      <div className="flex items-center gap-2.5 px-2 py-2">
+        <Avatar name={user.name} klein />
+        <div className="flex-1 min-w-0 leading-tight"><div className="text-sm text-white truncate">{user.name}</div><div className="text-[11px] text-stone-400">{ROLLEN[user.rolle].label}</div></div>
+        <button onClick={logout} className="p-1.5 rounded-md text-stone-400 hover:text-white hover:bg-white/10" title="Abmelden"><Icon n="abmelden" className="w-4 h-4" /></button>
+      </div>
+    </div>
+  </>;
+
+  return <div className="min-h-screen">
+    <aside className="no-print hidden lg:flex fixed inset-y-0 left-0 w-60 bg-stone-900 flex-col z-30">{navInhalt}</aside>
+    {navOffen && <div className="no-print lg:hidden fixed inset-0 z-40 bg-stone-900/50" onClick={() => setNavOffen(false)}>
+      <aside className="w-64 h-full bg-stone-900 flex flex-col" onClick={e => e.stopPropagation()}>{navInhalt}</aside>
+    </div>}
+    <header className="no-print lg:hidden sticky top-0 z-20 h-14 bg-white/90 backdrop-blur border-b border-stone-200 flex items-center gap-3 px-4">
+      <button onClick={() => setNavOffen(true)} className="p-1.5 -ml-1.5 rounded-md text-stone-700 hover:bg-stone-100" aria-label="Menü"><Icon n="menu" /></button>
+      <span className="font-semibold text-sm flex-1">{navLabel(NAV.find(n => n.id === seite))}</span>
+      <Avatar name={user.name} klein />
+    </header>
+    <main className="lg:ml-60 print-full">
+      <div className="no-print bg-amber-50 border-b border-amber-200 text-amber-900 text-xs px-4 lg:px-8 py-1.5">Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank.</div>
+      <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 print-full"><Seite ctx={ctx} /></div>
+    </main>
+    {toast && <div className="no-print fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg flex items-center gap-2"><Icon n="haken" className="w-4 h-4 text-emerald-400" />{toast}</div>}
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
