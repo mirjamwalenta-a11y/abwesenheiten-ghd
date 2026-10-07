@@ -1820,6 +1820,104 @@ function MaDialog({ ctx, ma, onClose }) {
     {planDlg && <ModellDialog db={db} modell={planDlg.modell} oz={db.einstellungen.oeffnungszeiten} neu={false} onSave={planSpeichern} onClose={() => setPlanDlg(null)} />}
   </Modal>;
 }
+// ─── IMPORT: Beschäftigungsstand-Liste (Excel) ───────────────────────────────
+// Erwartet den bisherigen Aufbau: Name in Spalte A, darunter Eintritt bzw. „von - bis“,
+// Spalte C „25 UT“ (Anspruch), Spalte D „UT 28“ (Resttage am Jahresende).
+function datumAus(v) {
+  if (v instanceof Date && !isNaN(v)) return datStr(new Date(v.getTime() + 12 * 3600e3)); // Zeitzonen-Puffer
+  if (typeof v === "number" && v > 20000 && v < 80000) { const d = new Date(Math.round((v - 25569) * 864e5)); return datStr(new Date(d.getTime() + 12 * 3600e3)); }
+  const m = String(v || "").trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  return m ? `${m[3]}-${pad(+m[2])}-${pad(+m[1])}` : null;
+}
+function leseBeschaeftigungsstand(zeilen) {
+  const zahl = t => { const m = String(t ?? "").replace(",", ".").match(/-?\d+(\.\d+)?/); return m ? +m[0] : null; };
+  let jahr = null;
+  zeilen.slice(0, 10).forEach(r => r.forEach(c => { if (!jahr && Number.isInteger(c) && c > 2000 && c < 2100) jahr = c; }));
+  const personen = [];
+  for (let i = 0; i < zeilen.length; i++) {
+    const r = zeilen[i] || [], name = typeof r[0] === "string" ? r[0].trim().replace(/[,;]+$/, "") : "";
+    const ut = String(r[2] ?? "");
+    if (!name || !/UT/i.test(ut) || /angestellte|beschäftigungsstand/i.test(name)) continue;
+    const unter = (zeilen[i + 1] || [])[0];
+    let eintritt = datumAus(unter), austritt = null;
+    if (!eintritt && typeof unter === "string") {
+      const teile = unter.split(/\s*[-–]\s*/);
+      if (teile.length === 2) { eintritt = datumAus(teile[0]); austritt = datumAus(teile[1]); }
+    }
+    personen.push({ name, eintritt, austritt, urlaubstage: zahl(ut), rest: zahl(r[3]), mitnehmen: true });
+  }
+  return { jahr, personen };
+}
+function ImportDialog({ ctx, onClose }) {
+  const { db, user, aendern } = ctx;
+  const [daten, setDaten] = useState(null);
+  const [fehler, setFehler] = useState(null);
+  const [laedt, setLaedt] = useState(false);
+  const aktJahr = new Date().getFullYear();
+  async function datei(ev) {
+    const f = ev.target.files?.[0]; if (!f) return;
+    setLaedt(true); setFehler(null);
+    try {
+      const X = await ladeXlsx();
+      const wb = X.read(await f.arrayBuffer(), { type: "array", cellDates: true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const d = leseBeschaeftigungsstand(X.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null }));
+      if (!d.personen.length) throw new Error("In der Datei wurden keine Mitarbeiter/innen erkannt.");
+      d.personen.forEach(p => { p.vorhanden = db.mitarbeiter.some(m => m.name.trim().toLowerCase() === p.name.toLowerCase()); if (p.vorhanden) p.mitnehmen = false; });
+      setDaten(d);
+    } catch (e) { setFehler(e.message || "Datei konnte nicht gelesen werden."); }
+    setLaedt(false); ev.target.value = "";
+  }
+  const vorjahr = daten?.jahr === aktJahr - 1;
+  const gewaehlt = daten ? daten.personen.filter(p => p.mitnehmen && p.eintritt) : [];
+  function uebernehmen() {
+    aendern(n => {
+      n.personalLog = n.personalLog || [];
+      let nr = n.mitarbeiter.length;
+      gewaehlt.forEach(p => {
+        let pnr; do { nr++; pnr = `P-${String(nr).padStart(3, "0")}`; } while (n.mitarbeiter.some(m => m.personalnr === pnr));
+        const ausgetreten = !!p.austritt;
+        const ma = { id: uid(), name: p.name, personalnr: pnr, abteilung: "", funktion: "", eintritt: p.eintritt, modellId: n.modelle[0].id,
+          urlaubstage: p.urlaubstage ?? 25, urlaubUebertrag: vorjahr && !ausgetreten && p.rest > 0 ? p.rest : 0, saldoStart: 0,
+          vorgesetzterId: user.id, rolle: "mitarbeiter", aktiv: !ausgetreten || p.austritt >= heute() };
+        if (ausgetreten) Object.assign(ma, { austritt: p.austritt, austrittArt: "Sonstiges", austrittNotiz: `aus Beschäftigungsstand ${daten.jahr ?? ""} übernommen` });
+        n.mitarbeiter.push(ma);
+        n.personalLog.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: ma.id, aktion: "angelegt (Import)",
+          details: `aus Beschäftigungsstand ${daten.jahr ?? ""} · Eintritt ${fmtD(p.eintritt)}${ausgetreten ? ` · Austritt ${fmtD(p.austritt)}` : ""} · ${ma.urlaubstage} UT${ma.urlaubUebertrag ? ` · Resturlaub ${ma.urlaubUebertrag}` : ""}` });
+      });
+    }, `${gewaehlt.length} Mitarbeiter/innen übernommen`);
+    onClose();
+  }
+  return <Modal breit titel="Mitarbeiter importieren" onClose={onClose}
+    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf disabled={!gewaehlt.length} onClick={uebernehmen}>{gewaehlt.length} übernehmen</Knopf></>}>
+    {!daten ? <div className="space-y-4">
+      <p className="text-sm text-stone-600">Wähle deine Excel-Liste „Beschäftigungsstand“ (wie für den Steuerberater). Erkannt werden Name, Eintritt bzw. „von – bis“, Urlaubsanspruch (UT) und Resttage.</p>
+      <label className="flex flex-col items-center justify-center gap-2 rounded-[14px] border-2 border-dashed border-gold-300 bg-gold-50 py-10 cursor-pointer hover:border-gold-500">
+        <span className="text-3xl">📄</span><span className="font-bold text-gold-700">{laedt ? "Wird gelesen …" : "Excel-Datei auswählen"}</span><span className="text-xs text-stone-500">.xlsx</span>
+        <input type="file" accept=".xlsx,.xls" className="hidden" onChange={datei} />
+      </label>
+      {fehler && <Hinweis ton="fehler">{fehler}</Hinweis>}
+      <p className="text-xs text-stone-500">Die Datei wird nur hier im Browser gelesen und nirgends hochgeladen.</p>
+    </div> : <div className="space-y-4">
+      <div className="text-sm">Beschäftigungsstand <b>{daten.jahr ?? "?"}</b> · {daten.personen.length} Personen erkannt</div>
+      <Tabelle kopf={["", "Name", "Eintritt", "Austritt", { t: "UT", cls: "text-right" }, { t: "Rest", cls: "text-right" }, ""]}>
+        {daten.personen.map((p, i) => <tr key={i} className={p.mitnehmen ? "" : "text-stone-400"}>
+          <td className="px-3 py-2"><input type="checkbox" disabled={!p.eintritt} checked={p.mitnehmen && !!p.eintritt} onChange={e => { const ps = [...daten.personen]; ps[i] = { ...p, mitnehmen: e.target.checked }; setDaten({ ...daten, personen: ps }); }} /></td>
+          <td className="px-3 py-2 font-medium">{p.name}</td>
+          <td className="px-3 py-2 tabular">{p.eintritt ? fmtD(p.eintritt) : <span className="text-rose-700">nicht erkannt</span>}</td>
+          <td className="px-3 py-2 tabular">{p.austritt ? fmtD(p.austritt) : "–"}</td>
+          <td className="px-3 py-2 text-right tabular">{p.urlaubstage ?? "–"}</td>
+          <td className="px-3 py-2 text-right tabular">{p.rest ?? "–"}</td>
+          <td className="px-3 py-2 text-xs">{p.vorhanden ? <span className="text-amber-700">schon vorhanden</span> : p.austritt ? "wird als ausgetreten angelegt" : ""}</td>
+        </tr>)}
+      </Tabelle>
+      {vorjahr ? <Hinweis>Liste vom Vorjahr: Die Resttage werden als <b>Resturlaub Vorjahr</b> übernommen.</Hinweis>
+        : <Hinweis ton="warn">Die Liste ist {daten.jahr ? `von ${daten.jahr}` : "ohne erkennbares Jahr"} – die Resttage werden nicht übernommen. Resturlaub und schon verbrauchten Urlaub für {aktJahr} bitte je Person nachtragen.</Hinweis>}
+      <p className="text-xs text-stone-500">Dienstplan: „{db.modelle[0]?.name}“, Personalnummern werden vergeben. Funktion, Geburtsdatum (Lehrlinge) usw. danach je Person ergänzen.</p>
+    </div>}
+  </Modal>;
+}
+
 function Mitarbeiter({ ctx }) {
   const { db, user, sichtbar } = ctx;
   const [suche, setSuche] = useState("");
@@ -1831,6 +1929,7 @@ function Mitarbeiter({ ctx }) {
     <Seitenkopf titel={istLeitung(user) ? "Mitarbeiter" : "Mein Profil"} sub={istLeitung(user) ? `${db.mitarbeiter.filter(m => m.aktiv).length} aktive Mitarbeiter/innen` : "Deine Stammdaten – Änderungen bitte über die Verwaltung"}>
       {istLeitung(user) && <><input className={`${inputKlein} w-48`} placeholder="Suchen …" value={suche} onChange={e => setSuche(e.target.value)} />
         <label className="flex items-center gap-1.5 text-sm text-stone-600"><input type="checkbox" checked={nurAktiv} onChange={e => setNurAktiv(e.target.checked)} />nur aktive</label></>}
+      {istAdmin(user) && <Knopf art="sekundaer" icon="download" onClick={() => setDialog("import")}>Import</Knopf>}
       {istAdmin(user) && <Knopf icon="plus" onClick={() => setDialog("neu")}>Neu</Knopf>}
     </Seitenkopf>
     <Karte innen="p-0">
@@ -1851,7 +1950,8 @@ function Mitarbeiter({ ctx }) {
       </Tabelle>
     </Karte>
     {istAdmin(user) && <p className="text-xs text-stone-500">Ausgetretene werden deaktiviert statt gelöscht – Arbeitszeitaufzeichnungen und Lohnunterlagen müssen aufbewahrt werden (u. a. § 132 BAO: 7 Jahre).</p>}
-    {dialog && <MaDialog ctx={ctx} ma={dialog === "neu" ? null : dialog} onClose={() => setDialog(null)} />}
+    {dialog === "import" && <ImportDialog ctx={ctx} onClose={() => setDialog(null)} />}
+    {dialog && dialog !== "import" && <MaDialog ctx={ctx} ma={dialog === "neu" ? null : dialog} onClose={() => setDialog(null)} />}
   </div>;
 }
 
