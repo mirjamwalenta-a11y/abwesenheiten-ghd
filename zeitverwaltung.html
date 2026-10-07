@@ -1067,7 +1067,7 @@ function Login({ db, onLogin, onTerminal, onEigene }) {
         fuss={<><Knopf art="sekundaer" onClick={() => setEigen(null)}>Abbrechen</Knopf><Knopf disabled={!eigen.trim()} onClick={() => onEigene(eigen)}>Leer starten</Knopf></>}>
         <div className="space-y-4">
           <p className="text-sm text-stone-600">Die erfundenen Demo-Daten werden gelöscht. Du startest als Administratorin und legst unter „Mitarbeiter“ dein Team an.</p>
-          <Feld label="Dein Name"><input className={inputCls} autoFocus value={eigen} onChange={e => setEigen(e.target.value)} /></Feld>
+          <Feld label="Dein Name – du bist die Chefin (Administratorin)" hilfe="Deine Mitarbeiter/innen legst du danach unter „Mitarbeiter“ an oder importierst sie."><input className={inputCls} autoFocus value={eigen} onChange={e => setEigen(e.target.value)} /></Feld>
           <Hinweis>Alles bleibt nur in diesem Browser auf diesem Gerät. Für ein anderes Gerät (z. B. das Tablet) unter Einstellungen „Testdaten sichern“ und dort „laden“.</Hinweis>
         </div>
       </Modal>}
@@ -1884,11 +1884,14 @@ function MaDialog({ ctx, ma, onClose }) {
   }
   return <Modal breit titel={neu ? "Neue/r Mitarbeiter/in" : f.name} onClose={onClose}
     fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>Speichern</Knopf></>}>
+    {!neu && f.id === user.id && <div className="mb-4"><Hinweis>Das ist <b>dein eigenes Profil</b> (Chefin / Administratorin). Mitarbeiter/innen legst du unter „+ Neu“ oder „Import“ an – nicht hier.</Hinweis></div>}
     <div className="grid sm:grid-cols-2 gap-4">
       <Feld label="Name"><input className={inputCls} value={f.name} onChange={e => set("name", e.target.value)} /></Feld>
       <Feld label="Personalnummer"><input className={inputCls} value={f.personalnr} onChange={e => set("personalnr", e.target.value)} /></Feld>
-      <Feld label="Abteilung"><input className={inputCls} list="abteilungen" value={f.abteilung} onChange={e => set("abteilung", e.target.value)} />
-        <datalist id="abteilungen">{[...new Set(db.mitarbeiter.map(m => m.abteilung))].map(a => <option key={a} value={a} />)}</datalist></Feld>
+      <Feld label="Bereich (optional)" hilfe="Nur zum Sortieren und Filtern – kann leer bleiben.">
+        <input className={inputCls} value={f.abteilung || ""} placeholder="z. B. Salon" onChange={e => set("abteilung", e.target.value)} />
+        <div className="mt-1.5 flex flex-wrap gap-1.5">{[...new Set(["Salon", "Rezeption", "Ausbildung", ...db.mitarbeiter.map(m => m.abteilung).filter(Boolean)])].map(a =>
+          <button key={a} type="button" onClick={() => set("abteilung", a)} className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${f.abteilung === a ? "bg-gold-500 text-white ring-gold-500" : "bg-white text-stone-600 ring-stone-200 hover:ring-gold-500"}`}>{a}</button>)}</div></Feld>
       <Feld label="Funktion"><input className={inputCls} value={f.funktion} onChange={e => set("funktion", e.target.value)} /></Feld>
       <Feld label="Eintrittsdatum"><input type="date" className={inputCls} value={f.eintritt || ""} onChange={e => set("eintritt", e.target.value)} /></Feld>
       <Feld label="Dienstplan" breit hilfe={`${fmtTage(wochenStd(modellVon(db, f)))} Wochenstunden · ${WT.map((t, i) => { const x = planAusModell(modellVon(db, f), i); return x ? `${t} ${x.b}–${x.e}${x.p ? ` (${x.p}′ Pause)` : ""}` : null; }).filter(Boolean).join(" · ")}`}>
@@ -1906,8 +1909,10 @@ function MaDialog({ ctx, ma, onClose }) {
           <input type="date" className={inputCls} value={f.urlaubStartAm || ""} title="Stand am" onChange={e => set("urlaubStartAm", e.target.value || undefined)} />
         </div></Feld> : <div />}
       <div className="text-sm self-end pb-2">{f.eintritt && (() => { const k = urlaubsKonto(db, { ...f, urlaubstage: +f.urlaubstage || 0, urlaubStart: +f.urlaubStart || 0 }, heute()); return <>Urlaubsjahr {fmtD(k.von)} – {fmtD(k.bis)} · heute offen: <b>{fmtTage(k.rest)} Tage</b></>; })()}</div>
-      <Feld label="Vorgesetzte/r"><select className={inputCls} value={f.vorgesetzterId || ""} onChange={e => set("vorgesetzterId", e.target.value || null)}>
-        <option value="">– keine/r –</option>{db.mitarbeiter.filter(m => m.id !== f.id && m.aktiv && m.rolle !== "mitarbeiter").map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
+      {f.rolle === "admin" ? <Feld label="Genehmigt Urlaub & Korrekturen"><div className="text-sm text-stone-600 py-2">– als Chefin genehmigst du selbst</div></Feld>
+        : <Feld label="Genehmigt Urlaub & Korrekturen" hilfe="Normalerweise du als Chefin. Nur wenn eine Salonleitung (Rolle „Vorgesetzte/r“) genehmigen soll, diese wählen.">
+          <select className={inputCls} value={f.vorgesetzterId || ""} onChange={e => set("vorgesetzterId", e.target.value || null)}>
+            <option value="">nur die Chefin</option>{db.mitarbeiter.filter(m => m.id !== f.id && m.aktiv && m.rolle !== "mitarbeiter").map(m => <option key={m.id} value={m.id}>{m.name}{m.rolle === "admin" ? " (Chefin)" : " (Salonleitung)"}</option>)}</select></Feld>}
       <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || f.id === user.id} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
       <Feld label="Geburtsdatum" hilfe={f.geburtsdatum ? (jugendlich(f, heute()) ? `Unter 18 – KJBG-Regeln gelten bis ${fmtD(`${parseInt(f.geburtsdatum) + 18}${f.geburtsdatum.slice(4)}`)}, danach automatisch AZG` : "Volljährig – es gilt das AZG") : "Für Lehrlinge wichtig: bis 18 gelten automatisch die strengeren KJBG-Regeln"}>
         <input type="date" className={inputCls} value={f.geburtsdatum || ""} onChange={e => set("geburtsdatum", e.target.value || undefined)} /></Feld>
@@ -2075,7 +2080,7 @@ function Mitarbeiter({ ctx }) {
       {istAdmin(user) && <Knopf icon="plus" onClick={() => setDialog("neu")}>Neu</Knopf>}
     </Seitenkopf>
     <Karte innen="p-0">
-      <Tabelle kopf={["Name", "Pers.-Nr.", "Abteilung", "Eintritt", "Modell", { t: "Std./Wo.", cls: "text-right" }, { t: "Urlaub", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, "Vorgesetzte/r", "Rolle", ""]}>
+      <Tabelle kopf={["Name", "Pers.-Nr.", "Bereich", "Eintritt", "Dienstplan", { t: "Std./Wo.", cls: "text-right" }, { t: "Urlaub", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, "Genehmigt von", "Rolle", ""]}>
         {liste.map(m => { const konto = zeitkonto(db, m, heute()); const k = urlaubsKonto(db, m, m.austritt && m.austritt < heute() ? m.austritt : heute(), m.austritt && m.austritt < heute() ? { stichtag: true } : {}); return <tr key={m.id} className={m.aktiv ? "" : "text-stone-400"}>
           <td className="px-3 py-2.5"><div className="flex items-center gap-2.5"><Avatar name={m.name} klein /><div><div className="font-medium whitespace-nowrap">{m.name}{m.lehrbeginn && lehrjahr(m, heute()) && <span className="ml-1.5 text-[10px] font-semibold text-stone-700 bg-stone-100 rounded px-1">{lehrjahr(m, heute())}. Lj.</span>}{jugendlich(m, heute()) && <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 rounded px-1" title="unter 18 – KJBG">KJBG</span>}</div><div className="text-xs text-stone-500">{m.funktion}</div></div></div></td>
           <td className="px-3 py-2.5 tabular">{m.personalnr}</td>
@@ -2085,7 +2090,7 @@ function Mitarbeiter({ ctx }) {
           <td className="px-3 py-2.5 text-right tabular">{wochenStd(modellVon(db, m))}</td>
           <td className="px-3 py-2.5 text-right tabular whitespace-nowrap">{k.rest} / {k.anspruch + k.uebertrag}</td>
           <td className={`px-3 py-2.5 text-right tabular ${konto < 0 ? "text-rose-700" : "text-emerald-700"}`}>{fmtH(konto, true)}</td>
-          <td className="px-3 py-2.5 whitespace-nowrap">{m.vorgesetzterId ? nameVon(db, m.vorgesetzterId) : "–"}</td>
+          <td className="px-3 py-2.5 whitespace-nowrap">{m.rolle === "admin" ? "–" : m.vorgesetzterId ? nameVon(db, m.vorgesetzterId) : "Chefin"}</td>
           <td className="px-3 py-2.5 text-xs whitespace-nowrap">{m.aktiv ? ROLLEN[m.rolle].label : `ausgetreten ${fmtD(m.austritt)}`}</td>
           <td className="px-3 py-2.5 text-right">{istAdmin(user) && <button onClick={() => setDialog(m)} className="p-1.5 rounded-md text-stone-500 hover:bg-stone-100" title="Bearbeiten"><Icon n="stift" className="w-4 h-4" /></button>}</td>
         </tr>; })}
