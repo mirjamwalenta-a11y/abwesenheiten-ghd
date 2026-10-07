@@ -4,18 +4,39 @@
   <meta charset="UTF-8"/>
   <!-- Prototyp: verbindet sich bewusst mit KEINER Datenbank (connect-src 'self').
        Erst wenn zeitverwaltung_schema_entwurf.sql inkl. RLS steht, wird Supabase angebunden. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; font-src 'self' data:; base-uri 'self'; form-action 'self'"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; connect-src 'self'; font-src 'self' data: https://fonts.gstatic.com; base-uri 'self'; form-action 'self'"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <meta name="theme-color" content="#1c1917">
+  <meta name="theme-color" content="#F8F4EA">
   <title>Zeitverwaltung · Great Hair Day</title>
   <link rel="icon" type="image/png" href="icon-512.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap">
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+  // Farben wie in den anderen Great-Hair-Day-Apps (index.greathairday: --bg, --accent, --ok, --crit …)
+  if (window.tailwind) tailwind.config = /*TW-START*/{
+    theme: { extend: {
+      fontFamily: { sans: ["Poppins", "-apple-system", "BlinkMacSystemFont", "system-ui", "sans-serif"] },
+      colors: {
+        stone:   { 50: "#F8F4EA", 100: "#F0E9D8", 200: "#E4DBC5", 300: "#D3C7AB", 400: "#A59C88", 500: "#7C7565", 600: "#5F594C", 700: "#463F33", 800: "#332D24", 900: "#211D17", 950: "#15120E" },
+        gold:    { 50: "#F8F3E6", 100: "#EEE6CD", 200: "#DCCB9C", 300: "#C7AD6B", 400: "#A88A4A", 500: "#896C32", 600: "#7B612D", 700: "#6E5527", 800: "#55411E", 900: "#3D2F16" },
+        emerald: { 50: "#EEF5F0", 100: "#DCEEE1", 200: "#BFDCC8", 300: "#97C2A4", 400: "#6E9F7C", 500: "#4C7A5B", 600: "#41694E", 700: "#365741", 800: "#2B4534", 900: "#1F3326" },
+        rose:    { 50: "#FBEFED", 100: "#F5DAD5", 200: "#EBBDB5", 300: "#DC968B", 400: "#C9695B", 500: "#B23A2E", 600: "#9A3127", 700: "#822920", 800: "#69211A", 900: "#511913" },
+        amber:   { 50: "#FAF4E6", 100: "#F1E4C4", 200: "#E6D09B", 300: "#D6B56D", 400: "#BE9640", 500: "#A67A22", 600: "#8E681D", 700: "#765618", 800: "#5E4513", 900: "#46330E" },
+        sky:     { 50: "#EEF3F6", 100: "#DCE7EC", 200: "#BDD0DA", 300: "#97B3C2", 400: "#6F92A6", 500: "#4E7288", 600: "#426174", 700: "#37505F", 800: "#2B3F4B", 900: "#202E37" },
+      },
+    } },
+  }/*TW-END*/;
+  </script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     * { -webkit-tap-highlight-color: transparent; }
-    body { background: #fafaf9; color: #1c1917; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    body { background: #F8F4EA; color: #211D17; font-family: "Poppins", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+    @keyframes einblenden { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .einblenden { animation: einblenden .18s ease; }
+    .now-card { background: linear-gradient(135deg, #896C32 0%, #6E5527 100%); box-shadow: 0 12px 28px rgba(137,108,50,.30); }
     .tabular { font-variant-numeric: tabular-nums; }
     .streifen { background-image: repeating-linear-gradient(135deg, transparent 0 4px, rgba(0,0,0,.08) 4px 6px); }
     .print-only { display: none; }
@@ -42,7 +63,7 @@ const { useState, useEffect, useMemo } = React;
 //  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
 //  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
 // ═════════════════════════════════════════════════════════════════════════════
-const LS_KEY = "ghd-zeitverwaltung-demo-v3";
+const LS_KEY = "ghd-zeitverwaltung-demo-v4";
 const SESS_KEY = "ghd-zeitverwaltung-demo-user";
 
 // ─── DATUM & ZEIT ─────────────────────────────────────────────────────────────
@@ -161,7 +182,8 @@ const STANDARD_EINSTELLUNGEN = {
   urlaubBasisTage: 25,         // UrlG: 5 Wochen = 25 Arbeitstage bei 5-Tage-Woche
   bsTageJeLehrjahr: { 1: 1.5, 2: 1, 3: 1, 4: 1 }, // Berufsschule Wien: Tage pro Woche je Lehrjahr
   auAbTag: 4,                  // Firmenregel: AU-Bestätigung ab dem x. Krankenstandstag
-  schliesstage: [0, 6],        // Mo, So
+  // Öffnungszeiten Salon (Mo … So): So + Mo geschlossen
+  oeffnungszeiten: [null, { b: "09:00", e: "18:00" }, { b: "09:00", e: "18:00" }, { b: "09:00", e: "19:00" }, { b: "09:00", e: "19:00" }, { b: "08:00", e: "14:00" }, null],
   // Fixer Dienstplan: vergessenes Stempeln und Pausen automatisch laut Plan ergänzen
   autoPause: true,             // Pause laut Plan eintragen, wenn keine (ausreichende) gestempelt wurde
   autoGehen: true,             // vergessenes „Gehen“ = Dienstende laut Plan
@@ -198,6 +220,9 @@ function pauseFehlt(db, ma, z) {
   if (!z || !z.ende) return false;
   return nettoMin(z) > (jugendlich(ma, z.datum) ? e.kjbgPauseAbMin : e.pauseAbMin) && (z.pause || 0) < e.pauseMin;
 }
+function oeffnung(db, d) { return (db.einstellungen.oeffnungszeiten || [])[wd(d)] || null; }
+// Liegt ein Dienstplan-Tag außerhalb der Öffnungszeiten?
+function ausserhalbOeffnung(oz, i, t) { if (!t) return false; const o = oz?.[i]; return !o || t.b < o.b || t.e > o.e; }
 const AUTO_TEXT = { kommen: "Kommen", gehen: "Gehen", pause: "Pause", tag: "ganzer Tag" };
 
 function sollMin(db, ma, d) {
@@ -267,8 +292,10 @@ function pruefeTag(db, ma, d) {
   // Berufsschulzeit wird auf die Arbeitszeit angerechnet (halber Schultag + Salon)
   const netto = nettoMin(z) + (abwTag && abwTag.art === "berufsschule" ? Math.round(modellSollMin(db, ma, d) * anteil(abwTag)) : 0);
   const pauseAb = kj ? e.kjbgPauseAbMin : e.pauseAbMin;
-  if (netto > pauseAb && pause < e.pauseMin)
-    h.push({ stufe: "fehler", text: `Ruhepause zu kurz: ${pause} min bei ${fmtH(netto)} h (${kj ? "§ 15 KJBG" : "§ 11 AZG"}: mind. ${e.pauseMin} min)` });
+  // Pausenpflicht hängt am durchgehenden Arbeitsblock im Salon, nicht an Schule + Salon
+  const imSalon = nettoMin(z);
+  if (imSalon > pauseAb && pause < e.pauseMin)
+    h.push({ stufe: "fehler", text: `Ruhepause zu kurz: ${pause} min bei ${fmtH(imSalon)} h (${kj ? "§ 15 KJBG" : "§ 11 AZG"}: mind. ${e.pauseMin} min)` });
   if (kj) {
     if (netto > e.kjbgTagMaxMin) h.push({ stufe: "fehler", text: `Tagesarbeitszeit ${fmtH(netto)} h über KJBG-Grenze (${fmtH(e.kjbgTagMaxMin)} h)` });
     if (hm2min(z.ende) > 20 * 60) h.push({ stufe: "fehler", text: "Nachtruhe Jugendliche: Arbeit nach 20:00 Uhr (§ 17 KJBG)" });
@@ -485,20 +512,21 @@ function demoDaten() {
   const start = `${m0}-01`;
   const T = (b, e, p = 30) => ({ b, e, p });
   const modelle = [
-    { id: "vz40",     name: "Vollzeit 40 h · Di–Sa",         plan: [null, T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), null] },
-    { id: "vz40lang", name: "Vollzeit 40 h · langer Do/Fr",  plan: [null, T("09:00", "17:30"), T("09:00", "16:30"), T("10:00", "20:00"), T("10:00", "20:00"), T("08:00", "14:30"), null] },
-    { id: "tz30",     name: "Teilzeit 30 h · Mi–Sa",         plan: [null, null, T("09:00", "17:00"), T("09:00", "17:00"), T("09:00", "17:00"), T("09:00", "17:00"), null] },
-    { id: "tz20",     name: "Teilzeit 20 h · Do–Sa",         plan: [null, null, null, T("10:00", "17:30"), T("10:00", "17:30"), T("09:00", "15:00", 0), null] },
-    { id: "lehre",    name: "Lehrling 40 h (inkl. Berufsschule)", plan: [null, T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), T("09:00", "17:30"), null] },
+    // = Öffnungszeiten: Di+Mi 9–18, Do+Fr 9–19 (je 1 h Pause), Sa 8–14 → 40 h
+    { id: "vz40",  name: "Vollzeit 40 h (Öffnungszeiten)",  plan: [null, T("09:00", "18:00", 60), T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "14:00", 0), null] },
+    { id: "tz30",  name: "Teilzeit 30 h · Mi–Sa",           plan: [null, null, T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "12:00", 0), null] },
+    { id: "tz20",  name: "Teilzeit 20 h · vormittags",      plan: [null, T("09:00", "14:00", 0), T("09:00", "14:00", 0), null, T("09:00", "14:00", 0), T("08:00", "13:00", 0), null] },
+    // Unter 18 braucht es schon ab 4,5 h eine Pause (KJBG) → Samstag mit 30 min
+    { id: "lehre", name: "Lehrling (Sa mit Pause, KJBG)",   plan: [null, T("09:00", "18:00", 60), T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "14:00", 30), null] },
   ].map(mitStunden);
   // Erfundene Personen – keine echten Mitarbeiter/innen
   const mitarbeiter = [
     { id: "ma1", name: "Sophie Lindner",   personalnr: "P-001", abteilung: "Leitung",    funktion: "Inhaberin",          eintritt: "2012-03-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 3, vorgesetzterId: null,  rolle: "admin",       aktiv: true },
-    { id: "ma2", name: "Katharina Moser",  personalnr: "P-002", abteilung: "Styling",    funktion: "Salonleitung",       eintritt: "2016-09-01", modellId: "vz40lang", urlaubstage: 25, urlaubUebertrag: 5, vorgesetzterId: "ma1", rolle: "vorgesetzt",  aktiv: true },
+    { id: "ma2", name: "Katharina Moser",  personalnr: "P-002", abteilung: "Styling",    funktion: "Salonleitung",       eintritt: "2016-09-01", modellId: "vz40", urlaubstage: 25, urlaubUebertrag: 5, vorgesetzterId: "ma1", rolle: "vorgesetzt",  aktiv: true },
     { id: "ma3", name: "Julia Pichler",    personalnr: "P-003", abteilung: "Styling",    funktion: "Stylistin",          eintritt: "2019-02-15", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 2, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
     { id: "ma4", name: "Elena Novak",      personalnr: "P-004", abteilung: "Coloration", funktion: "Coloristin",         eintritt: "2021-05-01", modellId: "tz30",     urlaubstage: 20, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
-    { id: "ma5", name: "Mario Gruber",     personalnr: "P-005", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2023-01-09", modellId: "vz40lang", urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
-    { id: "ma6", name: "Lisa Wagner",      personalnr: "P-006", abteilung: "Rezeption",  funktion: "Rezeption",          eintritt: "2024-03-01", modellId: "tz20",     urlaubstage: 15, urlaubUebertrag: 1, vorgesetzterId: "ma1", rolle: "mitarbeiter", aktiv: true },
+    { id: "ma5", name: "Mario Gruber",     personalnr: "P-005", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2023-01-09", modellId: "vz40", urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true },
+    { id: "ma6", name: "Lisa Wagner",      personalnr: "P-006", abteilung: "Rezeption",  funktion: "Rezeption",          eintritt: "2024-03-01", modellId: "tz20",     urlaubstage: 20, urlaubUebertrag: 1, vorgesetzterId: "ma1", rolle: "mitarbeiter", aktiv: true },
     { id: "ma7", name: "Nina Hofer",       personalnr: "P-007", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: "2025-09-01", modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: "2025-09-01", geburtsdatum: `${parseInt(addTage(h, 40)) - 18}${addTage(h, 40).slice(4)}`, bsTag1: 3 },
     { id: "ma9", name: "Lea Fuchs",        personalnr: "P-009", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: `${m1}-01`,   modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: `${m1}-01`, geburtsdatum: `${parseInt(h) - 15}-03-12`, bsTag1: 1, bsTag2: 4 },
     { id: "ma8", name: "Tobias Reiter",    personalnr: "P-008", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2020-04-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: false, austritt: `${m0}-15` },
@@ -540,7 +568,7 @@ function demoDaten() {
       }
       // Fixer Plan: meist pünktlich, ab und zu ein paar Minuten Abweichung
       const b = hm2min(plan.b) + (r() < 0.7 ? 0 : zw(-1, 1) * 5);
-      const ende = hm2min(plan.e) + (r() < 0.7 ? 0 : zw(0, 2) * 5);
+      const ende = hm2min(plan.e) + (r() < 0.7 || jugendlich(ma, d) ? 0 : zw(0, 2) * 5);
       zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: min2hm(b), ende: min2hm(ende), pause: +plan.p || 0, quelle: "stempel" });
     }
   }
@@ -548,7 +576,7 @@ function demoDaten() {
   const ma5Tage = zeiten.filter(z => z.maId === "ma5" && monatKey(z.datum) === m1);
   if (ma5Tage[3]) { ma5Tage[3].pause = 15; }
   const ma3Tage = zeiten.filter(z => z.maId === "ma3" && monatKey(z.datum) === m1);
-  if (ma3Tage[6]) { ma3Tage[6].beginn = "08:30"; ma3Tage[6].ende = "19:00"; ma3Tage[6].pause = 30; }
+  if (ma3Tage[6]) { ma3Tage[6].beginn = "08:30"; ma3Tage[6].ende = "19:00"; ma3Tage[6].pause = 60; }
   // Vergessenes Stempeln im offenen Monat – die Automatik ergänzt das beim Start
   const offen = zeiten.filter(z => z.datum >= `${m1}-01` && z.datum < h);
   [3, 11, 19].forEach(i => { if (offen[i]) offen[i].ende = null; });
@@ -626,23 +654,23 @@ function Icon({ n, className = "w-5 h-5" }) {
 
 // ─── UI-BAUSTEINE ─────────────────────────────────────────────────────────────
 function Karte({ titel, aktion, children, className = "", innen = "p-5" }) {
-  return <section className={`bg-white rounded-xl border border-stone-200 shadow-sm ${className}`}>
+  return <section className={`bg-white rounded-[14px] border border-stone-200 ${className}`}>
     {titel && <div className="flex items-center justify-between gap-3 px-5 pt-4 pb-3 border-b border-stone-100">
-      <h2 className="font-semibold text-stone-900 text-[15px]">{titel}</h2>{aktion}
+      <h2 className="text-xs font-bold text-stone-500 uppercase tracking-wider">{titel}</h2>{aktion}
     </div>}
     <div className={innen}>{children}</div>
   </section>;
 }
 function Knopf({ children, onClick, art = "primaer", klein, icon, disabled, type = "button", title }) {
   const stil = {
-    primaer: "bg-stone-900 text-white hover:bg-stone-700",
-    sekundaer: "bg-white text-stone-800 ring-1 ring-inset ring-stone-300 hover:bg-stone-50",
-    gruen: "bg-emerald-600 text-white hover:bg-emerald-700",
-    rot: "bg-white text-rose-700 ring-1 ring-inset ring-rose-200 hover:bg-rose-50",
-    geist: "text-stone-600 hover:bg-stone-100",
+    primaer: "bg-gold-500 text-white hover:bg-gold-700",
+    sekundaer: "bg-white text-stone-900 ring-1 ring-inset ring-stone-200 hover:ring-gold-500",
+    gruen: "bg-emerald-500 text-white hover:bg-emerald-600",
+    rot: "bg-white text-rose-600 ring-1 ring-inset ring-rose-200 hover:ring-rose-500",
+    geist: "text-stone-500 hover:text-gold-700 hover:bg-stone-100",
   }[art];
   return <button type={type} title={title} disabled={disabled} onClick={onClick}
-    className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${klein ? "text-xs px-2.5 py-1.5" : "text-sm px-3.5 py-2"} ${stil}`}>
+    className={`inline-flex items-center justify-center gap-1.5 rounded-full font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed ${klein ? "text-xs px-3 py-1.5" : "text-[13px] px-4 py-2"} ${stil}`}>
     {icon && <Icon n={icon} className={klein ? "w-3.5 h-3.5" : "w-4 h-4"} />}{children}
   </button>;
 }
@@ -658,49 +686,50 @@ function ArtChip({ art, halb }) {
 }
 function Kpi({ label, wert, sub, ton }) {
   const farbe = ton === "pos" ? "text-emerald-700" : ton === "neg" ? "text-rose-700" : "text-stone-900";
-  return <div className="bg-white rounded-xl border border-stone-200 shadow-sm px-4 py-3.5">
-    <div className="text-xs font-medium text-stone-500 uppercase tracking-wide">{label}</div>
-    <div className={`mt-1 text-2xl font-semibold tabular ${farbe}`}>{wert}</div>
+  return <div className="bg-white rounded-[14px] border border-stone-200 px-4 py-3.5">
+    <div className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">{label}</div>
+    <div className={`mt-1 text-2xl font-bold tabular ${farbe}`}>{wert}</div>
     {sub && <div className="mt-0.5 text-xs text-stone-500">{sub}</div>}
   </div>;
 }
 function Feld({ label, children, hilfe, breit }) {
   return <label className={`block ${breit ? "sm:col-span-2" : ""}`}>
-    <span className="block text-xs font-medium text-stone-600 mb-1">{label}</span>
+    <span className="block text-xs font-semibold text-stone-600 mb-1">{label}</span>
     {children}
     {hilfe && <span className="block text-xs text-stone-500 mt-1">{hilfe}</span>}
   </label>;
 }
-const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-stone-900/20 focus:border-stone-500 disabled:bg-stone-100 disabled:text-stone-500";
+const inputCls = "w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gold-500/20 focus:border-gold-500 disabled:bg-stone-100 disabled:text-stone-500";
 const inputKlein = inputCls.replace("w-full ", "");
 function Modal({ titel, onClose, children, fuss, breit }) {
   useEffect(() => {
     const f = e => e.key === "Escape" && onClose();
     window.addEventListener("keydown", f); return () => window.removeEventListener("keydown", f);
   }, []);
-  return <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-stone-900/40 p-0 sm:p-4 no-print" onMouseDown={e => e.target === e.currentTarget && onClose()}>
-    <div className={`bg-white w-full ${breit ? "sm:max-w-2xl" : "sm:max-w-lg"} rounded-t-2xl sm:rounded-2xl shadow-xl max-h-[92vh] flex flex-col`}>
-      <div className="flex items-center justify-between px-5 py-4 border-b border-stone-100">
-        <h3 className="font-semibold text-stone-900">{titel}</h3>
+  return <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-stone-900/45 p-0 sm:p-4 no-print" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+    <div className={`bg-stone-50 w-full ${breit ? "sm:max-w-2xl" : "sm:max-w-lg"} rounded-t-[22px] sm:rounded-[22px] shadow-xl max-h-[92vh] flex flex-col einblenden`}>
+      <div className="sm:hidden w-10 h-1 rounded-full bg-stone-200 mx-auto mt-2" />
+      <div className="flex items-center justify-between px-5 py-4 border-b border-stone-200">
+        <h3 className="text-[17px] font-bold text-stone-900">{titel}</h3>
         <button onClick={onClose} className="p-1 rounded-md text-stone-500 hover:bg-stone-100" aria-label="Schließen"><Icon n="x" /></button>
       </div>
       <div className="px-5 py-4 overflow-y-auto">{children}</div>
-      {fuss && <div className="px-5 py-3 border-t border-stone-100 flex flex-wrap justify-end gap-2">{fuss}</div>}
+      {fuss && <div className="px-5 py-3 border-t border-stone-200 flex flex-wrap justify-end gap-2">{fuss}</div>}
     </div>
   </div>;
 }
 function Hinweis({ ton = "info", children }) {
   const s = { info: "bg-sky-50 text-sky-900 ring-sky-200", warn: "bg-amber-50 text-amber-900 ring-amber-200", fehler: "bg-rose-50 text-rose-900 ring-rose-200", ok: "bg-emerald-50 text-emerald-900 ring-emerald-200" }[ton];
-  return <div className={`flex gap-2.5 rounded-lg px-3 py-2.5 text-sm ring-1 ring-inset ${s}`}>
+  return <div className={`flex gap-2.5 rounded-xl px-3 py-2.5 text-[13px] ring-1 ring-inset ${s}`}>
     <Icon n={ton === "info" || ton === "ok" ? "info" : "warnung"} className="w-4 h-4 mt-0.5 shrink-0" /><div>{children}</div>
   </div>;
 }
 function Leer({ text }) { return <div className="py-8 text-center text-sm text-stone-500">{text}</div>; }
 function MonatWahl({ monat, setMonat }) {
-  return <div className="inline-flex items-center rounded-lg ring-1 ring-inset ring-stone-300 bg-white">
-    <button className="p-2 text-stone-600 hover:bg-stone-50 rounded-l-lg" onClick={() => setMonat(monatVerschieben(monat, -1))} aria-label="Vormonat"><Icon n="links" className="w-4 h-4" /></button>
-    <span className="px-2 text-sm font-medium w-36 text-center capitalize">{fmtMonat(monat)}</span>
-    <button className="p-2 text-stone-600 hover:bg-stone-50 rounded-r-lg" onClick={() => setMonat(monatVerschieben(monat, 1))} aria-label="Folgemonat"><Icon n="rechts" className="w-4 h-4" /></button>
+  return <div className="inline-flex items-center rounded-full ring-1 ring-inset ring-stone-200 bg-white">
+    <button className="p-2 text-stone-600 hover:text-gold-700 rounded-l-full" onClick={() => setMonat(monatVerschieben(monat, -1))} aria-label="Vormonat"><Icon n="links" className="w-4 h-4" /></button>
+    <span className="px-2 text-[13px] font-semibold w-36 text-center capitalize">{fmtMonat(monat)}</span>
+    <button className="p-2 text-stone-600 hover:text-gold-700 rounded-r-full" onClick={() => setMonat(monatVerschieben(monat, 1))} aria-label="Folgemonat"><Icon n="rechts" className="w-4 h-4" /></button>
   </div>;
 }
 function MaWahl({ liste, wert, setWert, alle }) {
@@ -711,19 +740,19 @@ function MaWahl({ liste, wert, setWert, alle }) {
 }
 function Avatar({ name, klein }) {
   const ini = name.split(" ").map(t => t[0]).slice(0, 2).join("");
-  return <span className={`inline-flex items-center justify-center rounded-full bg-stone-200 text-stone-700 font-semibold shrink-0 ${klein ? "w-7 h-7 text-[11px]" : "w-9 h-9 text-xs"}`}>{ini}</span>;
+  return <span className={`inline-flex items-center justify-center rounded-full bg-stone-900 text-white font-bold shrink-0 ${klein ? "w-7 h-7 text-[11px]" : "w-9 h-9 text-xs"}`}>{ini}</span>;
 }
 function Seitenkopf({ titel, sub, children }) {
   return <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-5">
-    <div><h1 className="text-xl sm:text-2xl font-semibold text-stone-900">{titel}</h1>{sub && <p className="text-sm text-stone-500 mt-0.5">{sub}</p>}</div>
+    <div><p className="text-[11px] font-semibold text-stone-500 uppercase tracking-[.14em] mb-0.5">Great Hair Day</p><h1 className="text-[22px] sm:text-2xl font-bold text-stone-900">{titel}</h1>{sub && <p className="text-[13.5px] text-stone-500 mt-0.5">{sub}</p>}</div>
     {children && <div className="flex flex-wrap items-center gap-2 no-print">{children}</div>}
   </div>;
 }
 function Tabelle({ kopf, children, fuss }) {
   return <div className="overflow-x-auto">
     <table className="w-full text-sm">
-      <thead><tr className="text-left text-xs font-medium text-stone-500 uppercase tracking-wide border-b border-stone-200">
-        {kopf.map((k, i) => <th key={i} className={`px-3 py-2.5 font-medium whitespace-nowrap ${typeof k === "object" ? k.cls : ""}`}>{typeof k === "object" ? k.t : k}</th>)}
+      <thead><tr className="text-left text-[11px] font-bold text-stone-500 uppercase tracking-wider border-b border-stone-200">
+        {kopf.map((k, i) => <th key={i} className={`px-3 py-2.5 font-bold whitespace-nowrap ${typeof k === "object" ? k.cls : ""}`}>{typeof k === "object" ? k.t : k}</th>)}
       </tr></thead>
       <tbody className="divide-y divide-stone-100">{children}</tbody>
       {fuss && <tfoot>{fuss}</tfoot>}
@@ -742,26 +771,25 @@ function csvExport(dateiname, zeilen) {
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 function Login({ db, onLogin, onTerminal }) {
   const aktive = db.mitarbeiter.filter(m => m.aktiv);
-  return <div className="min-h-screen flex items-center justify-center bg-stone-100 p-4">
-    <div className="w-full max-w-md">
-      <div className="text-center mb-6">
-        <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-stone-900 text-white mb-3"><Icon n="uhr" className="w-6 h-6" /></div>
-        <h1 className="text-2xl font-semibold">Zeitverwaltung</h1>
-        <p className="text-sm text-stone-500">{db.einstellungen.firmenname}</p>
+  return <div className="min-h-screen flex justify-center">
+    <div className="w-full max-w-md flex flex-col justify-center px-6 py-12 einblenden">
+      <div className="mb-8">
+        <p className="text-[11px] text-stone-500 uppercase tracking-[.14em] font-semibold mb-1">Great Hair Day</p>
+        <h1 className="text-2xl font-bold text-stone-900">Zeitverwaltung</h1>
+        <p className="text-stone-500 text-sm mt-1">Wer bist du?</p>
       </div>
-      <Karte>
-        <Hinweis ton="warn"><b>Demo-Anmeldung.</b> Im Prototyp wählst du einfach eine erfundene Person aus. In der Live-Version meldet sich jede Person mit eigenem Zugang über Supabase Auth an – die Rolle kommt dann aus der Datenbank, nicht aus dem Browser.</Hinweis>
-        <div className="mt-4 space-y-1.5">
-          {aktive.map(m => <button key={m.id} onClick={() => onLogin(m.id)} className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 ring-1 ring-inset ring-stone-200 hover:bg-stone-50 hover:ring-stone-300 text-left">
-            <Avatar name={m.name} />
-            <span className="flex-1"><span className="block text-sm font-medium">{m.name}</span><span className="block text-xs text-stone-500">{m.funktion}</span></span>
-            <span className="text-xs text-stone-500">{ROLLEN[m.rolle].label}</span>
-          </button>)}
-        </div>
-      </Karte>
-      <button onClick={onTerminal} className="mt-4 w-full flex items-center justify-center gap-2 rounded-xl bg-stone-900 text-white py-3 text-sm font-medium hover:bg-stone-700">
-        <Icon n="uhr" className="w-4 h-4" />Stempel-Tablet im Salon öffnen
-      </button>
+      <div className="flex flex-col gap-2.5">
+        {aktive.map(m => <button key={m.id} onClick={() => onLogin(m.id)} className="flex items-center gap-4 bg-white border border-stone-200 rounded-[14px] px-4 py-3.5 text-left hover:border-gold-500 transition-colors">
+          <Avatar name={m.name} />
+          <span className="flex-1"><span className="block font-bold text-stone-900 text-sm">{m.name}</span><span className="block text-xs text-stone-500">{m.funktion} · {ROLLEN[m.rolle].label}</span></span>
+          <span className="text-stone-300 text-lg">›</span>
+        </button>)}
+      </div>
+      <button onClick={onTerminal} className="mt-5 w-full rounded-full bg-gold-500 hover:bg-gold-700 text-white py-3.5 text-sm font-bold transition-colors">⏱️ Stempel-Tablet im Salon öffnen</button>
+      <div className="mt-6 rounded-[14px] bg-stone-100 border border-stone-200 p-3.5 text-xs text-stone-500 leading-relaxed">
+        <b className="text-stone-700">Demo-Anmeldung:</b> Im Prototyp wählst du einfach eine erfundene Person. Live meldet sich jede Person wie in der Abwesenheiten-App mit ihrer PIN an – die Rolle kommt aus der Datenbank, nicht aus dem Browser.
+      </div>
+      <p className="text-center text-xs text-stone-300 mt-8">Great Hair Day Wien</p>
     </div>
   </div>;
 }
@@ -786,18 +814,19 @@ function Terminal({ db, aendern, onEnde }) {
     return { k: "da", text: `da seit ${z.beginn}` };
   };
   function buchen(m, aktion) { aendern(n => stempelBuchen(n, n.mitarbeiter.find(x => x.id === m.id), aktion)); setWahl(null); }
-  const farbe = { da: "bg-emerald-500", pause: "bg-amber-400", aus: "bg-stone-300", fertig: "bg-stone-500", abw: "bg-sky-400" };
-  const gross = "flex-1 min-w-[9rem] rounded-2xl py-6 text-xl font-semibold flex items-center justify-center gap-2";
+  const farbe = { da: "bg-emerald-400", pause: "bg-amber-400", aus: "bg-stone-500", fertig: "bg-stone-300", abw: "bg-sky-300" };
+  const gross = "flex-1 min-w-[9rem] rounded-full py-5 text-xl font-bold flex items-center justify-center gap-2";
   const m = wahl && db.mitarbeiter.find(x => x.id === wahl), st = m && status(m);
   return <div className="min-h-screen bg-stone-900 text-white flex flex-col">
     <div className="flex items-center justify-between px-6 py-4">
-      <div><div className="text-sm text-stone-400">{db.einstellungen.firmenname}</div><div className="text-lg font-semibold">{WT_LANG[wd(d)]}, {fmtD(d)}</div></div>
+      <div><div className="text-[11px] text-stone-400 uppercase tracking-[.14em] font-semibold">Great Hair Day</div><div className="text-lg font-bold">{WT_LANG[wd(d)]}, {fmtD(d)}</div>
+        <div className="text-sm text-stone-400">{oeffnung(db, d) ? `Heute geöffnet ${oeffnung(db, d).b}–${oeffnung(db, d).e}` : "Heute geschlossen"}</div></div>
       <div className="text-5xl font-semibold tabular">{uhr}</div>
     </div>
     <div className="px-6 text-stone-400 text-sm">Name antippen zum Stempeln</div>
     <div className="flex-1 p-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 content-start">
-      {team.map(x => { const s = status(x); return <button key={x.id} onClick={() => setWahl(x.id)} className="rounded-2xl bg-stone-800 hover:bg-stone-700 p-5 text-left">
-        <div className="flex items-center gap-3"><Avatar name={x.name} /><span className={`ml-auto w-3 h-3 rounded-full ${farbe[s.k]}`} /></div>
+      {team.map(x => { const s = status(x); return <button key={x.id} onClick={() => setWahl(x.id)} className="rounded-[14px] bg-stone-800 border border-stone-700 hover:border-gold-400 p-5 text-left">
+        <div className="flex items-center gap-3"><span className="w-9 h-9 rounded-full bg-gold-500 text-white text-sm font-bold flex items-center justify-center">{x.name[0]}</span><span className={`ml-auto w-3 h-3 rounded-full ${farbe[s.k]}`} /></div>
         <div className="mt-3 text-lg font-semibold">{x.name.split(" ")[0]}</div>
         <div className="text-sm text-stone-400">{s.text}</div>
       </button>; })}
@@ -807,14 +836,14 @@ function Terminal({ db, aendern, onEnde }) {
       <button onClick={onEnde} className="underline hover:text-stone-300">Tablet-Modus beenden</button>
     </div>
     {m && <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-40" onClick={() => setWahl(null)}>
-      <div className="bg-white text-stone-900 rounded-3xl p-6 w-full max-w-xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-stone-50 text-stone-900 rounded-[22px] p-6 w-full max-w-xl einblenden" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3"><Avatar name={m.name} /><div><div className="text-xl font-semibold">{m.name}</div><div className="text-sm text-stone-500">{st.text}</div></div>
-          <button className="ml-auto p-2 rounded-lg hover:bg-stone-100" onClick={() => setWahl(null)}><Icon n="x" /></button></div>
+          <button className="ml-auto p-2 rounded-full hover:bg-stone-100" onClick={() => setWahl(null)}><Icon n="x" /></button></div>
         <div className="mt-6 flex flex-wrap gap-3">
           {st.k === "aus" && <button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen(m, "kommen")}><Icon n="play" className="w-6 h-6" />Kommen</button>}
           {st.k === "aus" && st.plan && hm2min(nowHM()) > hm2min(st.plan.b) + 30 && <button className={`${gross} bg-stone-200`} onClick={() => buchen(m, "nurGehen")}>Gehen<span className="text-sm font-normal">(Kommen vergessen)</span></button>}
           {st.k === "da" && <><button className={`${gross} bg-amber-400`} onClick={() => buchen(m, "pauseStart")}><Icon n="pause" className="w-6 h-6" />Pause</button>
-            <button className={`${gross} bg-stone-900 text-white`} onClick={() => buchen(m, "gehen")}><Icon n="stopp" className="w-6 h-6" />Gehen</button></>}
+            <button className={`${gross} bg-gold-500 text-white`} onClick={() => buchen(m, "gehen")}><Icon n="stopp" className="w-6 h-6" />Gehen</button></>}
           {st.k === "pause" && <><button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen(m, "pauseEnde")}><Icon n="play" className="w-6 h-6" />Pause Ende</button>
             <button className={`${gross} bg-stone-900 text-white`} onClick={() => buchen(m, "gehen")}><Icon n="stopp" className="w-6 h-6" />Gehen</button></>}
           {(st.k === "fertig" || st.k === "abw") && <p className="text-stone-600">{st.k === "fertig" ? "Heute schon ausgestempelt. Änderungen bitte über die Zeiterfassung." : `Heute eingetragen: ${st.text}.`}</p>}
@@ -837,32 +866,28 @@ function Stempeluhr({ ctx }) {
   const plan = planTag(db, user, d);
   const kommenVergessen = zustand === "aus" && plan && !a && hm2min(nowHM()) > hm2min(plan.b) + 30;
   function stempel(aktion) { aendern(n => stempelBuchen(n, n.mitarbeiter.find(m => m.id === user.id), aktion)); }
-  return <Karte titel="Stempeluhr" aktion={<span className="text-xs text-stone-500">{WT_LANG[wd(d)]}, {fmtD(d)}</span>}>
-    <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-      <div className="flex-1">
-        <div className="flex items-center gap-2 text-sm">
-          <span className={`w-2.5 h-2.5 rounded-full ${zustand === "arbeit" ? "bg-emerald-500 animate-pulse" : zustand === "pause" ? "bg-amber-500" : "bg-stone-300"}`} />
-          <span className="font-medium">{{ aus: "Nicht eingestempelt", arbeit: `Im Dienst seit ${z?.beginn}`, pause: `In Pause seit ${z?.pauseStart}`, fertig: `Dienst beendet (${z?.beginn} – ${z?.ende})` }[zustand]}</span>
-        </div>
-        <div className="mt-2 flex items-baseline gap-4">
-          <div><div className="text-3xl font-semibold tabular">{fmtH(netto)}</div><div className="text-xs text-stone-500">Arbeitszeit heute</div></div>
-          <div><div className="text-lg font-medium tabular text-stone-600">{plan ? `${plan.b}–${plan.e}` : fmtH(soll)}</div><div className="text-xs text-stone-500">Dienstplan</div></div>
-          <div><div className="text-lg font-medium tabular text-stone-600">{pauseBisher} min</div><div className="text-xs text-stone-500">Pause</div></div>
-        </div>
-        {a && <div className="mt-2"><ArtChip art={a.art} /></div>}
-        {zustand !== "aus" && zustand !== "fertig" && netto > pauseAb - 30 && pauseBisher < db.einstellungen.pauseMin &&
-          <div className="mt-3"><Hinweis ton="warn">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({kj ? "§ 15 KJBG" : "§ 11 AZG"}).{db.einstellungen.autoPause ? " Wird keine Pause gestempelt, trägt die App beim Gehen die Pause laut Plan ein." : ""}</Hinweis></div>}
-      </div>
-      <div className="flex flex-wrap gap-2 no-print">
-        {zustand === "aus" && <Knopf art="gruen" icon="play" onClick={() => stempel("kommen")} disabled={gesperrt(db, user.id, d)}>Kommen</Knopf>}
-        {kommenVergessen && <Knopf art="sekundaer" icon="stopp" onClick={() => stempel("nurGehen")} title={`Beginn wird laut Plan (${plan.b}) eingetragen`}>Gehen (Kommen vergessen)</Knopf>}
-        {zustand === "arbeit" && <><Knopf art="sekundaer" icon="pause" onClick={() => stempel("pauseStart")}>Pause</Knopf><Knopf icon="stopp" onClick={() => stempel("gehen")}>Gehen</Knopf></>}
-        {zustand === "pause" && <><Knopf art="gruen" icon="play" onClick={() => stempel("pauseEnde")}>Pause beenden</Knopf><Knopf icon="stopp" onClick={() => stempel("gehen")}>Gehen</Knopf></>}
-        {zustand === "fertig" && <span className="text-xs text-stone-500 max-w-[14rem]">Änderungen bitte als Korrektur unter „Zeiterfassung“.</span>}
-      </div>
+  const weiss = "rounded-full font-bold text-sm px-5 py-2.5 transition disabled:opacity-40";
+  return <section className="now-card rounded-[14px] text-white p-5">
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-[11px] tracking-[.14em] font-bold opacity-90 uppercase">⏱️ Stempeluhr</span>
+      <span className="text-xs opacity-80">{WT_LANG[wd(d)]}, {fmtD(d)}</span>
     </div>
-    <p className="mt-4 text-xs text-stone-400">Live-Version: Die Uhrzeit setzt der Server (nicht das Gerät), damit Stempelzeiten nicht verstellt werden können.</p>
-  </Karte>;
+    <div className="mt-2 text-[19px] font-bold leading-snug">{{ aus: a ? `Heute: ${ARTEN[a.art].label}` : plan ? "Noch nicht eingestempelt" : "Heute frei", arbeit: `Im Dienst seit ${z?.beginn}`, pause: `In Pause seit ${z?.pauseStart}`, fertig: `Dienst beendet · ${z?.beginn}–${z?.ende}` }[zustand]}</div>
+    <div className="mt-3 flex items-end gap-6 flex-wrap">
+      <div><div className="text-4xl font-bold tabular leading-none">{fmtH(netto)}</div><div className="text-xs opacity-80 mt-1">Arbeitszeit heute</div></div>
+      <div><div className="text-lg font-semibold tabular leading-none">{plan ? `${plan.b}–${plan.e}` : fmtH(soll)}</div><div className="text-xs opacity-80 mt-1">Dienstplan</div></div>
+      <div><div className="text-lg font-semibold tabular leading-none">{pauseBisher} min</div><div className="text-xs opacity-80 mt-1">Pause{plan?.p ? ` (Plan ${plan.p})` : ""}</div></div>
+    </div>
+    {zustand !== "aus" && zustand !== "fertig" && netto > pauseAb - 30 && pauseBisher < db.einstellungen.pauseMin &&
+      <div className="mt-4 rounded-xl bg-white/15 px-3 py-2.5 text-[13px]">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({kj ? "§ 15 KJBG" : "§ 11 AZG"}).{db.einstellungen.autoPause ? " Wird keine Pause gestempelt, trägt die App beim Gehen die Pause laut Plan ein." : ""}</div>}
+    <div className="mt-5 flex flex-wrap items-center gap-2 no-print">
+      {zustand === "aus" && <button className={`${weiss} bg-white text-gold-700 hover:bg-stone-50`} onClick={() => stempel("kommen")} disabled={gesperrt(db, user.id, d)}>Kommen</button>}
+      {kommenVergessen && <button className={`${weiss} bg-white/15 text-white hover:bg-white/25`} onClick={() => stempel("nurGehen")} title={`Beginn wird laut Plan (${plan.b}) eingetragen`}>Gehen (Kommen vergessen)</button>}
+      {zustand === "arbeit" && <><button className={`${weiss} bg-white/15 text-white hover:bg-white/25`} onClick={() => stempel("pauseStart")}>Pause</button><button className={`${weiss} bg-white text-gold-700 hover:bg-stone-50`} onClick={() => stempel("gehen")}>Gehen</button></>}
+      {zustand === "pause" && <><button className={`${weiss} bg-white text-gold-700 hover:bg-stone-50`} onClick={() => stempel("pauseEnde")}>Pause beenden</button><button className={`${weiss} bg-white/15 text-white hover:bg-white/25`} onClick={() => stempel("gehen")}>Gehen</button></>}
+      {zustand === "fertig" && <span className="text-[13px] opacity-90">Änderungen bitte als Korrektur unter „Zeiterfassung“.</span>}
+    </div>
+  </section>;
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
@@ -1217,7 +1242,7 @@ function AbwDialog({ ctx, modus, onClose }) {
       <Feld label="Notiz (optional)" breit hilfe={art.meldung ? "Keine Diagnosen eintragen – die gehen den Betrieb nichts an." : null}><input className={inputCls} value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>
     </div>
     <div className="mt-4 space-y-2">
-      {f.art === "urlaub" ? <div className="rounded-lg bg-stone-50 ring-1 ring-inset ring-stone-200 p-3 text-sm grid grid-cols-3 gap-2 text-center">
+      {f.art === "urlaub" ? <div className="rounded-[14px] bg-white ring-1 ring-inset ring-stone-200 p-3 text-sm grid grid-cols-3 gap-2 text-center">
         <div><div className="text-xl font-semibold tabular">{tage}</div><div className="text-xs text-stone-500">Urlaubstage</div></div>
         <div><div className="text-xl font-semibold tabular">{uk.rest}</div><div className="text-xs text-stone-500">Rest {parseInt(f.von)}</div></div>
         <div><div className={`text-xl font-semibold tabular ${uk.rest - tage < 0 ? "text-rose-700" : ""}`}>{uk.rest - tage}</div><div className="text-xs text-stone-500">danach</div></div>
@@ -1458,7 +1483,7 @@ function BsPlaner({ ctx, lehrlinge, onClose }) {
       <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ersetzen} onChange={e => setErsetzen(e.target.checked)} />Bereits geplante Berufsschultage in diesem Zeitraum ersetzen ({bestehend.length})</label>
     </div>
     <div className="mt-4 space-y-2">
-      <div className="rounded-lg bg-stone-50 ring-1 ring-inset ring-stone-200 p-3 text-sm">
+      <div className="rounded-[14px] bg-white ring-1 ring-inset ring-stone-200 p-3 text-sm">
         <b>{neu.length} Schultage</b> ({fmtTage(neu.reduce((s, t) => s + t.anteil, 0))} Tage gerechnet, davon {neu.filter(t => t.anteil < 1).length} halbe) · Lehrjahr {ljListe.join(" → ") || "–"}
         <div className="text-xs text-stone-500 mt-1">Regel: {Object.entries(db.einstellungen.bsTageJeLehrjahr).map(([lj, t]) => `${lj}. Lj. ${fmtTage(t)} Tag${+t === 1 ? "" : "e"}`).join(" · ")} pro Woche (änderbar unter Einstellungen). Feiertage werden übersprungen, ein Lehrjahreswechsel im Zeitraum wird automatisch berücksichtigt.</div>
       </div>
@@ -1665,8 +1690,8 @@ function Auswertungen({ ctx }) {
 
   return <div className="space-y-5 print-full">
     <Seitenkopf titel="Auswertungen" sub="Arbeitszeitkonto, Überstunden, Urlaub und Krankenstand">
-      <div className="inline-flex rounded-lg ring-1 ring-inset ring-stone-300 bg-white p-0.5">
-        {[["monat", "Monat"], ["jahr", "Jahr"]].map(([k, l]) => <button key={k} onClick={() => setAnsicht(k)} className={`px-3 py-1.5 text-sm rounded-md ${ansicht === k ? "bg-stone-900 text-white" : "text-stone-600"}`}>{l}</button>)}
+      <div className="inline-flex rounded-full ring-1 ring-inset ring-stone-200 bg-white p-0.5">
+        {[["monat", "Monat"], ["jahr", "Jahr"]].map(([k, l]) => <button key={k} onClick={() => setAnsicht(k)} className={`px-3.5 py-1.5 text-[13px] font-semibold rounded-full ${ansicht === k ? "bg-gold-500 text-white" : "text-stone-600"}`}>{l}</button>)}
       </div>
       {ansicht === "monat" ? <MonatWahl monat={monat} setMonat={setMonat} /> :
         <select className={`${inputKlein}`} value={jahr} onChange={e => setJahr(+e.target.value)}>{[jahr - 1, jahr, jahr + 1].map(j => <option key={j}>{j}</option>)}</select>}
@@ -1729,17 +1754,30 @@ function Einstellungen({ ctx }) {
 
   return <div className="space-y-5">
     <Seitenkopf titel="Einstellungen" sub={admin ? "Arbeitszeitmodelle, gesetzliche Grenzen und Firmenregeln" : "Nur lesend – Änderungen durch die Administration"} />
-    <Karte titel="Arbeitszeitmodelle / fixe Dienstpläne" aktion={admin && <Knopf klein icon="plus" onClick={() => setModellNeu(mitStunden({ id: uid(), name: "Neuer Dienstplan", plan: [null, ...[1, 2, 3, 4, 5].map(() => ({ b: "09:00", e: "17:30", p: 30 })), null] }))}>Dienstplan</Knopf>} innen="p-0">
+    <Karte titel="Arbeitszeitmodelle / fixe Dienstpläne" aktion={admin && <Knopf klein icon="plus" onClick={() => setModellNeu(mitStunden({ id: uid(), name: "Neuer Dienstplan", plan: (e.oeffnungszeiten || []).map(o => o ? { ...o, p: hm2min(o.e) - hm2min(o.b) > 360 ? 60 : 0 } : null) }))}>Dienstplan</Knopf>} innen="p-0">
       <Tabelle kopf={["Name", ...WT.map(t => ({ t, cls: "text-center" })), { t: "Std./Wo.", cls: "text-right" }, { t: "Personen", cls: "text-right" }, ""]}>
         {db.modelle.map(m => <tr key={m.id}>
           <td className="px-3 py-2.5 font-medium whitespace-nowrap">{m.name}</td>
-          {WT.map((_, i) => { const t = planAusModell(m, i); return <td key={i} className={`px-2 py-2.5 text-center tabular text-xs leading-tight ${t ? "" : "text-stone-300"}`}>{t ? <>{t.b}–{t.e}<div className="text-stone-400">{fmtTage(planStunden(t))} h{t.p ? ` · ${t.p}′` : ""}</div></> : "–"}</td>; })}
+          {WT.map((_, i) => { const t = planAusModell(m, i); return <td key={i} title={ausserhalbOeffnung(e.oeffnungszeiten, i, t) ? "außerhalb der Öffnungszeiten" : undefined} className={`px-2 py-2.5 text-center tabular text-xs leading-tight ${t ? "" : "text-stone-300"} ${ausserhalbOeffnung(e.oeffnungszeiten, i, t) ? "bg-amber-50 text-amber-800" : ""}`}>{t ? <>{t.b}–{t.e}<div className="text-stone-400">{fmtTage(planStunden(t))} h{t.p ? ` · ${t.p}′` : ""}</div></> : "–"}</td>; })}
           <td className="px-3 py-2.5 text-right tabular font-semibold">{String(wochenStd(m)).replace(".", ",")}</td>
           <td className="px-3 py-2.5 text-right tabular">{db.mitarbeiter.filter(x => x.modellId === m.id && x.aktiv).length}</td>
           <td className="px-3 py-2.5 text-right">{admin && <button onClick={() => setModellNeu({ ...m, plan: WT.map((_, i) => planAusModell(m, i)) })} className="p-1.5 rounded-md text-stone-500 hover:bg-stone-100"><Icon n="stift" className="w-4 h-4" /></button>}</td>
         </tr>)}
       </Tabelle>
       <p className="px-5 py-3 text-xs text-stone-500">Änderungen an einem Modell wirken rückwirkend auf alle offenen Monate. In der Live-Version bekommt jede Zuordnung ein „gültig ab“-Datum. Für individuelle Pläne einfach je Person einen eigenen Dienstplan anlegen.</p>
+    </Karte>
+
+    <Karte titel="Öffnungszeiten Salon">
+      <div className="grid md:grid-cols-2 gap-x-10 gap-y-2">
+        {WT_LANG.map((t, i) => { const o = e.oeffnungszeiten?.[i]; const setO = v => { const oz = [...(e.oeffnungszeiten || Array(7).fill(null))]; oz[i] = v; setE("oeffnungszeiten", oz); };
+          return <div key={i} className="flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 w-28 shrink-0"><input type="checkbox" disabled={!admin} checked={!!o} onChange={ev => setO(ev.target.checked ? { b: "09:00", e: "18:00" } : null)} /><span className="font-semibold">{t}</span></label>
+            {o ? <><input type="time" disabled={!admin} className={`${inputKlein} py-1 px-2 w-32`} value={o.b} onChange={ev => setO({ ...o, b: ev.target.value })} /><span className="text-stone-400">–</span>
+              <input type="time" disabled={!admin} className={`${inputKlein} py-1 px-2 w-32`} value={o.e} onChange={ev => setO({ ...o, e: ev.target.value })} /></>
+              : <span className="text-stone-400 text-xs">geschlossen</span>}
+          </div>; })}
+      </div>
+      <p className="mt-3 text-xs text-stone-500">Dienstpläne, die außerhalb der Öffnungszeiten liegen, werden markiert. Das Stempel-Tablet zeigt die heutigen Öffnungszeiten.</p>
     </Karte>
 
     <Karte titel="Automatik & Überstunden">
@@ -1793,9 +1831,6 @@ function Einstellungen({ ctx }) {
           <Feld label="Überstundenzuschlag %" hilfe="§ 10 AZG: 50 %"><input type="number" className={inputCls} disabled={!admin} value={e.zuschlagUeberstunden} onChange={ev => setE("zuschlagUeberstunden", +ev.target.value)} /></Feld>
           <Feld label="Mehrarbeitszuschlag % (Teilzeit)" hilfe="§ 19d AZG: 25 %"><input type="number" className={inputCls} disabled={!admin} value={e.zuschlagMehrarbeit} onChange={ev => setE("zuschlagMehrarbeit", +ev.target.value)} /></Feld>
           <Feld label="Kollektivvertrag" breit><input className={inputCls} disabled={!admin} value={e.kollektivvertrag} onChange={ev => setE("kollektivvertrag", ev.target.value)} /></Feld>
-          <Feld label="Schließtage" breit hilfe="Für die Kalenderdarstellung. Die Sollzeit kommt aus dem Arbeitszeitmodell.">
-            <div className="flex flex-wrap gap-1.5">{WT.map((t, i) => { const an = e.schliesstage.includes(i); return <button key={i} disabled={!admin} onClick={() => setE("schliesstage", an ? e.schliesstage.filter(x => x !== i) : [...e.schliesstage, i])} className={`w-10 py-1.5 rounded-md text-sm ring-1 ring-inset ${an ? "bg-stone-900 text-white ring-stone-900" : "bg-white ring-stone-300 text-stone-700"}`}>{t}</button>; })}</div>
-          </Feld>
         </div>
       </Karte>
       <Karte titel="Rollen & Berechtigungen" innen="p-0">
@@ -1821,10 +1856,10 @@ function Einstellungen({ ctx }) {
         <Knopf art="rot" onClick={() => { if (confirm("Alle Demo-Daten in diesem Browser zurücksetzen?")) setDb(demoDaten()); }}>Zurücksetzen</Knopf>
       </div>
     </Karte>}
-    {modellNeu && <ModellDialog modell={modellNeu} onSave={modellSpeichern} onClose={() => setModellNeu(null)} />}
+    {modellNeu && <ModellDialog modell={modellNeu} oz={e.oeffnungszeiten} onSave={modellSpeichern} onClose={() => setModellNeu(null)} />}
   </div>;
 }
-function ModellDialog({ modell, onSave, onClose }) {
+function ModellDialog({ modell, oz, onSave, onClose }) {
   const [m, setM] = useState(modell);
   const setTag = (i, t) => { const plan = [...m.plan]; plan[i] = t; setM({ ...m, plan }); };
   const summe = m.plan.reduce((s, t) => s + planStunden(t), 0);
@@ -1833,7 +1868,7 @@ function ModellDialog({ modell, onSave, onClose }) {
       <Feld label="Bezeichnung"><input className={inputCls} value={m.name} onChange={e => setM({ ...m, name: e.target.value })} /></Feld>
       <div className="space-y-1.5">
         {WT_LANG.map((t, i) => { const p = m.plan[i]; return <div key={i} className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 w-32 text-sm"><input type="checkbox" checked={!!p} onChange={e => setTag(i, e.target.checked ? { b: "09:00", e: "17:30", p: 30 } : null)} />{t}</label>
+          <label className="flex items-center gap-2 w-32 text-sm"><input type="checkbox" checked={!!p} onChange={e => setTag(i, e.target.checked ? (oz?.[i] ? { b: oz[i].b, e: oz[i].e, p: 60 } : { b: "09:00", e: "18:00", p: 60 }) : null)} />{t}</label>
           {p ? <>
             <input type="time" className={`${inputKlein} py-1.5`} value={p.b} onChange={e => setTag(i, { ...p, b: e.target.value })} />
             <span className="text-stone-400">–</span>
@@ -1841,6 +1876,7 @@ function ModellDialog({ modell, onSave, onClose }) {
             <span className="text-xs text-stone-500 ml-1">Pause</span>
             <input type="number" min="0" step="5" className={`${inputKlein} py-1.5 w-16`} value={p.p} onChange={e => setTag(i, { ...p, p: +e.target.value })} />
             <span className="text-xs text-stone-500">min · <b className="text-stone-800">{fmtTage(planStunden(p))} h</b></span>
+            {ausserhalbOeffnung(oz, i, p) && <span className="text-xs text-amber-700">außerhalb Öffnungszeit{oz?.[i] ? ` (${oz[i].b}–${oz[i].e})` : " (geschlossen)"}</span>}
           </> : <span className="text-xs text-stone-400">frei</span>}
         </div>; })}
       </div>
@@ -1851,14 +1887,14 @@ function ModellDialog({ modell, onSave, onClose }) {
 
 // ─── APP-RAHMEN ───────────────────────────────────────────────────────────────
 const NAV = [
-  { id: "dashboard",  label: "Dashboard",     icon: "dashboard" },
-  { id: "zeit",       label: "Zeiterfassung", icon: "uhr" },
-  { id: "urlaub",     label: "Urlaub",        icon: "sonne" },
-  { id: "krank",      label: "Krankenstand",  icon: "kreuz" },
-  { id: "mitarbeiter",label: "Mitarbeiter",   icon: "personen" },
-  { id: "kalender",   label: "Kalender",      icon: "kalender" },
-  { id: "auswertung", label: "Auswertungen",  icon: "balken" },
-  { id: "einstellung",label: "Einstellungen", icon: "regler" },
+  { id: "dashboard",  label: "Dashboard",     em: "🏠" },
+  { id: "zeit",       label: "Zeiterfassung", em: "⏱️" },
+  { id: "urlaub",     label: "Urlaub",        em: "🌴" },
+  { id: "krank",      label: "Krankenstand",  em: "🤒" },
+  { id: "mitarbeiter",label: "Mitarbeiter",   em: "👥" },
+  { id: "kalender",   label: "Kalender",      em: "📅" },
+  { id: "auswertung", label: "Auswertungen",  em: "📊" },
+  { id: "einstellung",label: "Einstellungen", em: "⚙️" },
 ];
 
 function App() {
@@ -1878,7 +1914,7 @@ function App() {
 
   // fn darf eine Meldung zurückgeben (z. B. beim Stempeln)
   const aendern = (fn, meldung) => { const n = JSON.parse(JSON.stringify(db)); const r = fn(n); setDb(n); if (meldung || typeof r === "string") setToast(meldung || r); };
-  const toastEl = toast && <div className="no-print fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg flex items-center gap-2 max-w-[92vw]"><Icon n="haken" className="w-4 h-4 text-emerald-400 shrink-0" />{toast}</div>;
+  const toastEl = toast && <div className="no-print fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white text-sm px-5 py-3 rounded-full shadow-lg flex items-center gap-2 max-w-[92vw]"><Icon n="haken" className="w-4 h-4 text-emerald-400 shrink-0" />{toast}</div>;
   const user = db.mitarbeiter.find(m => m.id === userId && m.aktiv);
   function login(id) { try { sessionStorage.setItem(SESS_KEY, id); } catch (e) { } setUserId(id); setSeiteRoh("dashboard"); }
   function logout() { try { sessionStorage.removeItem(SESS_KEY); } catch (e) { } setUserId(null); }
@@ -1896,38 +1932,38 @@ function App() {
   const navLabel = n => n.id === "mitarbeiter" && !istLeitung(user) ? "Mein Profil" : n.label;
 
   const navInhalt = <>
-    <div className="flex items-center gap-2.5 px-5 h-16 border-b border-white/10">
-      <div className="w-8 h-8 rounded-lg bg-white text-stone-900 flex items-center justify-center"><Icon n="uhr" className="w-5 h-5" /></div>
-      <div className="leading-tight"><div className="text-sm font-semibold text-white">Zeitverwaltung</div><div className="text-[11px] text-stone-400">{db.einstellungen.firmenname}</div></div>
+    <div className="px-5 pt-7 pb-5">
+      <p className="text-[11px] text-stone-500 uppercase tracking-[.14em] font-semibold">Great Hair Day</p>
+      <p className="text-lg font-bold text-stone-900 leading-tight">Zeitverwaltung</p>
     </div>
-    <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
+    <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
       {NAV.map(n => <button key={n.id} onClick={() => setSeite(n.id)}
-        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition ${seite === n.id ? "bg-white/10 text-white" : "text-stone-400 hover:text-white hover:bg-white/5"}`}>
-        <Icon n={n.icon} className="w-[18px] h-[18px]" /><span className="flex-1 text-left">{navLabel(n)}</span>
-        {badges[n.id] > 0 && <span className="min-w-[1.25rem] h-5 px-1 rounded-full bg-amber-400 text-stone-900 text-[11px] font-bold flex items-center justify-center">{badges[n.id]}</span>}
+        className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-full text-[13.5px] font-semibold transition border ${seite === n.id ? "bg-white border-gold-500 text-gold-700" : "border-transparent text-stone-600 hover:bg-white hover:border-stone-200"}`}>
+        <span className="text-[17px] w-6 text-center">{n.em}</span><span className="flex-1 text-left">{navLabel(n)}</span>
+        {badges[n.id] > 0 && <span className="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-rose-100 text-rose-600 text-[11px] font-bold flex items-center justify-center">{badges[n.id]}</span>}
       </button>)}
     </nav>
-    <div className="p-3 border-t border-white/10">
+    <div className="p-3 border-t border-stone-200">
       <div className="flex items-center gap-2.5 px-2 py-2">
         <Avatar name={user.name} klein />
-        <div className="flex-1 min-w-0 leading-tight"><div className="text-sm text-white truncate">{user.name}</div><div className="text-[11px] text-stone-400">{ROLLEN[user.rolle].label}</div></div>
-        <button onClick={logout} className="p-1.5 rounded-md text-stone-400 hover:text-white hover:bg-white/10" title="Abmelden"><Icon n="abmelden" className="w-4 h-4" /></button>
+        <div className="flex-1 min-w-0 leading-tight"><div className="text-sm font-semibold text-stone-900 truncate">{user.name}</div><div className="text-[11px] text-stone-500">{ROLLEN[user.rolle].label}</div></div>
+        <button onClick={logout} className="p-1.5 rounded-full text-stone-500 hover:text-gold-700 hover:bg-white" title="Abmelden"><Icon n="abmelden" className="w-4 h-4" /></button>
       </div>
     </div>
   </>;
 
   return <div className="min-h-screen">
-    <aside className="no-print hidden lg:flex fixed inset-y-0 left-0 w-60 bg-stone-900 flex-col z-30">{navInhalt}</aside>
-    {navOffen && <div className="no-print lg:hidden fixed inset-0 z-40 bg-stone-900/50" onClick={() => setNavOffen(false)}>
-      <aside className="w-64 h-full bg-stone-900 flex flex-col" onClick={e => e.stopPropagation()}>{navInhalt}</aside>
+    <aside className="no-print hidden lg:flex fixed inset-y-0 left-0 w-60 bg-stone-100 border-r border-stone-200 flex-col z-30">{navInhalt}</aside>
+    {navOffen && <div className="no-print lg:hidden fixed inset-0 z-40 bg-stone-900/45" onClick={() => setNavOffen(false)}>
+      <aside className="w-64 h-full bg-stone-100 flex flex-col einblenden" onClick={e => e.stopPropagation()}>{navInhalt}</aside>
     </div>}
-    <header className="no-print lg:hidden sticky top-0 z-20 h-14 bg-white/90 backdrop-blur border-b border-stone-200 flex items-center gap-3 px-4">
-      <button onClick={() => setNavOffen(true)} className="p-1.5 -ml-1.5 rounded-md text-stone-700 hover:bg-stone-100" aria-label="Menü"><Icon n="menu" /></button>
-      <span className="font-semibold text-sm flex-1">{navLabel(NAV.find(n => n.id === seite))}</span>
+    <header className="no-print lg:hidden sticky top-0 z-20 h-14 bg-stone-50/90 backdrop-blur border-b border-stone-200 flex items-center gap-3 px-4">
+      <button onClick={() => setNavOffen(true)} className="p-1.5 -ml-1.5 rounded-full text-stone-700 hover:bg-white" aria-label="Menü"><Icon n="menu" /></button>
+      <span className="font-bold text-[15px] flex-1">{NAV.find(n => n.id === seite).em} {navLabel(NAV.find(n => n.id === seite))}</span>
       <Avatar name={user.name} klein />
     </header>
     <main className="lg:ml-60 print-full">
-      <div className="no-print bg-amber-50 border-b border-amber-200 text-amber-900 text-xs px-4 lg:px-8 py-1.5">Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank.</div>
+      <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-xs px-4 lg:px-8 py-1.5">Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank.</div>
       <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 print-full"><Seite ctx={ctx} /></div>
     </main>
     {toastEl}

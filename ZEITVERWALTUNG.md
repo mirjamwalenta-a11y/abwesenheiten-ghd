@@ -11,6 +11,8 @@ Stand: Prototyp (Oberfläche fertig, Datenbank als Entwurf).
 
 ## 1. Was der Prototyp kann
 
+Design wie die anderen Great-Hair-Day-Apps (index/Schaltzentrale): Poppins, Creme-Hintergrund, Gold-Akzent #896C32, runde Pill-Buttons, Stempeluhr als goldene Karte.
+
 Navigation: **Dashboard → Zeiterfassung → Urlaub → Krankenstand → Mitarbeiter → Kalender → Auswertungen → Einstellungen**
 
 - **Stempeln** – am eigenen Handy (Stempeluhr im Dashboard) oder am **Stempel-Tablet im Salon**: Name antippen → Kommen / Pause / Gehen. Hat jemand das Kommen vergessen, gibt es „Gehen (Kommen vergessen)“ – der Beginn kommt aus dem Dienstplan.
@@ -86,7 +88,7 @@ Das Skript wurde lokal gegen eine nachgebaute Supabase-Umgebung getestet (zweima
 ## 5. Offene Fragen an dich
 
 1. **Vorgesetzte:** Gibt es neben dir eine Salonleitung, die Urlaub genehmigen soll? Dafür muss eine bestehende Policy von `abw_anfragen` erweitert werden (im SQL auskommentiert vorbereitet).
-2. **Dienstpläne:** ~~geklärt~~ – fixer Plan, keine Überstunden. Offen: die tatsächlichen Zeiten je Person (Beginn, Ende, Pause pro Wochentag).
+2. **Dienstpläne:** geklärt – fixer Plan, keine Überstunden. Öffnungszeiten: So + Mo geschlossen, Di + Mi 9–18, Do + Fr 9–19, Sa 8–14, Di–Fr je 1 h Pause (= 40 h). Offen: abweichende Pläne einzelner Personen (Teilzeit).
 3. **Pausen-Vereinbarung:** Steht die Pause (Dauer, Zeitfenster) schriftlich im Dienstvertrag? Das ist die Voraussetzung, dass Pausen automatisch eingetragen werden dürfen.
 4. **Lehrlinge:** geklärt – Wien 1. Lj. 1,5 Tage, 2./3. Lj. 1 Tag; Schultage fix je Lehrling; unter/über 18 automatisch über das Geburtsdatum.
 5. **Krankenstand mit offenem Ende:** In `abw_anfragen` ist `bis` heute Pflicht. Offenes Ende erlauben (dann muss die Abwesenheiten-App damit umgehen) oder „voraussichtliches Ende“ eintragen?
