@@ -60,14 +60,15 @@ CREATE TABLE IF NOT EXISTS zeit_profil (
   funktion         text,
   vorgesetzter_id  text REFERENCES abw_team(id),
   geburtsdatum     date,                             -- unter 18 → KJBG, ab dem 18. Geburtstag automatisch AZG
-  urlaub_vor_start numeric(4,1) NOT NULL DEFAULT 0,  -- im Startjahr schon vor der App verbrauchter Urlaub
+  -- Urlaubsjahr = Arbeitsjahr (ab Eintrittsdatum). Startbestand beim Umstieg auf die App:
+  urlaub_start     numeric(5,2),                     -- offene Urlaubstage am Stichtag (inkl. laufendem Urlaubsjahr)
+  urlaub_start_am  date,                             -- Stichtag des Startbestands
   austritt_art     text,                             -- Art der Beendigung (Austrittsdatum = abw_team.ausgeschieden_am)
   austritt_notiz   text,
   lehrbeginn       date,                             -- nur Lehrlinge; Lehrjahr wird daraus berechnet
   bs_tag1          smallint CHECK (bs_tag1 BETWEEN 0 AND 6),  -- fixer Berufsschultag (ganz)
   bs_tag2          smallint CHECK (bs_tag2 BETWEEN 0 AND 6),  -- halber Tag im 1. Lehrjahr
   saldo_start_min  integer NOT NULL DEFAULT 0,       -- Übertrag Zeitkonto beim Start
-  urlaub_uebertrag numeric(4,1) NOT NULL DEFAULT 0,
   CHECK (vorgesetzter_id IS NULL OR vorgesetzter_id <> person_id)
 );
 ALTER TABLE zeit_profil ENABLE ROW LEVEL SECURITY;

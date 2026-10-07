@@ -368,23 +368,55 @@ function vorschlagUrlaubstage(db, ma) {
   const basis = dienstjahre(ma.eintritt) >= 25 ? 30 : (db.einstellungen.urlaubBasisTage || 25);
   return Math.round(basis * tageProWoche(modellVon(db, ma)) / 5);
 }
-function urlaubsKonto(db, ma, jahr) {
-  const von = `${jahr}-01-01`, bis = `${jahr}-12-31`, h = heute();
-  let konsumiert = 0, geplant = 0, beantragt = 0;
-  db.abwesenheiten.filter(a => a.maId === ma.id && a.art === "urlaub").forEach(a => {
-    const v = a.von > von ? a.von : von, b = (a.bis || a.von) < bis ? (a.bis || a.von) : bis;
-    if (v > b) return;
-    if (a.status === "beantragt") { beantragt += urlaubsTage(db, ma, v, b); return; }
-    if (!wirksam(a)) return;
-    if (b < h) konsumiert += urlaubsTage(db, ma, v, b);
-    else if (v >= h) geplant += urlaubsTage(db, ma, v, b);
-    else { konsumiert += urlaubsTage(db, ma, v, addTage(h, -1)); geplant += urlaubsTage(db, ma, h, b); }
-  });
-  // Urlaub, der im Startjahr schon vor Beginn der Zeitverwaltung verbraucht wurde
-  if (jahr === parseInt(db.einstellungen.kontoStart || "0")) konsumiert += +ma.urlaubVorStart || 0;
-  const anspruch = +ma.urlaubstage || 0;
-  const uebertrag = jahr === new Date().getFullYear() ? (+ma.urlaubUebertrag || 0) : 0;
-  return { anspruch, uebertrag, konsumiert, geplant, beantragt, rest: anspruch + uebertrag - konsumiert - geplant };
+// Urlaubsjahr = Arbeitsjahr: beginnt jedes Jahr am Jahrestag des Eintritts (§ 2 UrlG)
+function istSchaltjahr(y) { return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }
+function jahrestag(y, md) { return md === "02-29" && !istSchaltjahr(y) ? `${y}-02-28` : `${y}-${md}`; }
+function addMonate(s, n) { const d = parseD(s); d.setMonth(d.getMonth() + n); return datStr(d); }
+function ujBeginn(ma, d) {
+  if (!ma.eintritt) return `${d.slice(0, 4)}-01-01`;
+  if (d < ma.eintritt) return ma.eintritt;
+  const md = ma.eintritt.slice(5);
+  let b = jahrestag(+d.slice(0, 4), md);
+  if (b > d) b = jahrestag(+d.slice(0, 4) - 1, md);
+  return b < ma.eintritt ? ma.eintritt : b;
+}
+function ujEnde(ma, beginn) { return addTage(jahrestag(+beginn.slice(0, 4) + 1, (ma.eintritt || beginn).slice(5)), -1); }
+// Konto für das Urlaubsjahr, in dem „datum“ liegt. Rest wird von Urlaubsjahr zu Urlaubsjahr übertragen.
+// Startbestand: ma.urlaubStart = offene Tage (inkl. Anspruch des laufenden Urlaubsjahres) am ma.urlaubStartAm.
+// opt.stichtag: nur Urlaub bis zum Datum zählen (Jahresabschluss, Austritt) – sonst auch geplanten.
+function urlaubsKonto(db, ma, datum, opt = {}) {
+  const d = typeof datum === "number" ? (datum === new Date().getFullYear() ? heute() : `${datum}-12-31`) : (datum || heute());
+  const h = heute(), voll = +ma.urlaubstage || 0, r2 = x => Math.round(x * 100) / 100;
+  const startAm = ma.urlaubStartAm && (!ma.eintritt || ma.urlaubStartAm > ma.eintritt) ? ma.urlaubStartAm : null;
+  let ab = startAm || ma.eintritt || `${d.slice(0, 4)}-01-01`, uebertrag = startAm ? (+ma.urlaubStart || 0) : 0, imStart = !!startAm, k = null;
+  for (let schutz = 0; schutz < 80; schutz++) {
+    const von = ujBeginn(ma, ab), bis = ujEnde(ma, von), ujTage = tageZw(von, bis).length;
+    let anspruch = imStart ? 0 : voll;
+    const erstesJahr = !imStart && von === ma.eintritt;
+    // erstes Arbeitsjahr: in den ersten 6 Monaten nur anteilig (§ 2 Abs 2 UrlG)
+    if (erstesJahr) { const ref = d < bis ? d : bis; if (ref < addMonate(ma.eintritt, 6)) anspruch = r2(voll * tageZw(von, ref).length / ujTage); }
+    // Austritt im Urlaubsjahr: anteilig nach Tagen bis zum letzten Arbeitstag (§ 10 UrlG)
+    const austrittHier = ma.austritt && ma.austritt >= von && ma.austritt <= bis;
+    const teil = austrittHier ? r2(voll * tageZw(von, ma.austritt).length / ujTage) : null;
+    if (austrittHier) { if (imStart) uebertrag = r2(uebertrag - (voll - teil)); else anspruch = teil; }
+    const grenze = opt.stichtag && d < bis ? d : bis;
+    let konsumiert = 0, geplant = 0, beantragt = 0;
+    db.abwesenheiten.filter(a => a.maId === ma.id && a.art === "urlaub").forEach(a => {
+      const v = a.von > ab ? a.von : ab, b = (a.bis || a.von) < grenze ? (a.bis || a.von) : grenze;
+      if (v > b) return;
+      if (a.status === "beantragt") { beantragt += urlaubsTage(db, ma, v, b); return; }
+      if (!wirksam(a)) return;
+      if (b < h) konsumiert += urlaubsTage(db, ma, v, b);
+      else if (v >= h) geplant += urlaubsTage(db, ma, v, b);
+      else { konsumiert += urlaubsTage(db, ma, v, addTage(h, -1)); geplant += urlaubsTage(db, ma, h, b); }
+    });
+    const rest = r2(anspruch + uebertrag - konsumiert - geplant);
+    k = { von, ab, bis, ujTage, anspruch, jahresanspruch: voll, uebertrag, konsumiert, geplant, beantragt, rest, imStart, erstesJahr, teil,
+      anteilig: (erstesJahr && anspruch < voll) || austrittHier };
+    if (d <= bis || austrittHier) break;
+    uebertrag = rest; imStart = false; ab = addTage(bis, 1);
+  }
+  return k;
 }
 // Abwesenheits-Tage (Kalendertage) einer Art in einem Zeitraum
 function abwKalendertage(db, ma, arten, von, bis) {
@@ -439,18 +471,15 @@ function bsTermine(db, ma, von, bis, plan, ohneSommer) {
   return out;
 }
 function fmtTage(n) { return String(n).replace(".", ","); }
+function r2u(x) { return Math.round(x * 100) / 100; }
 
 // Austritt: aliquoter Urlaub im Austrittsjahr (Basis für die Urlaubsersatzleistung, § 10 UrlG)
 const BEENDIGUNG = ["Kündigung durch Arbeitnehmer/in", "Kündigung durch Arbeitgeber/in", "Einvernehmliche Auflösung", "Ende befristetes Dienstverhältnis",
   "Ende der Lehrzeit", "Lösung in der Probezeit", "Entlassung", "Vorzeitiger Austritt", "Pensionierung", "Sonstiges"];
 function austrittsUrlaub(db, ma) {
-  const jahr = parseInt(ma.austritt);
-  const start = ma.eintritt && ma.eintritt > `${jahr}-01-01` ? ma.eintritt : `${jahr}-01-01`;
-  const tageJahr = tageZw(`${jahr}-01-01`, `${jahr}-12-31`).length, tage = tageZw(start, ma.austritt).length;
-  const k = urlaubsKonto(db, ma, jahr);
-  const aliquot = Math.round(k.anspruch * tage / tageJahr * 100) / 100;
-  const verbraucht = k.konsumiert + k.geplant;
-  return { jahr, aliquot, anspruch: k.anspruch, uebertrag: k.uebertrag, verbraucht, tage, tageJahr, offen: Math.round((aliquot + k.uebertrag - verbraucht) * 100) / 100 };
+  const k = urlaubsKonto(db, ma, ma.austritt, { stichtag: true });
+  return { von: k.von, bis: k.bis, teil: k.teil ?? k.anspruch, jahresanspruch: k.jahresanspruch, uebertrag: k.uebertrag, imStart: k.imStart,
+    verbraucht: k.konsumiert + k.geplant, tage: tageZw(k.von, ma.austritt).length, tageUJ: k.ujTage, offen: k.rest };
 }
 // Jahresabschluss: alle, die im Jahr beschäftigt waren – Stand 31.12. bzw. letzter Arbeitstag
 function jahresDaten(db, jahr) {
@@ -460,18 +489,19 @@ function jahresDaten(db, jahr) {
   const zeilen = personen.map(m => {
     const ausgetreten = !!m.austritt && m.austritt <= bis;
     const stichtag = ausgetreten ? m.austritt : bis;
-    const k = urlaubsKonto(db, m, jahr);
-    // Anspruch im Ein- bzw. Austrittsjahr aliquot nach Kalendertagen
+    // Urlaub im Urlaubsjahr (ab Eintrittsdatum), in dem der Stichtag liegt – nur Urlaub bis zum Stichtag
+    const k = urlaubsKonto(db, m, stichtag, { stichtag: true });
     const start = m.eintritt && m.eintritt > von ? m.eintritt : von;
-    const aliquot = start > von || ausgetreten;
-    const anspruch = aliquot ? Math.round(k.anspruch * tageZw(start, stichtag).length / tageZw(von, bis).length * 100) / 100 : k.anspruch;
-    const verbraucht = k.konsumiert + k.geplant;
-    const offen = Math.round((anspruch + k.uebertrag - verbraucht) * 100) / 100;
+    const aliquot = k.anteilig, anspruch = k.imStart ? k.jahresanspruch : k.anspruch;
+    const verbraucht = k.konsumiert + k.geplant, offen = k.rest;
     const faelle = db.abwesenheiten.filter(a => a.maId === m.id && KRANK_ARTEN.includes(a.art) && wirksam(a) && a.von <= stichtag && (a.bis || heute()) >= von);
     const krankAT = tageZw(von, stichtag).filter(d => { const a = abwAm(db, m.id, d); return a && KRANK_ARTEN.includes(a.art) && sollMin(db, m, d) > 0; }).length;
     const arztMin = db.abwesenheiten.filter(a => a.maId === m.id && a.art === "arzt" && wirksam(a) && a.von >= von && a.von <= stichtag).reduce((s, a) => s + (+a.minuten || 0), 0);
     const arbeitstage = tageZw(start, stichtag).filter(d => sollMin(db, m, d) > 0).length;
-    return { m, ausgetreten, stichtag, start, arbeitstageOhneUrlaub: Math.max(0, arbeitstage - verbraucht), anspruchJahr: k.anspruch, anspruch, aliquot, uebertrag: k.uebertrag, verbraucht, offen,
+    const urlaubImKJ = db.abwesenheiten.filter(a => a.maId === m.id && a.art === "urlaub" && wirksam(a)).reduce((n, a) => {
+      const v = a.von > start ? a.von : start, b = (a.bis || a.von) < stichtag ? (a.bis || a.von) : stichtag; return n + (v <= b ? urlaubsTage(db, m, v, b) : 0); }, 0);
+    return { m, ausgetreten, stichtag, start, arbeitstageOhneUrlaub: Math.max(0, arbeitstage - urlaubImKJ), anspruchJahr: k.jahresanspruch, anspruch, aliquot,
+      uebertrag: k.imStart ? null : k.uebertrag, startbestand: k.imStart ? k.uebertrag : null, ujVon: k.von, ujBis: k.bis, verbraucht, offen,
       krankKT: abwKalendertage(db, m, ["krank"], von, stichtag), unfallKT: abwKalendertage(db, m, ["unfall"], von, stichtag), krankAT, faelle,
       pflegeKT: abwKalendertage(db, m, ["pflege"], von, stichtag), arztMin, konto: zeitkonto(db, m, stichtag < heute() ? stichtag : heute()) };
   });
@@ -488,7 +518,7 @@ function fmtZrKurz(v, b) {
 }
 
 const STAMM_FELDER = { name: "Name", personalnr: "Personalnummer", abteilung: "Abteilung", funktion: "Funktion", eintritt: "Eintritt", modellId: "Dienstplan",
-  urlaubstage: "Urlaubstage", urlaubUebertrag: "Resturlaub Vorjahr", urlaubVorStart: "Urlaub vor Start", vorgesetzterId: "Vorgesetzte/r", rolle: "Rolle",
+  urlaubstage: "Urlaubstage", urlaubStart: "Offener Urlaub (Start)", urlaubStartAm: "Startbestand am", vorgesetzterId: "Vorgesetzte/r", rolle: "Rolle",
   geburtsdatum: "Geburtsdatum", lehrbeginn: "Lehrbeginn", saldoStart: "Zeitkonto-Übertrag" };
 function stammWert(db, k, v) {
   if (v == null || v === "") return "–";
@@ -611,7 +641,7 @@ function leereDaten(name, id) {
   return {
     version: 1, eigeneDaten: true, modelle: standardModelle(),
     mitarbeiter: [{ id: id || uid(), name: name.trim(), personalnr: "P-001", abteilung: "Leitung", funktion: "Inhaberin", eintritt: heute(), modellId: "vz40",
-      urlaubstage: 25, urlaubUebertrag: 0, saldoStart: 0, vorgesetzterId: null, rolle: "admin", aktiv: true }],
+      urlaubstage: 25, urlaubStart: 25, urlaubStartAm: heute(), saldoStart: 0, vorgesetzterId: null, rolle: "admin", aktiv: true }],
     abwesenheiten: [], zeiten: [], korrekturen: [], abschluesse: [], protokoll: [], personalLog: [],
     // Zeitkonto und Automatik beginnen heute – vergangene Tage werden nicht automatisch befüllt
     einstellungen: { ...STANDARD_EINSTELLUNGEN, kontoStart: heute() },
@@ -636,7 +666,7 @@ function demoDaten() {
     { id: "ma7", name: "Nina Hofer",       personalnr: "P-007", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: "2025-09-01", modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: "2025-09-01", geburtsdatum: `${parseInt(addTage(h, 40)) - 18}${addTage(h, 40).slice(4)}`, bsTag1: 3 },
     { id: "ma9", name: "Lea Fuchs",        personalnr: "P-009", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: `${m1}-01`,   modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: `${m1}-01`, geburtsdatum: `${parseInt(h) - 15}-03-12`, bsTag1: 1, bsTag2: 4 },
     { id: "ma8", name: "Tobias Reiter",    personalnr: "P-008", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2020-04-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: false, austritt: `${m0}-15`, austrittArt: "Kündigung durch Arbeitnehmer/in" },
-  ].map(m => ({ saldoStart: 0, kjbg: false, ...m }));
+  ].map(m => ({ saldoStart: 0, kjbg: false, urlaubStartAm: start, urlaubStart: m.urlaubstage - 4 + (m.urlaubUebertrag || 0), ...m }));
 
   const abw = (maId, art, von, bis, status, extra = {}) => ({ id: uid(), maId, art, von, bis, status, beantragtAm: addTage(von, -14) < start ? start : addTage(von, -14), notiz: "", ...extra });
   const abwesenheiten = [
@@ -1152,7 +1182,7 @@ function Dashboard({ ctx }) {
   const { db, user, sichtbar, setSeite } = ctx;
   const h = heute(), jahr = new Date().getFullYear(), mk = monatKey(h);
   const konto = zeitkonto(db, user, h);
-  const uk = urlaubsKonto(db, user, jahr);
+  const uk = urlaubsKonto(db, user, h);
   const naechsterUrlaub = db.abwesenheiten.filter(a => a.maId === user.id && a.art === "urlaub" && wirksam(a) && a.von >= h).sort((a, b) => a.von.localeCompare(b.von))[0];
   const aktiveTeam = sichtbar.filter(m => m.aktiv);
   const leitung = istLeitung(user);
@@ -1477,7 +1507,7 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
   const stundenOk = !art.stunden || (+f.stunden > 0 && +f.stunden <= 12);
   const bis = art.stunden ? f.von : art.offen && f.offen ? null : f.bis;
   const tage = f.art === "urlaub" ? urlaubsTage(db, ma, f.von, bis || f.von) : tageZw(f.von, bis || f.von).length;
-  const uk = urlaubsKonto(db, ma, parseInt(f.von));
+  const uk = urlaubsKonto(db, ma, f.von || heute());
   const ftImZeitraum = tageZw(f.von, bis || f.von).filter(d => feiertag(d) && modellSollMin(db, ma, d) > 0);
   const ueberschneidung = db.abwesenheiten.filter(a => a.id !== bestand?.id && a.maId === f.maId && (wirksam(a) || a.status === "beantragt") && a.von <= (bis || "9999") && (a.bis || "9999") >= f.von);
   const kollegen = db.abwesenheiten.filter(a => a.maId !== f.maId && wirksam(a) && a.von <= (bis || f.von) && (a.bis || heute()) >= f.von && db.mitarbeiter.find(m => m.id === a.maId)?.aktiv);
@@ -1545,7 +1575,7 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
     <div className="mt-4 space-y-2">
       {f.art === "urlaub" ? <div className="rounded-[14px] bg-white ring-1 ring-inset ring-stone-200 p-3 text-sm grid grid-cols-3 gap-2 text-center">
         <div><div className="text-xl font-semibold tabular">{tage}</div><div className="text-xs text-stone-500">Urlaubstage</div></div>
-        <div><div className="text-xl font-semibold tabular">{uk.rest}</div><div className="text-xs text-stone-500">Rest {parseInt(f.von)}</div></div>
+        <div><div className="text-xl font-semibold tabular">{uk.rest}</div><div className="text-xs text-stone-500">Rest Urlaubsjahr</div></div>
         <div><div className={`text-xl font-semibold tabular ${uk.rest - tage < 0 ? "text-rose-700" : ""}`}>{uk.rest - tage}</div><div className="text-xs text-stone-500">danach</div></div>
       </div> : art.stunden ? <div className="text-sm text-stone-600">{fmtTage(+f.stunden || 0)} Stunden werden als Arbeitszeit angerechnet (bezahlte Dienstverhinderung).</div> : <div className="text-sm text-stone-600">{bis ? `${tage} Kalendertage` : "Laufend – das Ende wird mit der Gesundmeldung eingetragen."}</div>}
       {f.art === "urlaub" && <p className="text-xs text-stone-500">Gezählt werden nur Arbeitstage laut Arbeitszeitmodell „{modellVon(db, ma).name}“. Wochenenden, Schließtage und Feiertage zählen nicht.</p>}
@@ -1571,7 +1601,7 @@ function AntragListe({ ctx, liste }) {
         <Avatar name={ma.name} klein />
         <div className="flex-1 text-sm">
           <div className="font-medium flex flex-wrap items-center gap-2">{ma.name} <ArtChip art={a.art} /></div>
-          <div className="text-xs text-stone-600 mt-0.5">{fmtZr(a.von, a.bis)} · {a.art === "urlaub" ? `${urlaubsTage(db, ma, a.von, a.bis)} Urlaubstage · Rest danach ${urlaubsKonto(db, ma, parseInt(a.von)).rest - urlaubsTage(db, ma, a.von, a.bis)}` : `${tageZw(a.von, a.bis || a.von).length} Tag${tageZw(a.von, a.bis || a.von).length === 1 ? "" : "e"}`}{a.notiz ? ` · „${a.notiz}“` : ""}</div>
+          <div className="text-xs text-stone-600 mt-0.5">{fmtZr(a.von, a.bis)} · {a.art === "urlaub" ? `${urlaubsTage(db, ma, a.von, a.bis)} Urlaubstage · Rest danach ${urlaubsKonto(db, ma, a.von).rest - urlaubsTage(db, ma, a.von, a.bis)}` : `${tageZw(a.von, a.bis || a.von).length} Tag${tageZw(a.von, a.bis || a.von).length === 1 ? "" : "e"}`}{a.notiz ? ` · „${a.notiz}“` : ""}</div>
           {kollegen.length > 0 && <div className="text-xs text-amber-700 mt-0.5">Gleichzeitig weg: {[...new Set(kollegen.map(x => nameVon(db, x.maId)))].join(", ")}</div>}
         </div>
         <div className="flex gap-2">
@@ -1589,24 +1619,24 @@ function Urlaub({ ctx }) {
   const [jahr, setJahr] = useState(new Date().getFullYear());
   const [dialog, setDialog] = useState(false);
   const [bearbeiten, setBearbeiten] = useState(null);
-  const uk = urlaubsKonto(db, user, jahr);
+  const uk = urlaubsKonto(db, user, heute());
   const offen = db.abwesenheiten.filter(a => a.art === "urlaub" && a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)));
   const liste = db.abwesenheiten.filter(a => a.art === "urlaub" && sichtbar.some(m => m.id === a.maId) && (a.von.startsWith(jahr) || (a.bis || "").startsWith(jahr))).sort((a, b) => b.von.localeCompare(a.von));
   const leitung = istLeitung(user);
   function stornieren(a) { aendern(n => { n.abwesenheiten.find(q => q.id === a.id).status = "storniert"; }, "Urlaub storniert"); }
 
   return <div className="space-y-5">
-    <Seitenkopf titel="Urlaub" sub="Anträge, Genehmigung und Urlaubskonto (Urlaubsjahr = Kalenderjahr)">
+    <Seitenkopf titel="Urlaub" sub={`Anträge, Genehmigung und Urlaubskonto · dein Urlaubsjahr: ${fmtD(uk.von)} – ${fmtD(uk.bis)} (ab Eintrittsdatum)`}>
       <select className={`${inputKlein}`} value={jahr} onChange={e => setJahr(+e.target.value)}>{[jahr - 1, jahr, jahr + 1].map(j => <option key={j}>{j}</option>)}</select>
       <Knopf icon="plus" onClick={() => setDialog(true)}>{leitung ? "Urlaub eintragen" : "Urlaub beantragen"}</Knopf>
     </Seitenkopf>
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-      <Kpi label="Anspruch" wert={uk.anspruch} sub="Tage" />
-      <Kpi label="Übertrag" wert={uk.uebertrag} sub="aus Vorjahr" />
+      <Kpi label="Anspruch" wert={uk.imStart ? "–" : fmtTage(uk.anspruch)} sub={uk.imStart ? "im Startbestand" : uk.anteilig ? "anteilig (1. Halbjahr)" : "laufendes Urlaubsjahr"} />
+      <Kpi label={uk.imStart ? "Startbestand" : "Übertrag"} wert={fmtTage(uk.uebertrag)} sub={uk.imStart ? `Stand ${fmtD(uk.ab)}` : "aus vorigem Urlaubsjahr"} />
       <Kpi label="Verbraucht" wert={uk.konsumiert} sub="Tage" />
       <Kpi label="Geplant" wert={uk.geplant} sub="genehmigt" />
       <Kpi label="Beantragt" wert={uk.beantragt} sub="offen" />
-      <Kpi label="Rest" wert={uk.rest} ton={uk.rest < 0 ? "neg" : "pos"} sub="verfügbar" />
+      <Kpi label="Rest" wert={fmtTage(uk.rest)} ton={uk.rest < 0 ? "neg" : "pos"} sub={`bis ${fmtD(uk.bis)}`} />
     </div>
     {offen.length > 0 && <Karte titel={`Zur Genehmigung (${offen.length})`} innen="p-0"><AntragListe ctx={ctx} liste={offen} /></Karte>}
     <div className="grid xl:grid-cols-5 gap-5">
@@ -1622,17 +1652,18 @@ function Urlaub({ ctx }) {
           </tr>; })}
         </Tabelle>}
       </Karte>
-      {leitung && <Karte titel={`Urlaubskonten ${jahr}`} className="xl:col-span-2" innen="p-0">
-        <Tabelle kopf={["Name", { t: "Anspr.", cls: "text-right" }, { t: "Verbr.", cls: "text-right" }, { t: "Gepl.", cls: "text-right" }, { t: "Rest", cls: "text-right" }]}>
-          {sichtbar.filter(m => m.aktiv).map(m => { const k = urlaubsKonto(db, m, jahr); return <tr key={m.id}>
+      {leitung && <Karte titel="Urlaubskonten (laufendes Urlaubsjahr)" className="xl:col-span-2" innen="p-0">
+        <Tabelle kopf={["Name", "Urlaubsjahr", { t: "Anspr.", cls: "text-right" }, { t: "Verbr.", cls: "text-right" }, { t: "Gepl.", cls: "text-right" }, { t: "Rest", cls: "text-right" }]}>
+          {sichtbar.filter(m => m.aktiv).map(m => { const k = urlaubsKonto(db, m, heute()); return <tr key={m.id}>
             <td className="px-3 py-2.5 whitespace-nowrap">{m.name}</td>
-            <td className="px-3 py-2.5 text-right tabular">{k.anspruch + k.uebertrag}</td>
+            <td className="px-3 py-2.5 whitespace-nowrap tabular text-xs text-stone-500">ab {fmtD(k.von).slice(0, 6)}</td>
+            <td className="px-3 py-2.5 text-right tabular">{fmtTage(r2u(k.anspruch + k.uebertrag))}</td>
             <td className="px-3 py-2.5 text-right tabular">{k.konsumiert}</td>
             <td className="px-3 py-2.5 text-right tabular">{k.geplant}{k.beantragt ? <span className="text-amber-700"> +{k.beantragt}</span> : ""}</td>
-            <td className={`px-3 py-2.5 text-right tabular font-semibold ${k.rest < 0 ? "text-rose-700" : ""}`}>{k.rest}</td>
+            <td className={`px-3 py-2.5 text-right tabular font-semibold ${k.rest < 0 ? "text-rose-700" : ""}`}>{fmtTage(k.rest)}</td>
           </tr>; })}
         </Tabelle>
-        <p className="px-5 py-3 text-xs text-stone-500">Anspruch inkl. Übertrag. Urlaub verjährt nach § 4 Abs 5 UrlG zwei Jahre nach Ende des Urlaubsjahres, in dem er entstanden ist.</p>
+        <p className="px-5 py-3 text-xs text-stone-500">Das Urlaubsjahr beginnt für jede Person am Jahrestag ihres Eintritts; dann kommt der neue Anspruch dazu, der Rest wird übertragen. Anspruch inkl. Übertrag bzw. Startbestand. Urlaub verjährt nach § 4 Abs 5 UrlG zwei Jahre nach Ende des Urlaubsjahres, in dem er entstanden ist.</p>
       </Karte>}
     </div>
     {dialog && <AbwDialog ctx={ctx} modus="urlaub" onClose={() => setDialog(false)} />}
@@ -1814,7 +1845,7 @@ function GesundForm({ a, onOk, onAbbruch }) {
 function MaDialog({ ctx, ma, onClose }) {
   const { db, user, aendern } = ctx;
   const neu = !ma;
-  const [f, setF] = useState(ma ? { ...ma } : { id: uid(), name: "", personalnr: `P-${pad(db.mitarbeiter.length + 1).padStart(3, "0")}`, abteilung: "", funktion: "", eintritt: heute(), modellId: db.modelle[0].id, urlaubstage: 25, urlaubUebertrag: 0, saldoStart: 0, vorgesetzterId: user.id, rolle: "mitarbeiter", aktiv: true, kjbg: false });
+  const [f, setF] = useState(ma ? { ...ma } : { id: uid(), name: "", personalnr: `P-${pad(db.mitarbeiter.length + 1).padStart(3, "0")}`, abteilung: "", funktion: "", eintritt: heute(), modellId: db.modelle[0].id, urlaubstage: 25, urlaubStart: 25, urlaubStartAm: heute(), saldoStart: 0, vorgesetzterId: user.id, rolle: "mitarbeiter", aktiv: true, kjbg: false });
   const set = (k, v) => setF({ ...f, [k]: v });
   const vorschlag = vorschlagUrlaubstage(db, f);
   const [planDlg, setPlanDlg] = useState(null);
@@ -1833,14 +1864,14 @@ function MaDialog({ ctx, ma, onClose }) {
   function speichern() {
     aendern(n => {
       const i = n.mitarbeiter.findIndex(m => m.id === f.id), alt = i >= 0 ? n.mitarbeiter[i] : null;
-      const d = { ...f, urlaubstage: +f.urlaubstage || 0, urlaubUebertrag: +f.urlaubUebertrag || 0, urlaubVorStart: +f.urlaubVorStart || 0, saldoStart: +f.saldoStart || 0, aktiv: !f.austritt || f.austritt >= heute() };
+      const d = { ...f, urlaubstage: +f.urlaubstage || 0, urlaubStart: f.urlaubStart === "" || f.urlaubStart == null ? undefined : +f.urlaubStart, saldoStart: +f.saldoStart || 0, aktiv: !f.austritt || f.austritt >= heute() };
       if (i >= 0) n.mitarbeiter[i] = d; else n.mitarbeiter.push(d);
       n.personalLog = n.personalLog || [];
       const log = (aktion, details) => n.personalLog.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: d.id, aktion, details });
       if (!alt) { log("angelegt", `Eintritt ${fmtD(d.eintritt)} · ${modellVon(n, d).name}`); return; }
       if (!alt.austritt && d.austritt) {
         log("Austritt eingetragen", [`letzter Arbeitstag ${fmtD(d.austritt)}`, d.austrittArt, d.austrittNotiz,
-          `Urlaub offen ${fmtTage(austritt.offen)} Tage (aliquot ${fmtTage(austritt.aliquot)} von ${austritt.anspruch})`, `Zeitkonto ${fmtH(kontoAustritt, true)} h`].filter(Boolean).join(" · "));
+          `Urlaub offen ${fmtTage(austritt.offen)} Tage (Urlaubsjahr ab ${fmtD(austritt.von)}, anteilig ${fmtTage(austritt.teil)} von ${austritt.jahresanspruch})`, `Zeitkonto ${fmtH(kontoAustritt, true)} h`].filter(Boolean).join(" · "));
         // Genehmigte/beantragte Abwesenheiten nach dem letzten Arbeitstag entfallen
         n.abwesenheiten.filter(a => a.maId === d.id && a.von > d.austritt && (wirksam(a) || a.status === "beantragt"))
           .forEach(a => { a.status = "storniert"; a.notiz = `${a.notiz ? a.notiz + " · " : ""}storniert wegen Austritt`; });
@@ -1869,8 +1900,12 @@ function MaDialog({ ctx, ma, onClose }) {
       </Feld>
       <Feld label="Urlaubstage / Jahr" hilfe={`Vorschlag nach UrlG: ${vorschlag} (aliquot zu ${tageProWoche(modellVon(db, f))} Arbeitstagen/Woche${dienstjahre(f.eintritt) >= 25 ? ", 6. Urlaubswoche" : ""})`}>
         <div className="flex gap-2"><input type="number" className={inputCls} value={f.urlaubstage} onChange={e => set("urlaubstage", e.target.value)} />{+f.urlaubstage !== vorschlag && <Knopf art="sekundaer" klein onClick={() => set("urlaubstage", vorschlag)}>übernehmen</Knopf>}</div></Feld>
-      <Feld label="Resturlaub Vorjahr"><input type="number" className={inputCls} value={f.urlaubUebertrag} onChange={e => set("urlaubUebertrag", e.target.value)} /></Feld>
-      <Feld label={`Urlaub ${parseInt(db.einstellungen.kontoStart || heute())} schon verbraucht`} hilfe="Tage, die vor dem Start der Zeitverwaltung genommen wurden"><input type="number" className={inputCls} value={f.urlaubVorStart || 0} onChange={e => set("urlaubVorStart", e.target.value)} /></Feld>
+      {(!f.eintritt || f.eintritt < (f.urlaubStartAm || heute())) ? <Feld label="Offener Urlaub (Startbestand)" hilfe={`alle noch offenen Tage am Stichtag, inkl. Anspruch des laufenden Urlaubsjahres · Urlaubsjahr ab ${f.eintritt ? fmtD(ujBeginn(f, heute())).slice(0, 6) : "Eintritt"}`}>
+        <div className="flex gap-2">
+          <input type="number" step="0.5" className={inputCls} value={f.urlaubStart ?? ""} placeholder="Tage" onChange={e => set("urlaubStart", e.target.value)} />
+          <input type="date" className={inputCls} value={f.urlaubStartAm || ""} title="Stand am" onChange={e => set("urlaubStartAm", e.target.value || undefined)} />
+        </div></Feld> : <div />}
+      <div className="text-sm self-end pb-2">{f.eintritt && (() => { const k = urlaubsKonto(db, { ...f, urlaubstage: +f.urlaubstage || 0, urlaubStart: +f.urlaubStart || 0 }, heute()); return <>Urlaubsjahr {fmtD(k.von)} – {fmtD(k.bis)} · heute offen: <b>{fmtTage(k.rest)} Tage</b></>; })()}</div>
       <Feld label="Vorgesetzte/r"><select className={inputCls} value={f.vorgesetzterId || ""} onChange={e => set("vorgesetzterId", e.target.value || null)}>
         <option value="">– keine/r –</option>{db.mitarbeiter.filter(m => m.id !== f.id && m.aktiv && m.rolle !== "mitarbeiter").map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
       <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || f.id === user.id} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
@@ -1903,7 +1938,7 @@ function MaDialog({ ctx, ma, onClose }) {
         </div>
         <div className="rounded-xl bg-stone-50 ring-1 ring-inset ring-stone-200 p-3 text-sm space-y-1">
           <div className="font-semibold">Für die Endabrechnung</div>
-          <div>Urlaub {austritt.jahr}: aliquot <b>{fmtTage(austritt.aliquot)}</b> von {austritt.anspruch} Tagen ({austritt.tage} von {austritt.tageJahr} Kalendertagen){austritt.uebertrag ? ` + ${austritt.uebertrag} Übertrag` : ""}, verbraucht/geplant {austritt.verbraucht}</div>
+          <div>Urlaubsjahr {fmtD(austritt.von)} – {fmtD(austritt.bis)}: anteilig <b>{fmtTage(austritt.teil)}</b> von {austritt.jahresanspruch} Tagen ({austritt.tage} von {austritt.tageUJ} Tagen){austritt.imStart ? " (im Startbestand enthalten)" : austritt.uebertrag ? ` + ${fmtTage(austritt.uebertrag)} Übertrag` : ""}, verbraucht {austritt.verbraucht}</div>
           <div>{austritt.offen >= 0 ? <>Offener Urlaub: <b>{fmtTage(austritt.offen)} Tage</b> → Urlaubsersatzleistung</> : <span className="text-rose-700">Zu viel verbraucht: {fmtTage(-austritt.offen)} Tage</span>}</div>
           <div>Zeitkonto zum Austritt: <b className={kontoAustritt < 0 ? "text-rose-700" : ""}>{fmtH(kontoAustritt, true)} h</b>{kontoAustritt > 0 ? " → auszahlen oder vorher ausgleichen" : ""}</div>
           {nachAustritt.length > 0 && <div className="text-amber-700">{nachAustritt.length} Abwesenheit{nachAustritt.length === 1 ? "" : "en"} nach dem letzten Arbeitstag {nachAustritt.length === 1 ? "wird" : "werden"} storniert.</div>}
@@ -1984,12 +2019,13 @@ function ImportDialog({ ctx, onClose }) {
         let pnr; do { nr++; pnr = `P-${String(nr).padStart(3, "0")}`; } while (n.mitarbeiter.some(m => m.personalnr === pnr));
         const ausgetreten = !!p.austritt;
         const ma = { id: uid(), name: p.name, personalnr: pnr, abteilung: "", funktion: "", eintritt: p.eintritt, modellId: n.modelle[0].id,
-          urlaubstage: p.urlaubstage ?? 25, urlaubUebertrag: vorjahr && !ausgetreten && p.rest > 0 ? p.rest : 0, saldoStart: 0,
+          urlaubstage: p.urlaubstage ?? 25, saldoStart: 0,
+          ...(daten.jahr && !ausgetreten && p.rest != null ? { urlaubStart: p.rest, urlaubStartAm: `${daten.jahr + 1}-01-01` } : {}),
           vorgesetzterId: user.id, rolle: "mitarbeiter", aktiv: !ausgetreten || p.austritt >= heute() };
         if (ausgetreten) Object.assign(ma, { austritt: p.austritt, austrittArt: "Sonstiges", austrittNotiz: `aus Beschäftigungsstand ${daten.jahr ?? ""} übernommen` });
         n.mitarbeiter.push(ma);
         n.personalLog.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: ma.id, aktion: "angelegt (Import)",
-          details: `aus Beschäftigungsstand ${daten.jahr ?? ""} · Eintritt ${fmtD(p.eintritt)}${ausgetreten ? ` · Austritt ${fmtD(p.austritt)}` : ""} · ${ma.urlaubstage} UT${ma.urlaubUebertrag ? ` · Resturlaub ${ma.urlaubUebertrag}` : ""}` });
+          details: `aus Beschäftigungsstand ${daten.jahr ?? ""} · Eintritt ${fmtD(p.eintritt)}${ausgetreten ? ` · Austritt ${fmtD(p.austritt)}` : ""} · ${ma.urlaubstage} UT${ma.urlaubStart != null ? ` · offen ${ma.urlaubStart} Tage am ${fmtD(ma.urlaubStartAm)}` : ""}` });
       });
     }, `${gewaehlt.length} Mitarbeiter/innen übernommen`);
     onClose();
@@ -2017,8 +2053,8 @@ function ImportDialog({ ctx, onClose }) {
           <td className="px-3 py-2 text-xs">{p.vorhanden ? <span className="text-amber-700">schon vorhanden</span> : p.austritt ? "wird als ausgetreten angelegt" : ""}</td>
         </tr>)}
       </Tabelle>
-      {vorjahr ? <Hinweis>Liste vom Vorjahr: Die Resttage werden als <b>Resturlaub Vorjahr</b> übernommen.</Hinweis>
-        : <Hinweis ton="warn">Die Liste ist {daten.jahr ? `von ${daten.jahr}` : "ohne erkennbares Jahr"} – die Resttage werden nicht übernommen. Resturlaub und schon verbrauchten Urlaub für {aktJahr} bitte je Person nachtragen.</Hinweis>}
+      {daten.jahr ? <Hinweis>Die Resttage werden als <b>offener Urlaub am 01.01.{daten.jahr + 1}</b> übernommen. Danach genommenen Urlaub bitte als Urlaub nachtragen{vorjahr ? "" : ` (die Liste ist von ${daten.jahr})`} – der neue Anspruch kommt jeweils am Jahrestag des Eintritts dazu.</Hinweis>
+        : <Hinweis ton="warn">Kein Jahr erkannt – die Resttage werden nicht übernommen. Offenen Urlaub bitte je Person eintragen.</Hinweis>}
       <p className="text-xs text-stone-500">Dienstplan: „{db.modelle[0]?.name}“, Personalnummern werden vergeben. Funktion, Geburtsdatum (Lehrlinge) usw. danach je Person ergänzen.</p>
     </div>}
   </Modal>;
@@ -2040,7 +2076,7 @@ function Mitarbeiter({ ctx }) {
     </Seitenkopf>
     <Karte innen="p-0">
       <Tabelle kopf={["Name", "Pers.-Nr.", "Abteilung", "Eintritt", "Modell", { t: "Std./Wo.", cls: "text-right" }, { t: "Urlaub", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, "Vorgesetzte/r", "Rolle", ""]}>
-        {liste.map(m => { const konto = zeitkonto(db, m, heute()); const k = urlaubsKonto(db, m, jahr); return <tr key={m.id} className={m.aktiv ? "" : "text-stone-400"}>
+        {liste.map(m => { const konto = zeitkonto(db, m, heute()); const k = urlaubsKonto(db, m, m.austritt && m.austritt < heute() ? m.austritt : heute(), m.austritt && m.austritt < heute() ? { stichtag: true } : {}); return <tr key={m.id} className={m.aktiv ? "" : "text-stone-400"}>
           <td className="px-3 py-2.5"><div className="flex items-center gap-2.5"><Avatar name={m.name} klein /><div><div className="font-medium whitespace-nowrap">{m.name}{m.lehrbeginn && lehrjahr(m, heute()) && <span className="ml-1.5 text-[10px] font-semibold text-stone-700 bg-stone-100 rounded px-1">{lehrjahr(m, heute())}. Lj.</span>}{jugendlich(m, heute()) && <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 rounded px-1" title="unter 18 – KJBG">KJBG</span>}</div><div className="text-xs text-stone-500">{m.funktion}</div></div></div></td>
           <td className="px-3 py-2.5 tabular">{m.personalnr}</td>
           <td className="px-3 py-2.5">{m.abteilung}</td>
@@ -2133,7 +2169,7 @@ function Auswertungen({ ctx }) {
   const liste = sichtbar.filter(m => tageZw(von, bis).some(d => beschaeftigt(m, d)));
   const zeilen = liste.map(m => {
     const s = summe(db, m, von, bis);
-    const uk = urlaubsKonto(db, m, parseInt(von));
+    const uk = urlaubsKonto(db, m, bisKonto);
     const urlaubZr = db.abwesenheiten.filter(a => a.maId === m.id && a.art === "urlaub" && wirksam(a)).reduce((n, a) => {
       const v = a.von > von ? a.von : von, b = (a.bis || a.von) < bis ? (a.bis || a.von) : bis; return n + (v <= b ? urlaubsTage(db, m, v, b) : 0); }, 0);
     const krank = abwKalendertage(db, m, KRANK_ARTEN, von, bis);
@@ -2228,9 +2264,10 @@ function Auswertungen({ ctx }) {
       ...jd.zeilen.map(z => [z.m.personalnr, z.m.name, z.m.funktion || "", fmtD(z.m.eintritt), z.ausgetreten ? fmtD(z.m.austritt) : "", z.ausgetreten ? (z.m.austrittArt || "") : "",
         z.ausgetreten ? "ausgetreten" : "beschäftigt", wochenStd(modellVon(db, z.m)), dienstjahre(z.m.eintritt, z.stichtag)])];
     const urlaub = [...kopf,
-      ["Personalnr", "Name", "Stichtag", "Jahresanspruch (Tage)", "Anspruch anteilig (Tage)", "Übertrag Vorjahr", "Verbraucht", "Offen (Tage)", "Hinweis"],
-      ...jd.zeilen.map(z => [z.m.personalnr, z.m.name, fmtD(z.stichtag), z.anspruchJahr, z.anspruch, z.uebertrag, z.verbraucht, z.offen,
-        z.ausgetreten ? (z.offen > 0 ? "ausgetreten – Urlaubsersatzleistung" : z.offen < 0 ? "ausgetreten – zu viel verbraucht" : "ausgetreten") : z.aliquot ? "Eintrittsjahr – anteilig" : "offen für Rückstellung"])];
+      ["Personalnr", "Name", "Stichtag", "Urlaubsjahr (ab Eintritt)", "Jahresanspruch (Tage)", "Anspruch lfd. Urlaubsjahr", "Übertrag / Startbestand", "Verbraucht im Urlaubsjahr", "Offen am Stichtag", "Hinweis"],
+      ...jd.zeilen.map(z => [z.m.personalnr, z.m.name, fmtD(z.stichtag), `${fmtD(z.ujVon)} – ${fmtD(z.ujBis)}`, z.anspruchJahr, z.startbestand != null ? "im Startbestand" : z.anspruch,
+        z.startbestand != null ? `${fmtTage(z.startbestand)} (Startbestand)` : z.uebertrag, z.verbraucht, z.offen,
+        z.ausgetreten ? (z.offen > 0 ? "ausgetreten – Urlaubsersatzleistung" : z.offen < 0 ? "ausgetreten – zu viel verbraucht" : "ausgetreten") : z.aliquot ? "erstes Arbeitsjahr – anteilig" : "offen für Rückstellung"])];
     const krank = [...kopf,
       ["Personalnr", "Name", "Krankenstand (Kalendertage)", "davon Arbeitstage", "Fälle", "Arbeitsunfall (Kalendertage)", "Pflegefreistellung (Kalendertage)", "Arztbesuche (Stunden)", "Zeitkonto zum Stichtag (h)"],
       ...jd.zeilen.map(z => [z.m.personalnr, z.m.name, z.krankKT, z.krankAT, z.faelle.length, z.unfallKT, z.pflegeKT, h2(z.arztMin), h2(z.konto)])];
@@ -2240,7 +2277,7 @@ function Auswertungen({ ctx }) {
     const wb = X.utils.book_new();
     const blatt = (rows, name, b) => { const ws = X.utils.aoa_to_sheet(rows); ws["!cols"] = b.map(w => ({ wch: w })); X.utils.book_append_sheet(wb, ws, name); };
     blatt(stand, "Mitarbeiterstand", [24, 22, 18, 11, 11, 30, 13, 13, 11]);
-    blatt(urlaub, "Urlaub", [11, 22, 11, 18, 20, 14, 11, 12, 34]);
+    blatt(urlaub, "Urlaub", [11, 22, 11, 24, 18, 22, 22, 22, 16, 34]);
     blatt(krank, "Krankenstand", [11, 22, 24, 16, 8, 24, 26, 18, 22]);
     blatt(faelle, "Krankenstandsfälle", [11, 22, 16, 11, 11, 12, 14, 50]);
     X.writeFile(wb, `Jahresabschluss_${jahr}_Mitarbeiter.xlsx`);
@@ -2289,7 +2326,7 @@ function Auswertungen({ ctx }) {
         return fmtZrKurz(v, b) + (a.art === "unfall" ? " (Arbeitsunfall)" : "");
       });
       const ktText = kt.length ? `${kt.join(", ")}  (gesamt ${z.krankKT + z.unfallKT} KT)` : 0;
-      rows.push([z.m.name, z.arbeitstageOhneUrlaub, `${fmtTage(z.anspruch)} UT`, `UT ${fmtTage(z.offen)}${z.ausgetreten && z.offen > 0 ? " (Ersatzleistung)" : ""}`, ktText]);
+      rows.push([z.m.name, z.arbeitstageOhneUrlaub, `${fmtTage(z.aliquot ? z.anspruch : z.anspruchJahr)} UT`, `UT ${fmtTage(z.offen)}${z.ausgetreten && z.offen > 0 ? " (Ersatzleistung)" : ""}`, ktText]);
       rows.push([z.ausgetreten ? `${fmtD(z.m.eintritt)} - ${fmtD(z.m.austritt)}` : fmtD(z.m.eintritt)]);
       rows.push([], []);
     });
@@ -2404,15 +2441,15 @@ function DruckJahr({ db, jd }) {
     </div>
     <div className="flex gap-8 mb-3 font-semibold"><span>Stand 01.01.: {jd.stand0101}</span><span>Eintritte: {jd.eintritte}</span><span>Austritte: {jd.austritte}</span><span>Stand 31.12.: {jd.stand3112}</span></div>
     <div className="font-bold mb-1">Mitarbeiterstand und Urlaub</div>
-    <table className="w-full mb-4"><thead><tr>{["Pers.-Nr.", "Name", "Eintritt", "Austritt / Art", "Anspruch", "Übertrag", "Verbraucht", "Offen"].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
+    <table className="w-full mb-4"><thead><tr>{["Pers.-Nr.", "Name", "Eintritt", "Austritt / Art", "Urlaubsjahr", "Anspruch", "Übertrag", "Verbraucht", "Offen"].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
       <tbody>{jd.zeilen.map(z => <tr key={z.m.id}><td className={td}>{z.m.personalnr}</td><td className={td}>{z.m.name}</td><td className={td}>{fmtD(z.m.eintritt)}</td>
-        <td className={td}>{z.ausgetreten ? `${fmtD(z.m.austritt)} · ${z.m.austrittArt || ""}` : "–"}</td><td className={td}>{fmtTage(z.anspruch)}{z.aliquot ? " (anteilig)" : ""}</td>
-        <td className={td}>{z.uebertrag}</td><td className={td}>{z.verbraucht}</td><td className={`${td} font-bold`}>{fmtTage(z.offen)}{z.ausgetreten && z.offen > 0 ? " (Ersatzleistung)" : ""}</td></tr>)}</tbody></table>
+        <td className={td}>{z.ausgetreten ? `${fmtD(z.m.austritt)} · ${z.m.austrittArt || ""}` : "–"}</td><td className={td}>{fmtD(z.ujVon).slice(0, 6)}–{fmtD(z.ujBis).slice(0, 6)}</td><td className={td}>{fmtTage(z.anspruch)}{z.aliquot ? " (anteilig)" : ""}</td>
+        <td className={td}>{z.startbestand != null ? `${fmtTage(z.startbestand)} (Start)` : fmtTage(z.uebertrag)}</td><td className={td}>{z.verbraucht}</td><td className={`${td} font-bold`}>{fmtTage(z.offen)}{z.ausgetreten && z.offen > 0 ? " (Ersatzleistung)" : ""}</td></tr>)}</tbody></table>
     <div className="font-bold mb-1">Krankenstände und Abwesenheiten</div>
     <table className="w-full mb-4"><thead><tr>{["Name", "Krank (KT)", "davon AT", "Fälle", "Arbeitsunfall (KT)", "Pflegefreist. (KT)", "Arzt (h)", "Zeitkonto"].map(h => <th key={h} className={th}>{h}</th>)}</tr></thead>
       <tbody>{jd.zeilen.map(z => <tr key={z.m.id}><td className={td}>{z.m.name}</td><td className={td}>{z.krankKT}</td><td className={td}>{z.krankAT}</td><td className={td}>{z.faelle.length}</td>
         <td className={td}>{z.unfallKT}</td><td className={td}>{z.pflegeKT}</td><td className={td}>{fmtH(z.arztMin)}</td><td className={td}>{fmtH(z.konto, true)}</td></tr>)}</tbody></table>
-    <div className="text-stone-600">KT = Kalendertage, AT = Arbeitstage laut Dienstplan. Urlaub in Arbeitstagen; im Ein- und Austrittsjahr anteilig nach Kalendertagen. Bei Ausgetretenen gilt der Stand zum letzten Arbeitstag. Richtwerte aus der Zeitverwaltung – maßgeblich ist die Lohnverrechnung.</div>
+    <div className="text-stone-600">KT = Kalendertage, AT = Arbeitstage laut Dienstplan. Urlaub in Arbeitstagen; Urlaubsjahr ab dem Eintrittsdatum, im ersten Halbjahr und bei Austritt anteilig nach Tagen. Bei Ausgetretenen gilt der Stand zum letzten Arbeitstag. Richtwerte aus der Zeitverwaltung – maßgeblich ist die Lohnverrechnung.</div>
   </div>;
 }
 

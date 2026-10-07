@@ -47,7 +47,7 @@ Navigation: **Dashboard → Zeiterfassung → Urlaub → Krankenstand → Mitarb
 | Fixe Arbeitszeit | § 26 AZG: Dienstplan schriftlich festhalten, Einhaltung monatlich bestätigen, nur Abweichungen aufzeichnen; automatische Pausen nur mit schriftlicher Pausen-Vereinbarung | Dienstplan je Wochentag, Automatik mit Kennzeichen „auto“, Bestätigung beim Monatsabschluss |
 | Jugendliche (Lehrlinge unter 18) | KJBG: Pause ab 4,5 h, 8 h/Tag (9 h bei Verteilung), 40 h/Woche, 12 h Ruhezeit, Nachtruhe 20–6 Uhr | strengere Prüfung, gesteuert über das Geburtsdatum – ab dem 18. Geburtstag automatisch AZG |
 | Überstunden / Mehrarbeit | § 10 AZG 50 %, § 19d AZG 25 % bei Teilzeit | Mehrarbeit und Überstunden getrennt ausgewiesen (vereinfacht pro Woche) |
-| Urlaub | § 2 UrlG: 25 Arbeitstage (5-Tage-Woche), ab 25 Dienstjahren 30 | Vorschlag aliquot zu den Arbeitstagen pro Woche; Feiertage zählen nicht |
+| Urlaub | § 2 UrlG: 25 Arbeitstage (5-Tage-Woche), ab 25 Dienstjahren 30; Urlaubsjahr = Arbeitsjahr, in den ersten 6 Monaten anteilig | Urlaubsjahr ab Eintrittsdatum, Rest wird übertragen; Feiertage zählen nicht |
 | Verjährung Urlaub | § 4 Abs 5 UrlG | Hinweis im Urlaubskonto |
 | Krankenstand | Entgeltfortzahlung 6 / 8 / 10 / 12 Wochen nach Dienstjahren | Anspruch je Person angezeigt |
 | Pflegefreistellung | § 16 UrlG: bis 1 Woche pro Arbeitsjahr | eigene Abwesenheitsart |
@@ -107,7 +107,7 @@ Am Tablet: Name antippen → PIN → Kommen / Pause / Gehen. Der Server prüft d
 
 ## 6. Offene Fragen an dich
 
-- **Urlaub im Ein-/Austrittsjahr:** geklärt – aliquot nach Kalendertagen (so rechnen Jahresabschluss, Beschäftigungsstand und Austritt).
+- **Urlaubsjahr:** geklärt – **Arbeitsjahr ab dem Eintrittsdatum** (neuer Anspruch am Jahrestag, Rest wird übertragen). Im ersten Halbjahr und bei Austritt anteilig nach Tagen. Beim Umstieg je Person ein Startbestand „offener Urlaub am Stichtag“. Der Jahresabschluss zeigt die offenen Tage am 31.12. im jeweils laufenden Urlaubsjahr.
 
 1. **Vorgesetzte:** Gibt es neben dir eine Salonleitung, die Urlaub genehmigen soll? Dafür muss eine bestehende Policy von `abw_anfragen` erweitert werden (im SQL auskommentiert vorbereitet).
 2. **Dienstpläne:** geklärt – fixer Plan, keine Überstunden. Öffnungszeiten: So + Mo geschlossen, Di + Mi 9–18, Do + Fr 9–19, Sa 8–14, Di–Fr je 1 h Pause (= 40 h). Derzeit keine Teilzeit; eigene Pläne pro Person sind möglich.
