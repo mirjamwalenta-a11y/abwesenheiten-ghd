@@ -68,7 +68,7 @@ const { useState, useEffect, useMemo } = React;
 //  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
 //  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
 // ═════════════════════════════════════════════════════════════════════════════
-const LS_KEY = "ghd-zeitverwaltung-demo-v8";
+const LS_KEY = "ghd-zeitverwaltung-demo-v9";
 const SESS_KEY = "ghd-zeitverwaltung-demo-user";
 
 // ─── DATUM & ZEIT ─────────────────────────────────────────────────────────────
@@ -380,6 +380,8 @@ function urlaubsKonto(db, ma, jahr) {
     else if (v >= h) geplant += urlaubsTage(db, ma, v, b);
     else { konsumiert += urlaubsTage(db, ma, v, addTage(h, -1)); geplant += urlaubsTage(db, ma, h, b); }
   });
+  // Urlaub, der im Startjahr schon vor Beginn der Zeitverwaltung verbraucht wurde
+  if (jahr === parseInt(db.einstellungen.kontoStart || "0")) konsumiert += +ma.urlaubVorStart || 0;
   const anspruch = +ma.urlaubstage || 0;
   const uebertrag = jahr === new Date().getFullYear() ? (+ma.urlaubUebertrag || 0) : 0;
   return { anspruch, uebertrag, konsumiert, geplant, beantragt, rest: anspruch + uebertrag - konsumiert - geplant };
@@ -437,6 +439,30 @@ function bsTermine(db, ma, von, bis, plan, ohneSommer) {
   return out;
 }
 function fmtTage(n) { return String(n).replace(".", ","); }
+
+// Austritt: aliquoter Urlaub im Austrittsjahr (Basis für die Urlaubsersatzleistung, § 10 UrlG)
+const BEENDIGUNG = ["Kündigung durch Arbeitnehmer/in", "Kündigung durch Arbeitgeber/in", "Einvernehmliche Auflösung", "Ende befristetes Dienstverhältnis",
+  "Ende der Lehrzeit", "Lösung in der Probezeit", "Entlassung", "Vorzeitiger Austritt", "Pensionierung", "Sonstiges"];
+function austrittsUrlaub(db, ma) {
+  const jahr = parseInt(ma.austritt);
+  const start = ma.eintritt && ma.eintritt > `${jahr}-01-01` ? ma.eintritt : `${jahr}-01-01`;
+  const tageJahr = tageZw(`${jahr}-01-01`, `${jahr}-12-31`).length, tage = tageZw(start, ma.austritt).length;
+  const k = urlaubsKonto(db, ma, jahr);
+  const aliquot = Math.round(k.anspruch * tage / tageJahr * 100) / 100;
+  const verbraucht = k.konsumiert + k.geplant;
+  return { jahr, aliquot, anspruch: k.anspruch, uebertrag: k.uebertrag, verbraucht, tage, tageJahr, offen: Math.round((aliquot + k.uebertrag - verbraucht) * 100) / 100 };
+}
+const STAMM_FELDER = { name: "Name", personalnr: "Personalnummer", abteilung: "Abteilung", funktion: "Funktion", eintritt: "Eintritt", modellId: "Dienstplan",
+  urlaubstage: "Urlaubstage", urlaubUebertrag: "Resturlaub Vorjahr", urlaubVorStart: "Urlaub vor Start", vorgesetzterId: "Vorgesetzte/r", rolle: "Rolle",
+  geburtsdatum: "Geburtsdatum", lehrbeginn: "Lehrbeginn", saldoStart: "Zeitkonto-Übertrag" };
+function stammWert(db, k, v) {
+  if (v == null || v === "") return "–";
+  if (k === "modellId") return db.modelle.find(m => m.id === v)?.name || v;
+  if (k === "vorgesetzterId") return nameVon(db, v);
+  if (k === "rolle") return ROLLEN[v]?.label || v;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return fmtD(v);
+  return String(v);
+}
 
 // Entgeltfortzahlung bei Krankheit (§ 8 AngG / EFZG, seit 2018 vereinheitlicht)
 function efzWochen(ma) {
@@ -534,19 +560,36 @@ function nameVon(db, id) { return id === "system" ? "Automatik" : db.mitarbeiter
 
 // ─── DEMO-DATEN ───────────────────────────────────────────────────────────────
 function zufall(seed) { let s = seed; return () => { s = (s * 1664525 + 1013904223) % 4294967296; return s / 4294967296; }; }
+// Dienstpläne nach den Öffnungszeiten (Vollzeit und Lehrling)
+function standardModelle() {
+  const T = (b, e, p = 30) => ({ b, e, p });
+  return [
+    // = Öffnungszeiten: Di+Mi 9–18, Do+Fr 9–19 (je 1 h Pause), Sa 8–14 → 40 h
+    { id: "vz40",  name: "Vollzeit 40 h (Öffnungszeiten)",  plan: [null, T("09:00", "18:00", 60), T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "14:00", 0), null] },
+    // Unter 18 braucht es schon ab 4,5 h eine Pause (KJBG) → Samstag mit 30 min
+    { id: "lehre", name: "Lehrling (Sa mit Pause, KJBG)",   plan: [null, T("09:00", "18:00", 60), T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "14:00", 30), null] },
+  ].map(mitStunden);
+}
+
+// Leerer Start zum Testen mit den eigenen Mitarbeiter/innen (nur in diesem Browser)
+function leereDaten(name, id) {
+  return {
+    version: 1, eigeneDaten: true, modelle: standardModelle(),
+    mitarbeiter: [{ id: id || uid(), name: name.trim(), personalnr: "P-001", abteilung: "Leitung", funktion: "Inhaberin", eintritt: heute(), modellId: "vz40",
+      urlaubstage: 25, urlaubUebertrag: 0, saldoStart: 0, vorgesetzterId: null, rolle: "admin", aktiv: true }],
+    abwesenheiten: [], zeiten: [], korrekturen: [], abschluesse: [], protokoll: [], personalLog: [],
+    // Zeitkonto und Automatik beginnen heute – vergangene Tage werden nicht automatisch befüllt
+    einstellungen: { ...STANDARD_EINSTELLUNGEN, kontoStart: heute() },
+  };
+}
+
 function demoDaten() {
   const r = zufall(20261007);
   const zw = (a, b) => a + Math.floor(r() * (b - a + 1));
   const h = heute(), jetzt = new Date();
   const m2 = monatKey(h), m1 = monatVerschieben(m2, -1), m0 = monatVerschieben(m2, -2);
   const start = `${m0}-01`;
-  const T = (b, e, p = 30) => ({ b, e, p });
-  const modelle = [
-    // = Öffnungszeiten: Di+Mi 9–18, Do+Fr 9–19 (je 1 h Pause), Sa 8–14 → 40 h
-    { id: "vz40",  name: "Vollzeit 40 h (Öffnungszeiten)",  plan: [null, T("09:00", "18:00", 60), T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "14:00", 0), null] },
-    // Unter 18 braucht es schon ab 4,5 h eine Pause (KJBG) → Samstag mit 30 min
-    { id: "lehre", name: "Lehrling (Sa mit Pause, KJBG)",   plan: [null, T("09:00", "18:00", 60), T("09:00", "18:00", 60), T("09:00", "19:00", 60), T("09:00", "19:00", 60), T("08:00", "14:00", 30), null] },
-  ].map(mitStunden);
+  const modelle = standardModelle();
   // Erfundene Personen – keine echten Mitarbeiter/innen
   const mitarbeiter = [
     { id: "ma1", name: "Sophie Lindner",   personalnr: "P-001", abteilung: "Leitung",    funktion: "Inhaberin",          eintritt: "2012-03-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 3, vorgesetzterId: null,  rolle: "admin",       aktiv: true },
@@ -557,7 +600,7 @@ function demoDaten() {
     { id: "ma6", name: "Lisa Wagner",      personalnr: "P-006", abteilung: "Rezeption",  funktion: "Rezeption",          eintritt: "2024-03-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 1, vorgesetzterId: "ma1", rolle: "mitarbeiter", aktiv: true },
     { id: "ma7", name: "Nina Hofer",       personalnr: "P-007", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: "2025-09-01", modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: "2025-09-01", geburtsdatum: `${parseInt(addTage(h, 40)) - 18}${addTage(h, 40).slice(4)}`, bsTag1: 3 },
     { id: "ma9", name: "Lea Fuchs",        personalnr: "P-009", abteilung: "Ausbildung", funktion: "Lehrling",           eintritt: `${m1}-01`,   modellId: "lehre",    urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: true, lehrbeginn: `${m1}-01`, geburtsdatum: `${parseInt(h) - 15}-03-12`, bsTag1: 1, bsTag2: 4 },
-    { id: "ma8", name: "Tobias Reiter",    personalnr: "P-008", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2020-04-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: false, austritt: `${m0}-15` },
+    { id: "ma8", name: "Tobias Reiter",    personalnr: "P-008", abteilung: "Styling",    funktion: "Stylist",            eintritt: "2020-04-01", modellId: "vz40",     urlaubstage: 25, urlaubUebertrag: 0, vorgesetzterId: "ma2", rolle: "mitarbeiter", aktiv: false, austritt: `${m0}-15`, austrittArt: "Kündigung durch Arbeitnehmer/in" },
   ].map(m => ({ saldoStart: 0, kjbg: false, ...m }));
 
   const abw = (maId, art, von, bis, status, extra = {}) => ({ id: uid(), maId, art, von, bis, status, beantragtAm: addTage(von, -14) < start ? start : addTage(von, -14), notiz: "", ...extra });
@@ -639,7 +682,8 @@ function demoDaten() {
     neu: { beginn: letzteJulia.beginn, ende: min2hm(hm2min(letzteJulia.ende) + 30), pause: letzteJulia.pause },
     grund: "Letzte Kundin hat länger gedauert, Ausstempeln vergessen.", status: "offen", von: "ma3", am: h });
 
-  const db1 = { ...db0, zeiten, abschluesse, korrekturen, version: 1 };
+  const personalLog = [{ id: uid(), am: `${m0}-01T10:00:00.000Z`, von: "ma1", maId: "ma8", aktion: "Austritt eingetragen", details: `letzter Arbeitstag ${fmtD(`${m0}-15`)} · Kündigung durch Arbeitnehmer/in · Urlaub offen 3,5 Tage · Zeitkonto +1:20 h` }];
+  const db1 = { ...db0, zeiten, abschluesse, korrekturen, personalLog, version: 1 };
   automatik(db1);
   return db1;
 }
@@ -829,9 +873,10 @@ function PinFeld({ onFertig, dunkel }) {
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
-function Login({ db, onLogin, onTerminal }) {
+function Login({ db, onLogin, onTerminal, onEigene }) {
   const aktive = db.mitarbeiter.filter(m => m.aktiv);
   const [sel, setSel] = useState(null);
+  const [eigen, setEigen] = useState(null);
   if (sel) return <div className="min-h-screen flex justify-center">
     <div className="w-full max-w-md flex flex-col justify-center px-6 py-12 einblenden">
       <button onClick={() => setSel(null)} className="text-stone-500 text-sm font-semibold mb-8 self-start hover:text-gold-700">‹ Zurück</button>
@@ -862,7 +907,16 @@ function Login({ db, onLogin, onTerminal }) {
       <div className="mt-6 rounded-[14px] bg-stone-100 border border-stone-200 p-3.5 text-xs text-stone-500 leading-relaxed">
         <b className="text-stone-700">Zwei Wege zum Stempeln:</b> am eigenen Handy (hier anmelden, die Anmeldung bleibt gespeichert) oder am Tablet im Salon. Beide Male mit derselben persönlichen PIN. In der Demo funktioniert jede PIN; live prüft der Server, und die Rolle kommt aus der Datenbank.
       </div>
+      {!db.eigeneDaten && <button onClick={() => setEigen("")} className="mt-3 w-full rounded-full border border-stone-200 bg-white hover:border-gold-500 py-3 text-sm font-bold text-stone-800 transition-colors">👥 Mit meinen eigenen Mitarbeitern testen</button>}
       <p className="text-center text-xs text-stone-300 mt-8">Great Hair Day Wien</p>
+      {eigen !== null && <Modal titel="Mit eigenen Mitarbeitern testen" onClose={() => setEigen(null)}
+        fuss={<><Knopf art="sekundaer" onClick={() => setEigen(null)}>Abbrechen</Knopf><Knopf disabled={!eigen.trim()} onClick={() => onEigene(eigen)}>Leer starten</Knopf></>}>
+        <div className="space-y-4">
+          <p className="text-sm text-stone-600">Die erfundenen Demo-Daten werden gelöscht. Du startest als Administratorin und legst unter „Mitarbeiter“ dein Team an.</p>
+          <Feld label="Dein Name"><input className={inputCls} autoFocus value={eigen} onChange={e => setEigen(e.target.value)} /></Feld>
+          <Hinweis>Alles bleibt nur in diesem Browser auf diesem Gerät. Für ein anderes Gerät (z. B. das Tablet) unter Einstellungen „Testdaten sichern“ und dort „laden“.</Hinweis>
+        </div>
+      </Modal>}
     </div>
   </div>;
 }
@@ -1622,14 +1676,37 @@ function MaDialog({ ctx, ma, onClose }) {
   const set = (k, v) => setF({ ...f, [k]: v });
   const vorschlag = vorschlagUrlaubstage(db, f);
   const [planDlg, setPlanDlg] = useState(null);
+  const [austrittForm, setAustrittForm] = useState(false);
+  const austritt = f.austritt ? austrittsUrlaub(db, f) : null;
+  const kontoAustritt = f.austritt ? zeitkonto(db, f, f.austritt < heute() ? f.austritt : heute()) : 0;
+  const nachAustritt = f.austritt ? db.abwesenheiten.filter(a => a.maId === f.id && a.von > f.austritt && (wirksam(a) || a.status === "beantragt")) : [];
+  const verlauf = (db.personalLog || []).filter(l => l.maId === f.id).slice().reverse();
   function planSpeichern(m, ab) {
     aendern(n => { modellUebernehmen(n, m, ab); if (planDlg.kopie) { const x = n.mitarbeiter.find(q => q.id === f.id); if (x) x.modellId = m.id; } }, `Dienstplan gespeichert${ab > "2000-01-01" ? ` (gültig ab ${fmtD(ab)})` : ""}`);
     if (planDlg.kopie) set("modellId", m.id);
     setPlanDlg(null);
   }
-  const fehler = !f.name.trim() ? "Name fehlt." : db.mitarbeiter.some(m => m.id !== f.id && m.personalnr === f.personalnr) ? "Personalnummer bereits vergeben." : null;
+  const fehler = !f.name.trim() ? "Name fehlt." : db.mitarbeiter.some(m => m.id !== f.id && m.personalnr === f.personalnr) ? "Personalnummer bereits vergeben."
+    : f.austritt && f.eintritt && f.austritt < f.eintritt ? "Austritt liegt vor dem Eintritt." : f.austritt && !f.austrittArt ? "Bitte die Art der Beendigung wählen." : null;
   function speichern() {
-    aendern(n => { const i = n.mitarbeiter.findIndex(m => m.id === f.id); const d = { ...f, urlaubstage: +f.urlaubstage || 0, urlaubUebertrag: +f.urlaubUebertrag || 0, saldoStart: +f.saldoStart || 0 }; if (i >= 0) n.mitarbeiter[i] = d; else n.mitarbeiter.push(d); }, neu ? "Mitarbeiter/in angelegt" : "Änderungen gespeichert");
+    aendern(n => {
+      const i = n.mitarbeiter.findIndex(m => m.id === f.id), alt = i >= 0 ? n.mitarbeiter[i] : null;
+      const d = { ...f, urlaubstage: +f.urlaubstage || 0, urlaubUebertrag: +f.urlaubUebertrag || 0, urlaubVorStart: +f.urlaubVorStart || 0, saldoStart: +f.saldoStart || 0, aktiv: !f.austritt || f.austritt >= heute() };
+      if (i >= 0) n.mitarbeiter[i] = d; else n.mitarbeiter.push(d);
+      n.personalLog = n.personalLog || [];
+      const log = (aktion, details) => n.personalLog.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: d.id, aktion, details });
+      if (!alt) { log("angelegt", `Eintritt ${fmtD(d.eintritt)} · ${modellVon(n, d).name}`); return; }
+      if (!alt.austritt && d.austritt) {
+        log("Austritt eingetragen", [`letzter Arbeitstag ${fmtD(d.austritt)}`, d.austrittArt, d.austrittNotiz,
+          `Urlaub offen ${fmtTage(austritt.offen)} Tage (aliquot ${fmtTage(austritt.aliquot)} von ${austritt.anspruch})`, `Zeitkonto ${fmtH(kontoAustritt, true)} h`].filter(Boolean).join(" · "));
+        // Genehmigte/beantragte Abwesenheiten nach dem letzten Arbeitstag entfallen
+        n.abwesenheiten.filter(a => a.maId === d.id && a.von > d.austritt && (wirksam(a) || a.status === "beantragt"))
+          .forEach(a => { a.status = "storniert"; a.notiz = `${a.notiz ? a.notiz + " · " : ""}storniert wegen Austritt`; });
+      } else if (alt.austritt && !d.austritt) log("Austritt rückgängig gemacht", `war ${fmtD(alt.austritt)} (${alt.austrittArt || "–"})`);
+      else if (alt.austritt && d.austritt && (alt.austritt !== d.austritt || alt.austrittArt !== d.austrittArt)) log("Austritt geändert", `${fmtD(alt.austritt)} → ${fmtD(d.austritt)} · ${d.austrittArt}`);
+      const geaendert = Object.keys(STAMM_FELDER).filter(k => String(alt[k] ?? "") !== String(d[k] ?? ""));
+      if (geaendert.length) log("Stammdaten geändert", geaendert.map(k => k === "geburtsdatum" ? "Geburtsdatum geändert" : `${STAMM_FELDER[k]}: ${stammWert(n, k, alt[k])} → ${stammWert(n, k, d[k])}`).join(" · "));
+    }, neu ? "Mitarbeiter/in angelegt" : f.austritt && !ma?.austritt ? "Austritt eingetragen und dokumentiert" : "Änderungen gespeichert");
     onClose();
   }
   return <Modal breit titel={neu ? "Neue/r Mitarbeiter/in" : f.name} onClose={onClose}
@@ -1641,7 +1718,6 @@ function MaDialog({ ctx, ma, onClose }) {
         <datalist id="abteilungen">{[...new Set(db.mitarbeiter.map(m => m.abteilung))].map(a => <option key={a} value={a} />)}</datalist></Feld>
       <Feld label="Funktion"><input className={inputCls} value={f.funktion} onChange={e => set("funktion", e.target.value)} /></Feld>
       <Feld label="Eintrittsdatum"><input type="date" className={inputCls} value={f.eintritt || ""} onChange={e => set("eintritt", e.target.value)} /></Feld>
-      <Feld label="Austrittsdatum" hilfe="Leer lassen, solange beschäftigt."><input type="date" className={inputCls} value={f.austritt || ""} onChange={e => set("austritt", e.target.value || undefined)} /></Feld>
       <Feld label="Dienstplan" breit hilfe={`${fmtTage(wochenStd(modellVon(db, f)))} Wochenstunden · ${WT.map((t, i) => { const x = planAusModell(modellVon(db, f), i); return x ? `${t} ${x.b}–${x.e}${x.p ? ` (${x.p}′ Pause)` : ""}` : null; }).filter(Boolean).join(" · ")}`}>
         <select className={inputCls} value={f.modellId} onChange={e => set("modellId", e.target.value)}>{db.modelle.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
         <div className="mt-2 flex flex-wrap gap-2">
@@ -1652,6 +1728,7 @@ function MaDialog({ ctx, ma, onClose }) {
       <Feld label="Urlaubstage / Jahr" hilfe={`Vorschlag nach UrlG: ${vorschlag} (aliquot zu ${tageProWoche(modellVon(db, f))} Arbeitstagen/Woche${dienstjahre(f.eintritt) >= 25 ? ", 6. Urlaubswoche" : ""})`}>
         <div className="flex gap-2"><input type="number" className={inputCls} value={f.urlaubstage} onChange={e => set("urlaubstage", e.target.value)} />{+f.urlaubstage !== vorschlag && <Knopf art="sekundaer" klein onClick={() => set("urlaubstage", vorschlag)}>übernehmen</Knopf>}</div></Feld>
       <Feld label="Resturlaub Vorjahr"><input type="number" className={inputCls} value={f.urlaubUebertrag} onChange={e => set("urlaubUebertrag", e.target.value)} /></Feld>
+      <Feld label={`Urlaub ${parseInt(db.einstellungen.kontoStart || heute())} schon verbraucht`} hilfe="Tage, die vor dem Start der Zeitverwaltung genommen wurden"><input type="number" className={inputCls} value={f.urlaubVorStart || 0} onChange={e => set("urlaubVorStart", e.target.value)} /></Feld>
       <Feld label="Vorgesetzte/r"><select className={inputCls} value={f.vorgesetzterId || ""} onChange={e => set("vorgesetzterId", e.target.value || null)}>
         <option value="">– keine/r –</option>{db.mitarbeiter.filter(m => m.id !== f.id && m.aktiv && m.rolle !== "mitarbeiter").map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
       <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || f.id === user.id} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
@@ -1667,9 +1744,42 @@ function MaDialog({ ctx, ma, onClose }) {
       <Feld label="Zeitkonto-Übertrag (Minuten)" hilfe="Saldo aus dem alten System beim Start"><input type="number" className={inputCls} value={f.saldoStart} onChange={e => set("saldoStart", e.target.value)} /></Feld>
       <div className="space-y-2 pt-5">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.checked ? (f.eintritt || heute()) : undefined)} />Lehrling</label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.aktiv} disabled={f.id === user.id} onChange={e => set("aktiv", e.target.checked)} />Aktiv (kann sich anmelden)</label>
       </div>
     </div>
+    {!neu && <div className="mt-5 rounded-[14px] border border-stone-200 bg-white p-4">
+      <div className="text-[11px] font-bold uppercase tracking-wider text-stone-500 mb-3">Beschäftigung</div>
+      {!f.austritt && !austrittForm && <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm">Beschäftigt seit {fmtD(f.eintritt)}{f.eintritt ? ` · ${dienstjahre(f.eintritt)} Dienstjahre` : ""}</span>
+        {f.id !== user.id && <Knopf klein art="rot" onClick={() => { setAustrittForm(true); setF({ ...f, austritt: heute(), austrittArt: "" }); }}>Austritt eintragen</Knopf>}
+      </div>}
+      {f.austritt && <div className="space-y-3">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <Feld label="Letzter Arbeitstag"><input type="date" className={inputCls} value={f.austritt} min={f.eintritt} onChange={e => set("austritt", e.target.value || heute())} /></Feld>
+          <Feld label="Art der Beendigung"><select className={inputCls} value={f.austrittArt || ""} onChange={e => set("austrittArt", e.target.value)}>
+            <option value="">– bitte wählen –</option>{BEENDIGUNG.map(b => <option key={b}>{b}</option>)}</select></Feld>
+          <Feld label="Notiz (optional)" breit><input className={inputCls} value={f.austrittNotiz || ""} placeholder="z. B. Kündigung erhalten am …, Kündigungsfrist" onChange={e => set("austrittNotiz", e.target.value)} /></Feld>
+        </div>
+        <div className="rounded-xl bg-stone-50 ring-1 ring-inset ring-stone-200 p-3 text-sm space-y-1">
+          <div className="font-semibold">Für die Endabrechnung</div>
+          <div>Urlaub {austritt.jahr}: aliquot <b>{fmtTage(austritt.aliquot)}</b> von {austritt.anspruch} Tagen ({austritt.tage} von {austritt.tageJahr} Kalendertagen){austritt.uebertrag ? ` + ${austritt.uebertrag} Übertrag` : ""}, verbraucht/geplant {austritt.verbraucht}</div>
+          <div>{austritt.offen >= 0 ? <>Offener Urlaub: <b>{fmtTage(austritt.offen)} Tage</b> → Urlaubsersatzleistung</> : <span className="text-rose-700">Zu viel verbraucht: {fmtTage(-austritt.offen)} Tage</span>}</div>
+          <div>Zeitkonto zum Austritt: <b className={kontoAustritt < 0 ? "text-rose-700" : ""}>{fmtH(kontoAustritt, true)} h</b>{kontoAustritt > 0 ? " → auszahlen oder vorher ausgleichen" : ""}</div>
+          {nachAustritt.length > 0 && <div className="text-amber-700">{nachAustritt.length} Abwesenheit{nachAustritt.length === 1 ? "" : "en"} nach dem letzten Arbeitstag {nachAustritt.length === 1 ? "wird" : "werden"} storniert.</div>}
+          <div className="text-xs text-stone-500">Richtwerte – maßgeblich ist die Lohnverrechnung. Nach dem letzten Arbeitstag kann sich die Person nicht mehr anmelden; alle Daten bleiben erhalten (Aufbewahrungspflicht).</div>
+        </div>
+        <div className="flex gap-2">
+          {ma?.austritt ? <Knopf klein art="geist" onClick={() => { const { austritt: _a, austrittArt: _b, austrittNotiz: _c, ...rest } = f; setF({ ...rest, aktiv: true }); setAustrittForm(false); }}>Austritt rückgängig machen</Knopf>
+            : <Knopf klein art="geist" onClick={() => { const { austritt: _a, austrittArt: _b, austrittNotiz: _c, ...rest } = f; setF(rest); setAustrittForm(false); }}>Abbrechen</Knopf>}
+        </div>
+      </div>}
+    </div>}
+    {verlauf.length > 0 && <div className="mt-4">
+      <div className="text-[11px] font-bold uppercase tracking-wider text-stone-500 mb-2">Verlauf</div>
+      <ul className="space-y-1.5 text-xs">{verlauf.map(l => <li key={l.id} className="rounded-lg bg-white ring-1 ring-inset ring-stone-200 px-3 py-2">
+        <div className="font-semibold text-stone-800">{l.aktion} <span className="font-normal text-stone-500">· {new Date(l.am).toLocaleString("de-AT")} · {nameVon(db, l.von)}</span></div>
+        {l.details && <div className="text-stone-600 mt-0.5">{l.details}</div>}
+      </li>)}</ul>
+    </div>}
     {fehler && <p className="mt-3 text-xs text-rose-700">{fehler}</p>}
     {planDlg && <ModellDialog db={db} modell={planDlg.modell} oz={db.einstellungen.oeffnungszeiten} neu={false} onSave={planSpeichern} onClose={() => setPlanDlg(null)} />}
   </Modal>;
@@ -2087,11 +2197,27 @@ function Einstellungen({ ctx }) {
         <p className="px-5 py-3 text-xs text-stone-500">Vorgesetzte genehmigen nur für Personen, bei denen sie als Vorgesetzte/r eingetragen sind – nie für sich selbst. In der Live-Version setzt die Datenbank (RLS) das durch.</p>
       </Karte>
     </div>
-    {admin && <Karte titel="Demo-Daten">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
-        <p className="text-sm text-stone-600">Alle Daten liegen nur in diesem Browser. Zurücksetzen erzeugt frische, erfundene Beispieldaten.</p>
-        <Knopf art="rot" onClick={() => { if (confirm("Alle Demo-Daten in diesem Browser zurücksetzen?")) setDb(demoDaten()); }}>Zurücksetzen</Knopf>
+    {admin && <Karte titel="Testdaten">
+      <p className="text-sm text-stone-600">Alle Daten liegen nur in diesem Browser. {db.eigeneDaten ? "Du testest mit deinen eigenen Mitarbeiter/innen." : "Derzeit erfundene Demo-Daten."} Mit „Sichern“ und „Laden“ nimmst du die Testdaten auf ein anderes Gerät mit.</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Knopf art="sekundaer" icon="download" onClick={() => {
+          const url = URL.createObjectURL(new Blob([JSON.stringify(db)], { type: "application/json" }));
+          const a = document.createElement("a"); a.href = url; a.download = `zeitverwaltung_testdaten_${heute()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }}>Testdaten sichern</Knopf>
+        <label className="inline-flex items-center justify-center gap-1.5 rounded-full font-semibold text-[13px] px-4 py-2 bg-white text-stone-900 ring-1 ring-inset ring-stone-200 hover:ring-gold-500 cursor-pointer">
+          <Icon n="plus" className="w-4 h-4" />Testdaten laden
+          <input type="file" accept=".json,application/json" className="hidden" onChange={ev => {
+            const datei = ev.target.files?.[0]; if (!datei) return;
+            datei.text().then(t => { const n = JSON.parse(t); if (n?.version !== 1 || !Array.isArray(n.mitarbeiter)) throw new Error();
+              if (confirm(`Testdaten vom Gerät laden? (${n.mitarbeiter.length} Personen) – die aktuellen Daten in diesem Browser werden ersetzt.`)) setDb({ ...n, einstellungen: { ...STANDARD_EINSTELLUNGEN, ...n.einstellungen } });
+            }).catch(() => alert("Diese Datei ist keine Sicherung der Zeitverwaltung."));
+            ev.target.value = "";
+          }} />
+        </label>
+        <Knopf art="rot" onClick={() => { if (confirm("Leer starten? Alle Daten in diesem Browser werden gelöscht – nur du bleibst als Administratorin.")) setDb(leereDaten(user.name, user.id)); }}>Leer starten (eigene Mitarbeiter)</Knopf>
+        <Knopf art="geist" onClick={() => { if (confirm("Erfundene Demo-Daten laden? Alle Daten in diesem Browser werden ersetzt.")) setDb(demoDaten()); }}>Demo-Daten laden</Knopf>
       </div>
+      <p className="mt-3 text-xs text-stone-500">Die Sicherungsdatei enthält Personaldaten – nicht weitergeben, nach dem Test löschen.</p>
     </Karte>}
     {modellNeu && <ModellDialog db={db} neu={!db.modelle.some(x => x.id === modellNeu.id)} modell={modellNeu} oz={e.oeffnungszeiten} onSave={modellSpeichern} onClose={() => setModellNeu(null)} />}
   </div>;
@@ -2157,7 +2283,13 @@ function App() {
 
   const [terminal, setTerminal] = useState(false);
   // Automatik beim Öffnen (live: nächtlicher Server-Job)
-  useEffect(() => { const n = JSON.parse(JSON.stringify(db)); if (automatik(n)) setDb(n); }, []);
+  useEffect(() => {
+    const n = JSON.parse(JSON.stringify(db));
+    let geaendert = automatik(n);
+    // Wer ausgetreten ist (letzter Arbeitstag vorbei), kann sich nicht mehr anmelden
+    n.mitarbeiter.forEach(m => { if (m.aktiv && m.austritt && m.austritt < heute()) { m.aktiv = false; geaendert++; } });
+    if (geaendert) setDb(n);
+  }, []);
 
   // fn darf eine Meldung zurückgeben (z. B. beim Stempeln)
   const aendern = (fn, meldung) => { const n = JSON.parse(JSON.stringify(db)); const r = fn(n); setDb(n); if (meldung || typeof r === "string") setToast(meldung || r); };
@@ -2166,7 +2298,7 @@ function App() {
   function login(id) { try { sessionStorage.setItem(SESS_KEY, id); } catch (e) { } setUserId(id); setSeiteRoh("dashboard"); }
   function logout() { try { sessionStorage.removeItem(SESS_KEY); } catch (e) { } setUserId(null); }
   if (terminal) return <>{<Terminal db={db} aendern={aendern} onEnde={() => setTerminal(false)} />}{toastEl}</>;
-  if (!user) return <Login db={db} onLogin={login} onTerminal={() => setTerminal(true)} />;
+  if (!user) return <Login db={db} onLogin={login} onTerminal={() => setTerminal(true)} onEigene={name => { const n = leereDaten(name); setDb(n); login(n.mitarbeiter[0].id); }} />;
 
   const setSeite = s => { setSeiteRoh(s); setNavOffen(false); window.scrollTo(0, 0); };
   const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite };
@@ -2210,7 +2342,7 @@ function App() {
       <Avatar name={user.name} klein />
     </header>
     <main className="lg:ml-60 print-full">
-      <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-xs px-4 lg:px-8 py-1.5">Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank.</div>
+      <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-xs px-4 lg:px-8 py-1.5">{db.eigeneDaten ? "Testbetrieb mit deinen Daten – gespeichert nur in diesem Browser auf diesem Gerät, keine Verbindung zur Datenbank." : "Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank."}</div>
       <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 print-full"><Seite ctx={ctx} /></div>
     </main>
     {toastEl}

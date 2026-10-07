@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS zeit_profil (
   funktion         text,
   vorgesetzter_id  text REFERENCES abw_team(id),
   geburtsdatum     date,                             -- unter 18 → KJBG, ab dem 18. Geburtstag automatisch AZG
+  urlaub_vor_start numeric(4,1) NOT NULL DEFAULT 0,  -- im Startjahr schon vor der App verbrauchter Urlaub
+  austritt_art     text,                             -- Art der Beendigung (Austrittsdatum = abw_team.ausgeschieden_am)
+  austritt_notiz   text,
   lehrbeginn       date,                             -- nur Lehrlinge; Lehrjahr wird daraus berechnet
   bs_tag1          smallint CHECK (bs_tag1 BETWEEN 0 AND 6),  -- fixer Berufsschultag (ganz)
   bs_tag2          smallint CHECK (bs_tag2 BETWEEN 0 AND 6),  -- halber Tag im 1. Lehrjahr
@@ -128,6 +131,18 @@ CREATE TABLE IF NOT EXISTS zeit_protokoll (
 );
 ALTER TABLE zeit_protokoll ENABLE ROW LEVEL SECURITY;
 
+-- ── Verlauf der Stammdaten (angelegt, geändert, Austritt) ──────
+-- Nur lesbar für Chefin/Vorgesetzte und die Person selbst; geschrieben per Trigger.
+CREATE TABLE IF NOT EXISTS zeit_personal_verlauf (
+  id         bigserial PRIMARY KEY,
+  am         timestamptz NOT NULL DEFAULT now(),
+  von_person text,
+  person_id  text NOT NULL REFERENCES abw_team(id),
+  aktion     text NOT NULL,
+  details    text
+);
+ALTER TABLE zeit_personal_verlauf ENABLE ROW LEVEL SECURITY;
+
 -- ── Monatsabschluss ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS zeit_monatsabschluss (
   person_id        text NOT NULL REFERENCES abw_team(id),
@@ -154,7 +169,7 @@ ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS minuten integer CHECK (minuten
 -- Schlüssel 'bs_tage_je_lehrjahr', z. B. {"1":1.5,"2":1,"3":1,"4":1} (Wien).
 
 -- Nicht-anonym, sonst nichts: anon hat auf keiner Zeit-Tabelle etwas verloren
-REVOKE ALL ON zeit_arbeitsmodelle, zeit_modell_tage, zeit_feiertage, zeit_profil, zeit_modell_zuordnung, zeit_buchungen,
+REVOKE ALL ON zeit_arbeitsmodelle, zeit_modell_tage, zeit_feiertage, zeit_profil, zeit_personal_verlauf, zeit_modell_zuordnung, zeit_buchungen,
               zeit_korrekturen, zeit_protokoll, zeit_monatsabschluss FROM anon;
 
 -- ════════════════════════════════════════════════════════════
@@ -254,6 +269,8 @@ DROP POLICY IF EXISTS "zeit_buchungen_select" ON zeit_buchungen;
 CREATE POLICY "zeit_buchungen_select" ON zeit_buchungen FOR SELECT TO authenticated USING (zeit_darf_sehen(person_id));
 DROP POLICY IF EXISTS "zeit_protokoll_select" ON zeit_protokoll;
 CREATE POLICY "zeit_protokoll_select" ON zeit_protokoll FOR SELECT TO authenticated USING (zeit_darf_sehen(person_id));
+DROP POLICY IF EXISTS "zeit_verlauf_select" ON zeit_personal_verlauf;
+CREATE POLICY "zeit_verlauf_select" ON zeit_personal_verlauf FOR SELECT TO authenticated USING (zeit_darf_sehen(person_id));
 DROP POLICY IF EXISTS "zeit_abschluss_select" ON zeit_monatsabschluss;
 CREATE POLICY "zeit_abschluss_select" ON zeit_monatsabschluss FOR SELECT TO authenticated USING (zeit_darf_sehen(person_id));
 
@@ -271,6 +288,23 @@ CREATE POLICY "zeit_korrekturen_insert" ON zeit_korrekturen FOR INSERT TO authen
     AND datum <= (now() AT TIME ZONE 'Europe/Vienna')::date
     AND NOT zeit_monat_gesperrt(person_id, datum)
   );
+
+-- Austritt (abw_team.ausgeschieden_am) automatisch im Verlauf dokumentieren
+CREATE OR REPLACE FUNCTION zeit_austritt_verlauf() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NEW.ausgeschieden_am IS DISTINCT FROM OLD.ausgeschieden_am THEN
+    INSERT INTO zeit_personal_verlauf (von_person, person_id, aktion, details)
+    VALUES (abw_current_person_id(), NEW.id,
+            CASE WHEN NEW.ausgeschieden_am IS NULL THEN 'Austritt rückgängig gemacht' ELSE 'Austritt eingetragen' END,
+            CASE WHEN NEW.ausgeschieden_am IS NULL THEN 'war ' || to_char(OLD.ausgeschieden_am, 'DD.MM.YYYY')
+                 ELSE 'letzter Arbeitstag ' || to_char(NEW.ausgeschieden_am, 'DD.MM.YYYY') END);
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS zeit_austritt_verlauf ON abw_team;
+CREATE TRIGGER zeit_austritt_verlauf AFTER UPDATE OF ausgeschieden_am ON abw_team
+  FOR EACH ROW EXECUTE FUNCTION zeit_austritt_verlauf();
 
 -- ════════════════════════════════════════════════════════════
 --  Sicherheitsnetz: abgeschlossene Monate sind auch für Funktionen tabu
