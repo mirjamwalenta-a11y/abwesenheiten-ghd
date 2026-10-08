@@ -124,6 +124,8 @@ Live entscheidet das der Server in `zeit_stempeln()` (Tabelle `zeit_stempel_rege
 - **Nachrichten (🔔):** Neuer Antrag → Nachricht an die Chefin (und ggf. Salonleitung); Genehmigung/Ablehnung → Nachricht an die Person. Live: Tabelle `zeit_nachrichten` (RLS: nur Empfänger/in liest), E-Mail zusätzlich über Database Webhook + Edge Function, Adresse als Secret.
 - **Mein Urlaub & Krankenstand** (Dashboard der Mitarbeiter/innen): „Du hast noch 19 UT. Denk daran: Bei deinem nächsten genehmigten Urlaub werden noch 4 UT abgezogen – danach bleiben dir 15 UT.“ plus Liste der genehmigten/genommenen Urlaube und Krankenstände.
 
+- **Berufsschule & Schulferien Wien:** Der Berufsschul-Planer lässt die Wiener Schulferien automatisch aus (Herbst 26.10.–2.11., 15.11. Leopold, Weihnachten 24.12.–6.1., Semester ab 1. Montag im Februar, Ostern Sa vor Palmsonntag bis Ostermontag, Pfingsten Sa–Mo, Sommer ab Samstag 28.6.–4.7. bis vor dem 1. Montag im September) – jedes Jahr neu berechnet. Schulautonome Tage einzeln stornieren. An Berufsschultagen ist kein Urlaub möglich.
+
 ## 5. Nächste Schritte
 
 1. Offene Fragen unten klären, Schema anpassen.
