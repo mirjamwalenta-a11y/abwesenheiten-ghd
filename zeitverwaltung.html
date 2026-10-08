@@ -186,6 +186,26 @@ const ARTEN = {
   unbezahlt:    { label: "Unbezahlter Urlaub",        kurz: "UU", voll: "bg-stone-500 text-white",   hell: "bg-stone-200 text-stone-700",     punkt: "bg-stone-500",   gutschrift: false, soll0: true },
 };
 const KRANK_ARTEN = ["krank", "unfall"];
+// Urlaubssperre: aus jeder Gruppe darf gleichzeitig nur eine Person Urlaub haben (beantragt oder genehmigt)
+const URLAUB_GRUPPEN = { stylist: "Stylist/innen", lehrling: "Lehrlinge", rezeption: "Rezeption", assistenz: "Assistenz" };
+function urlaubsGruppe(ma) {
+  if (!ma || ma.urlaubsGruppe === "keine") return null;
+  if (ma.urlaubsGruppe) return ma.urlaubsGruppe;
+  const f = ma.funktion || "";
+  return ma.lehrbeginn || /lehrling/i.test(f) ? "lehrling" : /styl/i.test(f) ? "stylist" : null;
+}
+function urlaubsKonflikte(db, maId, von, bis, ohneId) {
+  const ma = db.mitarbeiter.find(m => m.id === maId), g = urlaubsGruppe(ma);
+  if (!g || !db.einstellungen.urlaubsSperre || !von) return [];
+  return db.abwesenheiten.filter(a => a.id !== ohneId && a.maId !== maId && a.art === "urlaub" && (a.status === "beantragt" || wirksam(a))
+    && a.von <= (bis || von) && (a.bis || a.von) >= von && (() => { const o = db.mitarbeiter.find(m => m.id === a.maId); return o?.aktiv && urlaubsGruppe(o) === g; })());
+}
+// Nachrichten (Glocke). Live: Tabelle zeit_nachrichten + E-Mail über Edge Function
+function nachricht(n, an, text, seite) {
+  n.nachrichten = n.nachrichten || [];
+  [...new Set(an)].filter(Boolean).forEach(id => n.nachrichten.push({ id: uid(), an: id, am: new Date().toISOString(), text, seite, gelesen: false }));
+}
+function genehmigerVon(db, ma) { return [...db.mitarbeiter.filter(m => m.aktiv && m.rolle === "admin").map(m => m.id), ma?.vorgesetzterId].filter(id => id && id !== ma?.id); }
 const STATUS = {
   beantragt: { label: "Beantragt",  cls: "bg-amber-50 text-amber-800 ring-amber-200" },
   genehmigt: { label: "Genehmigt",  cls: "bg-emerald-50 text-emerald-800 ring-emerald-200" },
@@ -216,7 +236,8 @@ const STANDARD_EINSTELLUNGEN = {
   zuschlagMehrarbeit: 25,      // § 19d AZG (Teilzeit)
   urlaubBasisTage: 25,         // UrlG: 5 Wochen = 25 Arbeitstage bei 5-Tage-Woche
   bsTageJeLehrjahr: { 1: 1.5, 2: 1, 3: 1, 4: 1 }, // Berufsschule Wien: Tage pro Woche je Lehrjahr
-  auAbTag: 4,                  // Firmenregel: AU-Bestätigung ab dem x. Krankenstandstag
+  auAbTag: 4,
+  urlaubsSperre: true,         // gleichzeitig nur 1 Person je Gruppe (Stylist/innen, Lehrlinge …) auf Urlaub                  // Firmenregel: AU-Bestätigung ab dem x. Krankenstandstag
   // Öffnungszeiten Salon (Mo … So): So + Mo geschlossen
   oeffnungszeiten: [null, { b: "09:00", e: "18:00" }, { b: "09:00", e: "18:00" }, { b: "09:00", e: "19:00" }, { b: "09:00", e: "19:00" }, { b: "08:00", e: "14:00" }, null],
   // Fixer Dienstplan: vergessenes Stempeln und Pausen automatisch laut Plan ergänzen
@@ -1285,6 +1306,7 @@ function Dashboard({ ctx }) {
     <div className="grid lg:grid-cols-3 gap-5">
       <div className="lg:col-span-2 space-y-5">
         <Stempeluhr ctx={ctx} />
+        {!leitung && <MeinUrlaub ctx={ctx} />}
         {leitung && <Karte titel="Heute im Salon" innen="p-0" aktion={<button className="text-xs font-semibold text-gold-700 hover:underline" onClick={() => setSeite("zeit")}>Anderen Tag nachtragen →</button>}>
           {heuteDa.filter(x => x.soll > 0 || x.z || x.a).length === 0 ? <Leer text="Heute ist laut Arbeitszeitmodellen niemand eingeplant (Schließtag/Feiertag)." /> :
           <ul className="divide-y divide-stone-100">
@@ -1588,7 +1610,10 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
   const ueberschneidung = db.abwesenheiten.filter(a => a.id !== bestand?.id && a.maId === f.maId && (wirksam(a) || a.status === "beantragt") && a.von <= (bis || "9999") && (a.bis || "9999") >= f.von);
   const kollegen = db.abwesenheiten.filter(a => a.maId !== f.maId && wirksam(a) && a.von <= (bis || f.von) && (a.bis || heute()) >= f.von && db.mitarbeiter.find(m => m.id === a.maId)?.aktiv);
   const gesperrtIn = tageZw(f.von, bis || f.von).some(d => gesperrt(db, f.maId, d));
-  const fehler = !f.von ? "Beginn angeben." : !stundenOk ? "Dauer zwischen 0,5 und 12 Stunden angeben." : bis && bis < f.von ? "Ende liegt vor dem Beginn." : ueberschneidung.length ? "Für diesen Zeitraum gibt es bereits einen Eintrag." : gesperrtIn ? "Zeitraum liegt in einem abgeschlossenen Monat." : f.art === "urlaub" && tage === 0 ? "Im Zeitraum liegen keine Arbeitstage." : null;
+  const konflikte = f.art === "urlaub" ? urlaubsKonflikte(db, f.maId, f.von, bis || f.von, bestand?.id) : [];
+  const sperreHart = konflikte.length > 0 && !darfVerwalten(user, ma) && !istAdmin(user);
+  const konfliktText = konflikte.map(a => `${nameVon(db, a.maId)} (${fmtZr(a.von, a.bis)}, ${a.status === "beantragt" ? "beantragt" : "genehmigt"})`).join(", ");
+  const fehler = !f.von ? "Beginn angeben." : !stundenOk ? "Dauer zwischen 0,5 und 12 Stunden angeben." : bis && bis < f.von ? "Ende liegt vor dem Beginn." : ueberschneidung.length ? "Für diesen Zeitraum gibt es bereits einen Eintrag." : sperreHart ? `In diesem Zeitraum hat schon ${konfliktText} Urlaub – aus der Gruppe ${URLAUB_GRUPPEN[urlaubsGruppe(ma)]} darf gleichzeitig nur eine Person auf Urlaub sein. Bitte einen anderen Zeitraum wählen oder mit der Chefin sprechen.` : gesperrtIn ? "Zeitraum liegt in einem abgeschlossenen Monat." : f.art === "urlaub" && tage === 0 ? "Im Zeitraum liegen keine Arbeitstage." : null;
   const halbMoeglich = !art.meldung && f.art !== "urlaub" && !f.offen && f.von === f.bis;
   const neuStatus = art.meldung ? "gemeldet" : (fuerAndere && darfVerwalten(user, ma)) || (istAdmin(user) && !fuerAndere) ? "genehmigt" : "beantragt";
   const status = bestand ? (bestand.status === "beantragt" ? bestand.status : neuStatus) : neuStatus;
@@ -1611,6 +1636,8 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
       const daten = { maId: f.maId, art: f.art, von: f.von, bis, status, dateien: [...(bestand?.dateien || []), ...metas], anteil: halbMoeglich && f.halb ? 0.5 : undefined, minuten: art.stunden ? Math.round(+f.stunden * 60) : undefined, au: art.au ? (f.au || metas.length > 0) : undefined, notiz: f.notiz };
       if (bestand) Object.assign(n.abwesenheiten.find(a => a.id === bestand.id), daten, { geaendertVon: user.id, geaendertAm: heute() });
       else n.abwesenheiten.push({ id: uid(), ...daten, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: status === "genehmigt" ? user.id : undefined });
+      if (!bestand && status === "beantragt") nachricht(n, genehmigerVon(n, ma), `${ma.name} hat ${ARTEN[f.art].label} beantragt: ${fmtZr(f.von, bis)}${f.art === "urlaub" ? ` (${tage} UT)` : ""}`, "urlaub");
+      if (!bestand && art.meldung && fuerAndere === false) nachricht(n, genehmigerVon(n, ma), `${ma.name}: ${ARTEN[f.art].label} gemeldet ab ${fmtD(f.von)}`, "krank");
       if (status !== "beantragt") autoTage.forEach(d => {
         const z = n.zeiten.find(q => q.maId === f.maId && q.datum === d);
         n.zeiten.splice(n.zeiten.indexOf(z), 1);
@@ -1658,6 +1685,7 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
       {ftImZeitraum.length > 0 && <Hinweis>Feiertage im Zeitraum (nicht abgezogen): {ftImZeitraum.map(d => feiertag(d).name).join(", ")}</Hinweis>}
       {f.art === "urlaub" && uk.rest - tage < 0 && <Hinweis ton="warn">Der Antrag übersteigt den Resturlaub. Vorgriff nur nach Vereinbarung.</Hinweis>}
       {kollegen.length > 0 && <Hinweis ton="warn">Gleichzeitig abwesend: {[...new Set(kollegen.map(a => nameVon(db, a.maId)))].join(", ")}</Hinweis>}
+      {konflikte.length > 0 && !sperreHart && <Hinweis ton="warn"><b>Urlaubssperre {URLAUB_GRUPPEN[urlaubsGruppe(ma)]}:</b> gleichzeitig hat schon {konfliktText} Urlaub. Mitarbeiter/innen könnten das so nicht beantragen – als Chefin kannst du trotzdem eintragen.</Hinweis>}
       {status === "genehmigt" && fuerAndere && !bestand && <Hinweis>Du trägst als Vorgesetzte/r ein – der Eintrag gilt sofort als genehmigt.</Hinweis>}
       {autoTage.length > 0 && status !== "beantragt" && <Hinweis>{autoTage.length} automatisch ergänzte Arbeitstag{autoTage.length === 1 ? "" : "e"} ({autoTage.map(fmtDk).join(", ")}) {autoTage.length === 1 ? "wird" : "werden"} dafür entfernt.</Hinweis>}
       {gestempelt.length > 0 && <Hinweis ton="warn">An {gestempelt.map(fmtDk).join(", ")} gibt es gestempelte Zeiten. Falls die Person da nicht gearbeitet hat, bitte in der Zeiterfassung löschen.</Hinweis>}
@@ -1668,7 +1696,8 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
 
 function AntragListe({ ctx, liste }) {
   const { db, user, aendern } = ctx;
-  function entscheiden(a, status) { aendern(n => { const x = n.abwesenheiten.find(q => q.id === a.id); x.status = status; x.entschiedenVon = user.id; x.entschiedenAm = heute(); }, status === "genehmigt" ? "Antrag genehmigt" : "Antrag abgelehnt"); }
+  function entscheiden(a, status) { aendern(n => { const x = n.abwesenheiten.find(q => q.id === a.id); x.status = status; x.entschiedenVon = user.id; x.entschiedenAm = heute();
+    nachricht(n, [x.maId], `Dein Antrag ${ARTEN[x.art].label} ${fmtZr(x.von, x.bis)} wurde ${status === "genehmigt" ? "genehmigt ✓" : "abgelehnt"}.`, "urlaub"); }, status === "genehmigt" ? "Antrag genehmigt" : "Antrag abgelehnt"); }
   return <ul className="divide-y divide-stone-100">
     {liste.map(a => {
       const ma = db.mitarbeiter.find(m => m.id === a.maId);
@@ -1679,6 +1708,7 @@ function AntragListe({ ctx, liste }) {
           <div className="font-medium flex flex-wrap items-center gap-2">{ma.name} <ArtChip art={a.art} /></div>
           <div className="text-xs text-stone-600 mt-0.5">{fmtZr(a.von, a.bis)} · {a.art === "urlaub" ? `${urlaubsTage(db, ma, a.von, a.bis)} Urlaubstage · Rest danach ${urlaubsKonto(db, ma, a.von).rest - urlaubsTage(db, ma, a.von, a.bis)}` : `${tageZw(a.von, a.bis || a.von).length} Tag${tageZw(a.von, a.bis || a.von).length === 1 ? "" : "e"}`}{a.notiz ? ` · „${a.notiz}“` : ""}</div>
           {kollegen.length > 0 && <div className="text-xs text-amber-700 mt-0.5">Gleichzeitig weg: {[...new Set(kollegen.map(x => nameVon(db, x.maId)))].join(", ")}</div>}
+          {a.art === "urlaub" && urlaubsKonflikte(db, a.maId, a.von, a.bis, a.id).length > 0 && <div className="text-xs text-rose-700 mt-0.5">Urlaubssperre {URLAUB_GRUPPEN[urlaubsGruppe(ma)]}: auch {urlaubsKonflikte(db, a.maId, a.von, a.bis, a.id).map(x => nameVon(db, x.maId)).join(", ")} in diesem Zeitraum</div>}
         </div>
         <div className="flex gap-2">
           <Knopf klein art="rot" icon="x" onClick={() => entscheiden(a, "abgelehnt")}>Ablehnen</Knopf>
@@ -1687,6 +1717,62 @@ function AntragListe({ ctx, liste }) {
       </li>;
     })}
   </ul>;
+}
+
+// Glocke: Nachrichten für die angemeldete Person (z. B. neuer Urlaubsantrag)
+function Glocke({ ctx, oben }) {
+  const { db, user, aendern, setSeite } = ctx;
+  const [offen, setOffen] = useState(false);
+  const meine = (db.nachrichten || []).filter(x => x.an === user.id).slice().reverse();
+  const neu = meine.filter(x => !x.gelesen).length;
+  function oeffnen() { setOffen(!offen); }
+  function alleGelesen() { aendern(n => { (n.nachrichten || []).forEach(x => { if (x.an === user.id) x.gelesen = true; }); }); }
+  return <div className="relative">
+    <button onClick={oeffnen} className="relative p-1.5 rounded-full text-stone-600 hover:bg-white" aria-label={`Nachrichten${neu ? ` (${neu} neu)` : ""}`} title="Nachrichten">
+      <span className="text-[18px] leading-none">🔔</span>
+      {neu > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">{neu}</span>}
+    </button>
+    {offen && <div className={`absolute ${oben ? "left-0 bottom-full mb-2" : "right-0 mt-2"} w-[min(22rem,88vw)] bg-white rounded-[14px] border border-stone-200 shadow-lg z-50 text-left`}>
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-stone-100"><span className="text-xs font-bold text-stone-500 uppercase tracking-wider">Nachrichten</span>
+        {neu > 0 && <button className="text-xs font-semibold text-gold-700 hover:underline" onClick={alleGelesen}>alle gelesen</button>}</div>
+      {meine.length === 0 ? <p className="px-4 py-4 text-sm text-stone-500">Keine Nachrichten.</p> :
+      <ul className="max-h-80 overflow-y-auto divide-y divide-stone-100">{meine.slice(0, 30).map(x => <li key={x.id}>
+        <button className={`w-full text-left px-4 py-2.5 text-sm hover:bg-stone-50 ${x.gelesen ? "text-stone-500" : "text-stone-900 font-medium"}`}
+          onClick={() => { aendern(n => { const q = n.nachrichten.find(y => y.id === x.id); if (q) q.gelesen = true; }); setOffen(false); if (x.seite) setSeite(x.seite); }}>
+          {!x.gelesen && <span className="inline-block w-2 h-2 rounded-full bg-rose-600 mr-2 align-middle" />}{x.text}
+          <span className="block text-[11px] text-stone-400 font-normal mt-0.5">{fmtD(x.am.slice(0, 10))} {x.am.slice(11, 16)}</span></button></li>)}</ul>}
+    </div>}
+  </div>;
+}
+
+// Eigener Urlaub & Krankenstand – „Du hast noch … UT“
+function MeinUrlaub({ ctx }) {
+  const { db, user, setSeite } = ctx;
+  const h = heute(), uk = urlaubsKonto(db, user, h);
+  const eigene = db.abwesenheiten.filter(a => a.maId === user.id);
+  const kommend = eigene.filter(a => a.art === "urlaub" && wirksam(a) && (a.bis || a.von) >= h).sort((a, b) => a.von.localeCompare(b.von));
+  const beantragt = eigene.filter(a => a.art === "urlaub" && a.status === "beantragt").sort((a, b) => a.von.localeCompare(b.von));
+  const genommen = eigene.filter(a => a.art === "urlaub" && wirksam(a) && (a.bis || a.von) < h && (a.bis || a.von) >= uk.von).sort((a, b) => b.von.localeCompare(a.von));
+  const krank = eigene.filter(a => KRANK_ARTEN.includes(a.art) && wirksam(a) && (a.bis || h) >= `${h.slice(0, 4)}-01-01`).sort((a, b) => b.von.localeCompare(a.von));
+  const ut = a => urlaubsTage(db, user, a.von >= h ? a.von : h, a.bis || a.von);
+  const jetzt = r2u(uk.rest + uk.geplant);
+  const zeile = (a, rechts, ton = "") => <li key={a.id} className="flex items-center justify-between gap-3 px-5 py-2 text-sm"><span className="tabular">{fmtZr(a.von, a.bis)}</span><span className={`text-xs ${ton}`}>{rechts}</span></li>;
+  return <Karte titel="Mein Urlaub & Krankenstand" innen="p-0" aktion={<button className="text-xs font-semibold text-gold-700 hover:underline" onClick={() => setSeite("urlaub")}>Urlaub beantragen →</button>}>
+    <div className="px-5 py-4 bg-emerald-50/60 border-b border-stone-100">
+      <p className="text-[15px]">Du hast noch <b className="text-emerald-800 text-lg">{fmtTage(jetzt)} UT</b>.</p>
+      {kommend.length > 0 && <p className="text-sm mt-1 text-stone-700">Denk daran: Bei {kommend.length === 1 ? "deinem nächsten genehmigten Urlaub" : "deinen genehmigten Urlauben"} ({kommend.map(a => fmtZr(a.von, a.bis)).join(", ")}) werden noch <b>{fmtTage(uk.geplant)} UT</b> abgezogen – danach bleiben dir <b>{fmtTage(uk.rest)} UT</b>.</p>}
+      {beantragt.length > 0 && <p className="text-sm mt-1 text-amber-800">Noch nicht genehmigt: {beantragt.map(a => `${fmtZr(a.von, a.bis)} (${urlaubsTage(db, user, a.von, a.bis || a.von)} UT)`).join(", ")}.</p>}
+      <p className="text-xs text-stone-500 mt-1">Urlaubsjahr {fmtD(uk.von)} – {fmtD(uk.bis)}</p>
+    </div>
+    <div className="grid sm:grid-cols-2 sm:divide-x divide-stone-100">
+      <div><div className="px-5 pt-3 pb-1 text-[11px] font-bold text-stone-500 uppercase tracking-wider">Urlaub</div>
+        {kommend.length + genommen.length === 0 ? <p className="px-5 pb-3 text-sm text-stone-500">Noch kein Urlaub in diesem Urlaubsjahr.</p> :
+        <ul className="pb-2">{kommend.map(a => zeile(a, `genehmigt · ${urlaubsTage(db, user, a.von, a.bis || a.von)} UT`, "text-emerald-700 font-semibold"))}{genommen.map(a => zeile(a, `genommen · ${urlaubsTage(db, user, a.von, a.bis || a.von)} UT`, "text-stone-500"))}</ul>}</div>
+      <div><div className="px-5 pt-3 pb-1 text-[11px] font-bold text-stone-500 uppercase tracking-wider">Krankenstand {h.slice(0, 4)}</div>
+        {krank.length === 0 ? <p className="px-5 pb-3 text-sm text-stone-500">Kein Krankenstand.</p> :
+        <ul className="pb-2">{krank.map(a => zeile(a, `${ARTEN[a.art].label}${a.bis ? ` · ${tageZw(a.von, a.bis).length} Tage` : " · läuft"}${ARTEN[a.art].au ? (a.au ? " · Bestätigung ✓" : " · Bestätigung fehlt") : ""}`, a.au ? "text-stone-500" : "text-rose-700"))}</ul>}</div>
+    </div>
+  </Karte>;
 }
 
 // ─── URLAUB ───────────────────────────────────────────────────────────────────
@@ -1714,6 +1800,7 @@ function Urlaub({ ctx }) {
       <Kpi label="Beantragt" wert={uk.beantragt} sub="offen" />
       <Kpi label="Rest" wert={fmtTage(uk.rest)} ton={uk.rest < 0 ? "neg" : "pos"} sub={`bis ${fmtD(uk.bis)}`} />
     </div>
+    {!leitung && <MeinUrlaub ctx={ctx} />}
     {offen.length > 0 && <Karte titel={`Zur Genehmigung (${offen.length})`} innen="p-0"><AntragListe ctx={ctx} liste={offen} /></Karte>}
     <div className="grid xl:grid-cols-5 gap-5">
       <Karte titel="Urlaubsanträge" className={leitung ? "xl:col-span-3" : "xl:col-span-5"} innen="p-0">
@@ -2024,6 +2111,12 @@ function MaDialog({ ctx, ma, onClose }) {
         : <Feld label="Genehmigt Urlaub & Korrekturen" hilfe="Normalerweise du als Chefin. Nur wenn eine Salonleitung (Rolle „Vorgesetzte/r“) genehmigen soll, diese wählen.">
           <select className={inputCls} value={f.vorgesetzterId || ""} onChange={e => set("vorgesetzterId", e.target.value || null)}>
             <option value="">nur die Chefin</option>{db.mitarbeiter.filter(m => m.id !== f.id && m.aktiv && m.rolle !== "mitarbeiter").map(m => <option key={m.id} value={m.id}>{m.name}{m.rolle === "admin" ? " (Chefin)" : " (Salonleitung)"}</option>)}</select></Feld>}
+      <Feld label="Urlaubssperre-Gruppe" hilfe="Aus einer Gruppe darf gleichzeitig nur eine Person Urlaub haben. „Automatisch“ erkennt Stylist/innen und Lehrlinge an der Funktion.">
+        <select className={inputCls} value={f.urlaubsGruppe || ""} onChange={e => set("urlaubsGruppe", e.target.value || undefined)}>
+          <option value="">Automatisch{urlaubsGruppe({ ...f, urlaubsGruppe: undefined }) ? ` (${URLAUB_GRUPPEN[urlaubsGruppe({ ...f, urlaubsGruppe: undefined })]})` : " (keine)"}</option>
+          {Object.entries(URLAUB_GRUPPEN).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+          <option value="keine">keine Sperre</option>
+        </select></Feld>
       <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || (f.id === user.id && !db.mitarbeiter.some(m => m.id !== user.id && m.aktiv && m.rolle === "admin"))} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
       <Feld label="Geburtsdatum" hilfe={f.geburtsdatum ? (jugendlich(f, heute()) ? `Unter 18 – KJBG-Regeln gelten bis ${fmtD(`${parseInt(f.geburtsdatum) + 18}${f.geburtsdatum.slice(4)}`)}, danach automatisch AZG` : "Volljährig – es gilt das AZG") : "Für Lehrlinge wichtig: bis 18 gelten automatisch die strengeren KJBG-Regeln"}>
         <input type="date" className={inputCls} value={f.geburtsdatum || ""} onChange={e => set("geburtsdatum", e.target.value || undefined)} /></Feld>
@@ -2749,6 +2842,13 @@ function Einstellungen({ ctx }) {
       <p className="mt-3 text-xs text-stone-500">Dienstpläne, die außerhalb der Öffnungszeiten liegen, werden markiert. Das Stempel-Tablet zeigt die heutigen Öffnungszeiten.</p>
     </Karte>
 
+    <Karte titel="Urlaub">
+      <label className="flex items-start gap-3 text-sm">
+        <input type="checkbox" className="mt-1" disabled={!admin} checked={!!e.urlaubsSperre} onChange={ev => setE("urlaubsSperre", ev.target.checked)} />
+        <span><span className="font-medium">Urlaubssperre: gleichzeitig nur eine Person je Gruppe</span><span className="block text-xs text-stone-500">Hat schon ein Stylist / eine Stylistin (bzw. ein Lehrling) im Zeitraum Urlaub beantragt oder genehmigt, kann niemand aus derselben Gruppe dort beantragen. Du als Chefin kannst trotzdem eintragen. Die Gruppe steht im Profil jeder Person.</span></span></label>
+      <p className="mt-3 text-xs text-stone-500">Bei jedem neuen Antrag bekommst du eine Nachricht (🔔). Mitarbeiter/innen bekommen eine Nachricht, sobald du genehmigst oder ablehnst.</p>
+    </Karte>
+
     <Karte titel="Stempeln – wo ist es erlaubt?">
       <div className="grid md:grid-cols-3 gap-3">
         {[
@@ -2787,7 +2887,7 @@ function Einstellungen({ ctx }) {
           <span><span className="font-medium">Pause automatisch eintragen</span><span className="block text-xs text-stone-500">{e.pausenVereinbarung ? "wenn keine oder zu kurze Pause gestempelt wurde – Dauer laut Plan" : "derzeit aus: Pausen werden gestempelt, fehlende Pausen erscheinen als Hinweis zum Korrigieren"}</span></span></label>
         <label className="flex items-start gap-3 text-sm">
           <input type="checkbox" className="mt-1" disabled={!admin} checked={!!e.pdfUnterschrift} onChange={ev => setE("pdfUnterschrift", ev.target.checked)} />
-          <span><span className="font-medium">Unterschriftszeilen auf den Arbeitszeitnachweisen</span><span className="block text-xs text-stone-500">gesetzlich nicht nötig – die Bestätigung in der App reicht als Nachweis</span></span></label>
+          <span><span className="font-medium">Unterschriftszeilen auf den Zeitberichten</span><span className="block text-xs text-stone-500">gesetzlich nicht nötig – die Bestätigung in der App reicht als Nachweis</span></span></label>
         <div className="md:col-span-2 rounded-xl border border-stone-200 p-3">
           <label className="flex items-start gap-3 text-sm"><input type="checkbox" className="mt-1" disabled={!admin} checked={!!e.rundungAn} onChange={ev => setE("rundungAn", ev.target.checked)} />
             <span><span className="font-medium">Auf Dienstplan runden</span><span className="block text-xs text-stone-500">wie TimeMoto „Rundungen zu festen Zeiten“ – die echte Stempelzeit bleibt gespeichert und steht im Zeitbericht</span></span></label>
@@ -3013,6 +3113,7 @@ function App() {
       <div className="flex items-center gap-2.5 px-2 py-2">
         <Avatar name={user.name} klein />
         <div className="flex-1 min-w-0 leading-tight"><div className="text-sm font-semibold text-stone-900 truncate">{user.name}</div><div className="text-[11px] text-stone-500">{ROLLEN[user.rolle].label}</div></div>
+        <div className="hidden lg:block"><Glocke ctx={ctx} oben /></div>
         <button onClick={logout} className="p-1.5 rounded-full text-stone-500 hover:text-gold-700 hover:bg-white" title="Abmelden"><Icon n="abmelden" className="w-4 h-4" /></button>
       </div>
     </div>
@@ -3026,6 +3127,7 @@ function App() {
     <header className="no-print lg:hidden sticky top-0 z-20 h-14 bg-stone-50/90 backdrop-blur border-b border-stone-200 flex items-center gap-3 px-4">
       <button onClick={() => setNavOffen(true)} className="p-1.5 -ml-1.5 rounded-full text-stone-700 hover:bg-white" aria-label="Menü"><Icon n="menu" /></button>
       <span className="font-bold text-[15px] flex-1">{NAV.find(n => n.id === seite).em} {navLabel(NAV.find(n => n.id === seite))}</span>
+      <Glocke ctx={ctx} />
       <Avatar name={user.name} klein />
     </header>
     <main className="lg:ml-60 print-full">
