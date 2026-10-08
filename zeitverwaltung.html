@@ -1255,7 +1255,7 @@ function Dashboard({ ctx }) {
     <Seitenkopf titel={`Hallo ${user.name.split(" ")[0]}`} sub={`${WT_LANG[wd(h)]}, ${fmtD(h)} · ${ROLLEN[user.rolle].label}`} />
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <Kpi label="Mein Zeitkonto" wert={fmtH(konto, true)} sub="Stand bis gestern" ton={konto >= 0 ? "pos" : "neg"} />
-      <Kpi label="Resturlaub" wert={`${fmtTage(uk.rest)} T`} sub={`${uk.konsumiert} verbraucht · ${uk.geplant} geplant`} />
+      <Kpi label="Resturlaub" wert={`${fmtTage(Math.round(uk.rest * 10) / 10)} T`} sub={`${uk.konsumiert} verbraucht · ${uk.geplant} geplant`} />
       {leitung ? <>
         <Kpi label="Heute im Dienst" wert={`${imDienst.length} / ${heuteDa.filter(x => x.soll > 0).length}`} sub="eingestempelt / laut Plan" />
         <Kpi label="Offene Aufgaben" wert={offenAntraege.length + offenKorr.length} sub={`${offenAntraege.length} Anträge · ${offenKorr.length} Korrekturen`} ton={offenAntraege.length + offenKorr.length ? "neg" : undefined} />
