@@ -723,9 +723,11 @@ END $$;
 --  Läuft NICHT als Benutzer, sondern per pg_cron. Jede Ergänzung ist in
 --  zeit_buchungen.auto markiert und steht im Protokoll.
 -- ════════════════════════════════════════════════════════════
+DROP FUNCTION IF EXISTS zeit_automatik(date, boolean, boolean, boolean);
 CREATE OR REPLACE FUNCTION zeit_automatik(
   p_datum date DEFAULT ((now() AT TIME ZONE 'Europe/Vienna')::date - 1),
-  p_auto_gehen boolean DEFAULT true, p_auto_pause boolean DEFAULT true, p_auto_fehltag boolean DEFAULT true
+  p_auto_gehen boolean DEFAULT true, p_auto_pause boolean DEFAULT true, p_auto_fehltag boolean DEFAULT true,
+  p_nach_min integer DEFAULT 60
 ) RETURNS integer
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -738,6 +740,9 @@ BEGIN
   FOR p IN SELECT id FROM abw_team WHERE ausgeschieden_am IS NULL OR ausgeschieden_am >= p_datum LOOP
     v_plan := zeit_plan_am(p.id, p_datum);
     CONTINUE WHEN v_plan.beginn IS NULL OR zeit_monat_gesperrt(p.id, p_datum);
+    -- heute erst, wenn Dienstende laut Plan + p_nach_min vorbei ist (automatisch ausstempeln am selben Abend)
+    CONTINUE WHEN p_datum >= (now() AT TIME ZONE 'Europe/Vienna')::date
+      AND (now() AT TIME ZONE 'Europe/Vienna')::time < v_plan.ende + make_interval(mins => p_nach_min);
     SELECT * INTO b FROM zeit_buchungen WHERE person_id = p.id AND datum = p_datum FOR UPDATE;
     IF NOT FOUND THEN
       -- jede genehmigte Abwesenheit (auch halbe Tage, Arztbesuch) → nichts automatisch anlegen
@@ -770,9 +775,11 @@ BEGIN
   RETURN n;
 END $$;
 -- Nur der Server-Job darf das ausführen, kein Benutzer:
-REVOKE ALL ON FUNCTION zeit_automatik(date, boolean, boolean, boolean) FROM PUBLIC, anon, authenticated;
--- Einrichten (Supabase → Database → Extensions → pg_cron aktivieren), täglich 02:15 UTC:
+REVOKE ALL ON FUNCTION zeit_automatik(date, boolean, boolean, boolean, integer) FROM PUBLIC, anon, authenticated;
+-- Einrichten (Supabase → Database → Extensions → pg_cron aktivieren):
+-- nachts für den Vortag (Sicherheitsnetz) und alle 15 Minuten für heute (ausstempeln am selben Abend)
 -- SELECT cron.schedule('zeit-automatik', '15 2 * * *', $cron$ SELECT zeit_automatik(); $cron$);
+-- SELECT cron.schedule('zeit-automatik-heute', '*/15 * * * *', $cron$ SELECT zeit_automatik((now() AT TIME ZONE 'Europe/Vienna')::date); $cron$);
 
 -- ════════════════════════════════════════════════════════════
 --  BESTÄTIGUNGEN (Krankenstand, Arbeitsunfall, Pflegefreistellung, Arzt)

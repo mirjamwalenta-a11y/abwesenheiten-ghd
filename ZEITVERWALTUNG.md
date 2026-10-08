@@ -111,7 +111,7 @@ Live entscheidet das der Server in `zeit_stempeln()` (Tabelle `zeit_stempel_rege
 
 **Vergessen ein- oder auszustempeln:** Am Dashboard („Heute im Salon“) hat jede Person ✎ (Anwesenheit/Zeiten nachtragen) und 🌴 (Abwesenheit eintragen, z. B. krank). Für frühere Tage: *Zeiterfassung* → Person → Tag. Ein nachgetragener Krankenstand ersetzt automatisch ergänzte Arbeitstage. Alles wird mit Grund protokolliert.
 
-**Automatisch ausstempeln beim Verlassen des Salons** ist bewusst nicht eingebaut: Eine Web-App kann den Standort im Hintergrund nicht verfolgen (dafür bräuchte es eine eigene Handy-App mit dauerhafter Ortung), und laufende Standortüberwachung ist eine Kontrollmaßnahme, die in Österreich die schriftliche Zustimmung jeder Person braucht (§ 10 AVRAG, ohne Betriebsrat) und datenschutzrechtlich heikel ist. Stattdessen: vergessenes „Gehen“ wird laut Dienstplan eingetragen (Automatik).
+**Automatisch ausstempeln beim Verlassen des Salons** ist bewusst nicht eingebaut: Eine Web-App kann den Standort im Hintergrund nicht verfolgen (dafür bräuchte es eine eigene Handy-App mit dauerhafter Ortung), und laufende Standortüberwachung ist eine Kontrollmaßnahme, die in Österreich die schriftliche Zustimmung jeder Person braucht (§ 10 AVRAG, ohne Betriebsrat) und datenschutzrechtlich heikel ist. Stattdessen: **automatisch ausstempeln** wie bei TimeMoto – wer vergisst zu gehen, bekommt noch am selben Abend das Dienstende laut Plan eingetragen (Standard: 60 Minuten nach Dienstende, einstellbar unter *Einstellungen → Automatik*). Live erledigt das der Server-Job `zeit_automatik` alle 15 Minuten (pg_cron, siehe SQL-Entwurf); nachts läuft er zusätzlich für den Vortag.
 
 ## 5. Nächste Schritte
 
