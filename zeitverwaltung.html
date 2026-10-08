@@ -106,6 +106,8 @@ function standortHolen() {
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   });
 }
+// Außentermin (z. B. Hochzeit): an diesem Tag darf die Person überall am Handy stempeln
+function aussenterminAm(db, maId, d) { return (db.aussentermine || []).find(x => x.maId === maId && x.datum === d); }
 // Handy-Stempeln erlaubt? Liefert null (ok) oder einen Hinweistext.
 // Im Test nur per GPS (fälschbar) – live entscheidet der Server anhand des Salon-WLANs.
 async function handyStempelnPruefen(e) {
@@ -1183,11 +1185,12 @@ function Stempeluhr({ ctx }) {
   const plan = planTag(db, user, d);
   const kommenVergessen = zustand === "aus" && plan && !a && hm2min(nowHM()) > hm2min(plan.b) + 30;
   const [pruefung, setPruefung] = useState(null); // null | "laeuft" | Hinweistext
-  const nurTablet = (db.einstellungen.stempelOrt || "tablet") === "tablet";
+  const aussen = aussenterminAm(db, user.id, d);
+  const nurTablet = !aussen && (db.einstellungen.stempelOrt || "tablet") === "tablet";
   async function stempel(aktion) {
     setPruefung("laeuft");
-    let grund;
-    try { grund = await handyStempelnPruefen(db.einstellungen); } catch (err) { grund = err.message; }
+    let grund = null;
+    if (!aussen) try { grund = await handyStempelnPruefen(db.einstellungen); } catch (err) { grund = err.message; }
     setPruefung(grund);
     if (!grund) aendern(n => stempelBuchen(n, n.mitarbeiter.find(m => m.id === user.id), aktion));
   }
@@ -1218,7 +1221,8 @@ function Stempeluhr({ ctx }) {
       </>}
     </div>}
     {pruefung && !laeuft && !nurTablet && <div className="mt-3 rounded-xl bg-white text-rose-700 px-3 py-2.5 text-[13px] font-medium" role="alert">{pruefung}</div>}
-    {db.einstellungen.stempelOrt === "salon" && !pruefung && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-80 no-print">📍 Stempeln am Handy nur im Salon – beim Tippen wird einmal der Standort geprüft.</p>}
+    {aussen && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-90 no-print">🚗 Heute Außentermin{aussen.notiz ? ` (${aussen.notiz})` : ""} – Stempeln am Handy freigegeben.</p>}
+    {!aussen && db.einstellungen.stempelOrt === "salon" && !pruefung && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-80 no-print">📍 Stempeln am Handy nur im Salon – beim Tippen wird einmal der Standort geprüft.</p>}
   </section>;
 }
 
@@ -1231,6 +1235,8 @@ function Dashboard({ ctx }) {
   const naechsterUrlaub = db.abwesenheiten.filter(a => a.maId === user.id && a.art === "urlaub" && wirksam(a) && a.von >= h).sort((a, b) => a.von.localeCompare(b.von))[0];
   const aktiveTeam = sichtbar.filter(m => m.aktiv);
   const leitung = istLeitung(user);
+  const [zeitDlg, setZeitDlg] = useState(null);   // Mitarbeiter/in für „Zeit heute nachtragen“
+  const [abwDlg, setAbwDlg] = useState(null);     // Mitarbeiter/in für „Abwesenheit heute eintragen“
 
   const heuteDa = aktiveTeam.map(m => ({ m, z: zeitAm(db, m.id, h), a: abwAm(db, m.id, h), soll: sollMin(db, m, h) }));
   const imDienst = heuteDa.filter(x => x.z && !x.z.ende);
@@ -1260,17 +1266,23 @@ function Dashboard({ ctx }) {
     <div className="grid lg:grid-cols-3 gap-5">
       <div className="lg:col-span-2 space-y-5">
         <Stempeluhr ctx={ctx} />
-        {leitung && <Karte titel="Heute im Salon" innen="p-0">
+        {leitung && <Karte titel="Heute im Salon" innen="p-0" aktion={<button className="text-xs font-semibold text-gold-700 hover:underline" onClick={() => setSeite("zeit")}>Anderen Tag nachtragen →</button>}>
           {heuteDa.filter(x => x.soll > 0 || x.z || x.a).length === 0 ? <Leer text="Heute ist laut Arbeitszeitmodellen niemand eingeplant (Schließtag/Feiertag)." /> :
           <ul className="divide-y divide-stone-100">
             {heuteDa.filter(x => x.soll > 0 || x.z || x.a).map(({ m, z, a, soll }) => <li key={m.id} className="flex items-center gap-3 px-5 py-2.5">
               <Avatar name={m.name} klein />
               <div className="flex-1 min-w-0"><div className="text-sm font-medium truncate">{m.name}</div><div className="text-xs text-stone-500">{m.funktion} · Soll {fmtH(soll)} h</div></div>
               {a ? <ArtChip art={a.art} /> : z && !z.ende ? <span className="text-xs font-medium text-emerald-700 inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500" />seit {z.beginn}{z.pauseStart ? " · Pause" : ""}</span>
-                : z ? <span className="text-xs text-stone-500">{z.beginn}–{z.ende}</span> : <span className="text-xs text-amber-700">noch nicht eingestempelt</span>}
+                : z ? <span className="text-xs text-stone-500">{z.beginn}–{z.ende}</span> : <span className="text-xs text-amber-700 text-right">nicht ge&shy;stempelt</span>}
+              {darfVerwalten(user, m) && !gesperrt(db, m.id, h) && <div className="flex gap-0.5 no-print">
+                <button onClick={() => setZeitDlg(m)} className="p-1.5 rounded-full text-stone-500 hover:bg-stone-100 hover:text-gold-700" title={z ? "Zeiten heute bearbeiten" : "Anwesenheit heute nachtragen"} aria-label={`Zeit ${m.name}`}><Icon n="stift" className="w-4 h-4" /></button>
+                {!a && <button onClick={() => setAbwDlg(m)} className="p-1.5 rounded-full text-stone-400 hover:bg-stone-100 hover:text-gold-700" title="Abwesenheit heute eintragen (krank, Urlaub, …)" aria-label={`Abwesenheit ${m.name}`}>🌴</button>}
+              </div>}
             </li>)}
           </ul>}
         </Karte>}
+        {zeitDlg && <ZeitDialog ctx={ctx} ma={zeitDlg} datum={h} onClose={() => setZeitDlg(null)} />}
+        {abwDlg && <AbwDialog ctx={ctx} modus="alle" vorMa={abwDlg.id} vorDatum={h} onClose={() => setAbwDlg(null)} />}
       </div>
       <div className="space-y-5">
         {leitung && <Karte titel="Zu erledigen" innen="p-0">
@@ -2544,6 +2556,46 @@ function DruckNachweise({ db, liste, monat }) {
 }
 
 // ─── EINSTELLUNGEN ────────────────────────────────────────────────────────────
+// Außentermine: an diesen Tagen darf die Person überall am Handy stempeln (z. B. Hochzeit)
+function AussenTermine({ ctx }) {
+  const { db, user, aendern } = ctx;
+  const admin = istAdmin(user);
+  const aktive = db.mitarbeiter.filter(m => m.aktiv);
+  const [f, setF] = useState({ maId: aktive[0]?.id || "", datum: heute(), notiz: "" });
+  const liste = (db.aussentermine || []).filter(x => x.datum >= addTage(heute(), -30)).sort((a, b) => a.datum.localeCompare(b.datum));
+  const doppelt = !!aussenterminAm(db, f.maId, f.datum);
+  function hinzu() {
+    aendern(n => {
+      (n.aussentermine = n.aussentermine || []).push({ id: uid(), maId: f.maId, datum: f.datum, notiz: f.notiz.trim(), von: user.id });
+      n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: f.maId, datum: f.datum, aktion: "Außentermin freigegeben", alt: null, neu: null, grund: f.notiz.trim() || "Außentermin" });
+    }, "Außentermin eingetragen");
+    setF({ ...f, notiz: "" });
+  }
+  function weg(x) {
+    aendern(n => {
+      n.aussentermine = n.aussentermine.filter(q => q.id !== x.id);
+      n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: x.maId, datum: x.datum, aktion: "Außentermin entfernt", alt: null, neu: null, grund: x.notiz || "Außentermin" });
+    }, "Außentermin entfernt");
+  }
+  return <div className="mt-5 border-t border-stone-100 pt-4">
+    <div className="text-sm font-semibold">🚗 Außentermine</div>
+    <p className="text-xs text-stone-500 mt-0.5">Für einen einzelnen Tag darf die Person überall am Handy stempeln – z. B. Hochzeit. Alle anderen Tage bleiben wie oben eingestellt.</p>
+    {liste.length > 0 && <ul className="mt-3 divide-y divide-stone-100 rounded-xl border border-stone-200 text-sm">
+      {liste.map(x => <li key={x.id} className="flex items-center gap-3 px-3 py-2">
+        <span className="tabular w-24">{fmtDk(x.datum)}</span><span className="font-medium flex-1 min-w-0 truncate">{nameVon(db, x.maId)}{x.notiz ? <span className="font-normal text-stone-500"> · {x.notiz}</span> : null}</span>
+        {admin && <button className="text-xs text-rose-700 hover:underline" onClick={() => weg(x)}>entfernen</button>}
+      </li>)}
+    </ul>}
+    {admin && <div className="mt-3 grid sm:grid-cols-[1fr_auto_1fr_auto] gap-2 items-end">
+      <Feld label="Mitarbeiter/in"><select className={inputCls} value={f.maId} onChange={e => setF({ ...f, maId: e.target.value })}>{aktive.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
+      <Feld label="Tag"><input type="date" className={inputCls} value={f.datum} onChange={e => setF({ ...f, datum: e.target.value })} /></Feld>
+      <Feld label="Wofür (optional)"><input className={inputCls} placeholder="z. B. Hochzeit Brautstyling" value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>
+      <Knopf onClick={hinzu} disabled={!f.maId || !f.datum || doppelt}>Freigeben</Knopf>
+    </div>}
+    {doppelt && <p className="mt-1 text-xs text-stone-500">Für diesen Tag ist schon ein Außentermin eingetragen.</p>}
+  </div>;
+}
+
 function Einstellungen({ ctx }) {
   const { db, user, aendern, setDb } = ctx;
   const admin = istAdmin(user);
@@ -2587,7 +2639,7 @@ function Einstellungen({ ctx }) {
         {[
           ["tablet", "Nur am Salon-Tablet", "Am Handy sehen alle ihre Zeiten, stempeln geht aber nur am Tablet im Salon. Am sichersten – empfohlen."],
           ["salon", "Tablet + Handy im Salon", "Das Handy darf nur stempeln, wenn es im Salon ist (live: im Salon-WLAN)."],
-          ["ueberall", "Überall", "Handy ohne Einschränkung, z. B. für Außentermine."],
+          ["ueberall", "Überall", "Handy ohne Einschränkung. Für einzelne Außentermine reicht die Freigabe unten."],
         ].map(([k, t, h]) => <label key={k} className={`flex items-start gap-3 rounded-xl border p-3 text-sm ${(e.stempelOrt || "tablet") === k ? "border-gold-500 bg-gold-50" : "border-stone-200"}`}>
           <input type="radio" name="stempelOrt" className="mt-1" disabled={!admin} checked={(e.stempelOrt || "tablet") === k} onChange={() => setE("stempelOrt", k)} />
           <span><span className="font-medium">{t}</span><span className="block text-xs text-stone-500">{h}</span></span></label>)}
@@ -2597,6 +2649,7 @@ function Einstellungen({ ctx }) {
         {admin && <button className="rounded-full bg-stone-900 text-white text-sm font-semibold px-4 py-2" onClick={() => standortHolen().then(p => aendern(n => { n.einstellungen.salonOrt = { lat: p.lat, lng: p.lng }; }, "Salon-Standort gespeichert")).catch(err => alert(err.message))}>📍 Ich bin im Salon – Standort speichern</button>}
         <div className="w-32"><Feld label="Umkreis (m)"><input type="number" className={inputCls} disabled={!admin} value={e.salonRadiusM} onChange={ev => setE("salonRadiusM", +ev.target.value)} /></Feld></div>
       </div>}
+      <AussenTermine ctx={ctx} />
       <div className="mt-4"><Hinweis>
         Die Einstellung gilt für das Handy – das Salon-Tablet stempelt immer. In der echten Version prüft das der <b>Server</b>: bei „Nur am Salon-Tablet“ werden Stempelungen vom Handy abgelehnt, bei „Handy im Salon“ nur angenommen, wenn das Handy im Salon-WLAN ist. Die Standort-Prüfung in dieser Testversion ist nur eine Vorschau – ein Handy-Standort lässt sich fälschen.
       </Hinweis></div>

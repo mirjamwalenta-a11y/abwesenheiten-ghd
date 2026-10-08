@@ -417,6 +417,19 @@ CREATE TABLE IF NOT EXISTS zeit_salon_netze (
 ALTER TABLE zeit_salon_netze ENABLE ROW LEVEL SECURITY;    -- keine Policy: nur über Funktionen
 REVOKE ALL ON zeit_stempel_regel, zeit_salon_netze FROM anon, authenticated;
 
+-- Außentermine (z. B. Hochzeit): an diesem Tag darf die Person überall am Handy stempeln.
+-- Eintragen/Löschen nur die Chefin (RLS), sehen darf es, wer die Person sehen darf.
+CREATE TABLE IF NOT EXISTS zeit_aussentermine (
+  person_id   text NOT NULL REFERENCES abw_team(id),
+  datum       date NOT NULL,
+  notiz       text,
+  angelegt_von text,
+  angelegt_am timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (person_id, datum)
+);
+ALTER TABLE zeit_aussentermine ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON zeit_aussentermine FROM anon;
+
 -- Öffentliche IP des Aufrufers. NUR cf-connecting-ip wird vertraut (setzt die
 -- Supabase-Edge selbst, vom Client nicht fälschbar); X-Forwarded-For kann der
 -- Client vorne ergänzen und wird darum NICHT verwendet. Fehlt der Header → NULL
@@ -433,7 +446,9 @@ END $$;
 
 CREATE OR REPLACE FUNCTION zeit_handy_stempeln_erlaubt() RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
-  SELECT CASE COALESCE((SELECT modus FROM zeit_stempel_regel), 'tablet')
+  SELECT EXISTS (SELECT 1 FROM zeit_aussentermine
+                 WHERE person_id = abw_current_person_id() AND datum = (now() AT TIME ZONE 'Europe/Vienna')::date)
+  OR CASE COALESCE((SELECT modus FROM zeit_stempel_regel), 'tablet')
     WHEN 'ueberall' THEN true
     WHEN 'salon' THEN EXISTS (SELECT 1 FROM zeit_salon_netze WHERE ip = zeit_client_ip())
     ELSE false END;
@@ -482,6 +497,14 @@ BEGIN
   IF NOT abw_is_owner() THEN RAISE EXCEPTION 'Nur die Chefin'; END IF;
   RETURN QUERY SELECT * FROM zeit_salon_netze ORDER BY angelegt_am;
 END $$;
+
+DROP POLICY IF EXISTS zeit_aussentermine_lesen ON zeit_aussentermine;
+CREATE POLICY zeit_aussentermine_lesen ON zeit_aussentermine FOR SELECT TO authenticated
+  USING (zeit_darf_sehen(person_id));
+DROP POLICY IF EXISTS zeit_aussentermine_chefin ON zeit_aussentermine;
+CREATE POLICY zeit_aussentermine_chefin ON zeit_aussentermine FOR ALL TO authenticated
+  USING (abw_is_owner()) WITH CHECK (abw_is_owner());
+GRANT SELECT, INSERT, UPDATE, DELETE ON zeit_aussentermine TO authenticated;
 
 REVOKE ALL ON FUNCTION zeit_handy_stempeln_erlaubt(), zeit_client_ip() FROM anon, public;
 REVOKE ALL ON FUNCTION zeit_stempel_status(), zeit_stempel_regel_setzen(text), zeit_salon_netz_merken(text),
