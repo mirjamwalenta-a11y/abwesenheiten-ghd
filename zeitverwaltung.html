@@ -1255,7 +1255,7 @@ function Dashboard({ ctx }) {
     <Seitenkopf titel={`Hallo ${user.name.split(" ")[0]}`} sub={`${WT_LANG[wd(h)]}, ${fmtD(h)} · ${ROLLEN[user.rolle].label}`} />
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <Kpi label="Mein Zeitkonto" wert={fmtH(konto, true)} sub="Stand bis gestern" ton={konto >= 0 ? "pos" : "neg"} />
-      <Kpi label="Resturlaub" wert={`${uk.rest} T`} sub={`${uk.konsumiert} verbraucht · ${uk.geplant} geplant`} />
+      <Kpi label="Resturlaub" wert={`${fmtTage(Math.round(uk.rest * 10) / 10)} T`} sub={`${uk.konsumiert} verbraucht · ${uk.geplant} geplant`} />
       {leitung ? <>
         <Kpi label="Heute im Dienst" wert={`${imDienst.length} / ${heuteDa.filter(x => x.soll > 0).length}`} sub="eingestempelt / laut Plan" />
         <Kpi label="Offene Aufgaben" wert={offenAntraege.length + offenKorr.length} sub={`${offenAntraege.length} Anträge · ${offenKorr.length} Korrekturen`} ton={offenAntraege.length + offenKorr.length ? "neg" : undefined} />
@@ -1901,6 +1901,40 @@ function GesundForm({ a, onOk, onAbbruch }) {
 }
 
 // ─── MITARBEITER ──────────────────────────────────────────────────────────────
+// Falsches Chefin-Profil (z. B. beim leeren Start den Namen einer Mitarbeiterin eingetragen):
+// eigenes Chefin-Profil neu anlegen, das bisherige wird normale/r Mitarbeiter/in – mit allen Daten.
+function ChefinTausch({ ctx, ma, onClose }) {
+  const { db, user, aendern, login } = ctx;
+  const [offen, setOffen] = useState(false);
+  const [name, setName] = useState("");
+  const vergeben = db.mitarbeiter.some(m => m.name.trim().toLowerCase() === name.trim().toLowerCase());
+  function tauschen() {
+    const neuId = uid();
+    aendern(n => {
+      const alt = n.mitarbeiter.find(m => m.id === ma.id);
+      const nr = `P-${pad(n.mitarbeiter.length + 1).padStart(3, "0")}`;
+      n.mitarbeiter.push({ id: neuId, name: name.trim(), personalnr: n.mitarbeiter.some(m => m.personalnr === nr) ? `P-${uid().slice(0, 4)}` : nr, abteilung: "Leitung", funktion: "Inhaberin",
+        eintritt: alt.eintritt, modellId: alt.modellId, urlaubstage: 25, urlaubStart: 25, urlaubStartAm: heute(), saldoStart: 0, vorgesetzterId: null, rolle: "admin", aktiv: true });
+      alt.rolle = "mitarbeiter"; alt.vorgesetzterId = null;
+      if (alt.funktion === "Inhaberin") alt.funktion = "";
+      if (alt.abteilung === "Leitung") alt.abteilung = "Salon";
+      n.personalLog = n.personalLog || [];
+      const t = new Date().toISOString();
+      n.personalLog.push({ id: uid(), am: t, von: neuId, maId: neuId, aktion: "angelegt", details: `als Chefin – ersetzt das Chefin-Profil „${alt.name}“` });
+      n.personalLog.push({ id: uid(), am: t, von: neuId, maId: alt.id, aktion: "Stammdaten geändert", details: "Rolle: Administrator → Mitarbeiter/in (Chefin-Profil neu angelegt)" });
+    }, `Chefin-Profil „${name.trim()}“ angelegt – ${ma.name} ist jetzt Mitarbeiter/in`);
+    onClose();
+    login(neuId);
+  }
+  if (!offen) return <button type="button" className="text-sm font-semibold text-gold-700 hover:underline" onClick={() => setOffen(true)}>Das bin gar nicht ich – „{ma.name}“ ist eine Mitarbeiterin / ein Mitarbeiter →</button>;
+  return <div className="rounded-xl border border-gold-300 bg-gold-50 p-4 space-y-3">
+    <div className="text-sm"><b>Chefin-Profil richtigstellen:</b> Für dich wird ein neues Chefin-Profil angelegt. <b>{ma.name}</b> wird normale/r Mitarbeiter/in und behält alle bisherigen Daten (Eintritt, Urlaub, Zeiten). Danach bist du mit deinem neuen Profil angemeldet.</div>
+    <Feld label="Dein Name (Chefin)"><input className={inputCls} value={name} placeholder="Vor- und Nachname" onChange={e => setName(e.target.value)} /></Feld>
+    {vergeben && <p className="text-xs text-rose-700">Diesen Namen gibt es schon in der Liste.</p>}
+    <div className="flex gap-2"><Knopf onClick={tauschen} disabled={!name.trim() || vergeben}>Chefin-Profil anlegen</Knopf><Knopf art="sekundaer" onClick={() => setOffen(false)}>Abbrechen</Knopf></div>
+  </div>;
+}
+
 function MaDialog({ ctx, ma, onClose }) {
   const { db, user, aendern } = ctx;
   const neu = !ma;
@@ -1943,7 +1977,8 @@ function MaDialog({ ctx, ma, onClose }) {
   }
   return <Modal breit titel={neu ? "Neue/r Mitarbeiter/in" : f.name} onClose={onClose}
     fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>Speichern</Knopf></>}>
-    {!neu && f.id === user.id && <div className="mb-4"><Hinweis>Das ist <b>dein eigenes Profil</b> (Chefin / Administratorin). Mitarbeiter/innen legst du unter „+ Neu“ oder „Import“ an – nicht hier.</Hinweis></div>}
+    {!neu && f.id === user.id && <div className="mb-4 space-y-3"><Hinweis>Das ist <b>dein eigenes Profil</b> (Chefin / Administratorin). Mitarbeiter/innen legst du unter „+ Neu“ oder „Import“ an – nicht hier.</Hinweis>
+      {istAdmin(user) && <ChefinTausch ctx={ctx} ma={ma} onClose={onClose} />}</div>}
     <div className="grid sm:grid-cols-2 gap-4">
       <Feld label="Name"><input className={inputCls} value={f.name} onChange={e => set("name", e.target.value)} /></Feld>
       <Feld label="Personalnummer"><input className={inputCls} value={f.personalnr} onChange={e => set("personalnr", e.target.value)} /></Feld>
@@ -1972,7 +2007,7 @@ function MaDialog({ ctx, ma, onClose }) {
         : <Feld label="Genehmigt Urlaub & Korrekturen" hilfe="Normalerweise du als Chefin. Nur wenn eine Salonleitung (Rolle „Vorgesetzte/r“) genehmigen soll, diese wählen.">
           <select className={inputCls} value={f.vorgesetzterId || ""} onChange={e => set("vorgesetzterId", e.target.value || null)}>
             <option value="">nur die Chefin</option>{db.mitarbeiter.filter(m => m.id !== f.id && m.aktiv && m.rolle !== "mitarbeiter").map(m => <option key={m.id} value={m.id}>{m.name}{m.rolle === "admin" ? " (Chefin)" : " (Salonleitung)"}</option>)}</select></Feld>}
-      <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || f.id === user.id} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
+      <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || (f.id === user.id && !db.mitarbeiter.some(m => m.id !== user.id && m.aktiv && m.rolle === "admin"))} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
       <Feld label="Geburtsdatum" hilfe={f.geburtsdatum ? (jugendlich(f, heute()) ? `Unter 18 – KJBG-Regeln gelten bis ${fmtD(`${parseInt(f.geburtsdatum) + 18}${f.geburtsdatum.slice(4)}`)}, danach automatisch AZG` : "Volljährig – es gilt das AZG") : "Für Lehrlinge wichtig: bis 18 gelten automatisch die strengeren KJBG-Regeln"}>
         <input type="date" className={inputCls} value={f.geburtsdatum || ""} onChange={e => set("geburtsdatum", e.target.value || undefined)} /></Feld>
       {f.lehrbeginn && <Feld label="Lehrbeginn" hilfe={`Derzeit ${lehrjahr(f, heute()) || "–"}. Lehrjahr · Berufsschule ${fmtTage(bsTageProWoche(db, f, heute()))} Tag(e)/Woche`}>
@@ -2853,7 +2888,7 @@ function App() {
   if (!user) return <Login db={db} onLogin={login} onTerminal={() => setTerminal(true)} onEigene={name => { const n = leereDaten(name); setDb(n); login(n.mitarbeiter[0].id); }} />;
 
   const setSeite = s => { setSeiteRoh(s); setNavOffen(false); window.scrollTo(0, 0); };
-  const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite };
+  const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite, login };
   const badges = {
     urlaub: db.abwesenheiten.filter(a => a.art === "urlaub" && a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId))).length,
     krank: db.abwesenheiten.filter(a => a.art !== "urlaub" && a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId))).length,
