@@ -37,10 +37,12 @@ CREATE TABLE IF NOT EXISTS zeit_modell_tage (
   beginn     time NOT NULL,
   ende       time NOT NULL,
   pause_min  integer NOT NULL DEFAULT 0 CHECK (pause_min >= 0),
+  pause_beginn time,                 -- fixe Pausenzeit (optional), z. B. 11:30 → 11:30–12:30
   PRIMARY KEY (modell_id, gueltig_ab, wochentag),
   CHECK (ende > beginn)
 );
 ALTER TABLE zeit_modell_tage ENABLE ROW LEVEL SECURITY;
+ALTER TABLE zeit_modell_tage ADD COLUMN IF NOT EXISTS pause_beginn time;
 
 -- Gesetzliche Feiertage (einmal pro Jahr befüllen; die App berechnet sie ohnehin)
 CREATE TABLE IF NOT EXISTS zeit_feiertage (
@@ -94,12 +96,16 @@ CREATE TABLE IF NOT EXISTS zeit_buchungen (
   quelle       text NOT NULL DEFAULT 'stempel' CHECK (quelle IN ('stempel', 'manuell', 'korrektur', 'auto')),
   auto         text[] NOT NULL DEFAULT '{}',   -- was laut Dienstplan ergänzt wurde: kommen/gehen/pause/tag
   notiz        text,
+  beginn_roh   time,                   -- echte Stempelzeit, wenn auf den Dienstplan gerundet wurde
+  ende_roh     time,
   erstellt_am  timestamptz NOT NULL DEFAULT now(),
   geaendert_am timestamptz,
   UNIQUE (person_id, datum),
   CHECK (ende IS NULL OR ende >= beginn)
 );
 ALTER TABLE zeit_buchungen ENABLE ROW LEVEL SECURITY;
+ALTER TABLE zeit_buchungen ADD COLUMN IF NOT EXISTS beginn_roh time;
+ALTER TABLE zeit_buchungen ADD COLUMN IF NOT EXISTS ende_roh time;
 
 -- ── Korrekturanträge von Mitarbeiter/innen ─────────────────────
 CREATE TABLE IF NOT EXISTS zeit_korrekturen (
@@ -364,8 +370,9 @@ BEGIN
   END IF;
   IF p_aktion = 'kommen' THEN
     IF FOUND THEN RAISE EXCEPTION 'Heute bereits eingestempelt'; END IF;
-    INSERT INTO zeit_buchungen (person_id, datum, beginn, quelle)
-      VALUES (v_person, v_datum, v_zeit, 'stempel') RETURNING * INTO b;
+    INSERT INTO zeit_buchungen (person_id, datum, beginn, beginn_roh, quelle)
+      VALUES (v_person, v_datum, zeit_runden(v_zeit, v_plan.beginn, 'beginn'),
+              nullif(v_zeit, zeit_runden(v_zeit, v_plan.beginn, 'beginn')), 'stempel') RETURNING * INTO b;
   ELSIF NOT FOUND OR b.ende IS NOT NULL THEN
     RAISE EXCEPTION 'Kein laufender Dienst';
   ELSIF p_aktion = 'pause_start' THEN
@@ -379,7 +386,9 @@ BEGIN
   ELSIF p_aktion = 'gehen' THEN
     UPDATE zeit_buchungen
       SET pause_min = pause_min + COALESCE((extract(epoch FROM v_zeit - pause_start) / 60)::int, 0),
-          pause_start = NULL, ende = v_zeit
+          pause_start = NULL,
+          ende = greatest(zeit_runden(v_zeit, v_plan.ende, 'ende'), beginn),
+          ende_roh = nullif(v_zeit, greatest(zeit_runden(v_zeit, v_plan.ende, 'ende'), beginn))
       WHERE id = b.id RETURNING * INTO b;
     IF p_auto_pause AND zeit_auto_pause_erlaubt() AND zeit_pause_noetig(v_person, b) THEN
       UPDATE zeit_buchungen SET pause_min = greatest(COALESCE(v_plan.pause_min, 0), 30), auto = auto || 'pause'::text
@@ -407,6 +416,12 @@ CREATE TABLE IF NOT EXISTS zeit_stempel_regel (
   geaendert_am timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE zeit_stempel_regel ENABLE ROW LEVEL SECURITY;  -- keine Policy: nur über Funktionen
+-- Rundung auf den Dienstplan (wie TimeMoto): Stempelung im Fenster zählt als Plan-Zeit
+ALTER TABLE zeit_stempel_regel ADD COLUMN IF NOT EXISTS rundung boolean NOT NULL DEFAULT true;
+ALTER TABLE zeit_stempel_regel ADD COLUMN IF NOT EXISTS rund_beginn_vor  integer NOT NULL DEFAULT 30 CHECK (rund_beginn_vor  BETWEEN 0 AND 120);
+ALTER TABLE zeit_stempel_regel ADD COLUMN IF NOT EXISTS rund_beginn_nach integer NOT NULL DEFAULT 5  CHECK (rund_beginn_nach BETWEEN 0 AND 60);
+ALTER TABLE zeit_stempel_regel ADD COLUMN IF NOT EXISTS rund_ende_vor    integer NOT NULL DEFAULT 5  CHECK (rund_ende_vor    BETWEEN 0 AND 60);
+ALTER TABLE zeit_stempel_regel ADD COLUMN IF NOT EXISTS rund_ende_nach   integer NOT NULL DEFAULT 15 CHECK (rund_ende_nach   BETWEEN 0 AND 120);
 INSERT INTO zeit_stempel_regel (id) VALUES (true) ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS zeit_salon_netze (
@@ -470,6 +485,28 @@ BEGIN
   INSERT INTO zeit_protokoll (von_person, person_id, datum, aktion, grund)
     VALUES (abw_current_person_id(), abw_current_person_id(), (now() AT TIME ZONE 'Europe/Vienna')::date, 'Einstellung Stempeln: ' || p_modus, NULL);
 END $$;
+
+-- Nur die Chefin: Rundung einstellen
+CREATE OR REPLACE FUNCTION zeit_rundung_setzen(p_an boolean, p_beginn_vor integer, p_beginn_nach integer, p_ende_vor integer, p_ende_nach integer) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NOT abw_is_owner() THEN RAISE EXCEPTION 'Nur die Chefin'; END IF;
+  UPDATE zeit_stempel_regel SET rundung = p_an, rund_beginn_vor = p_beginn_vor, rund_beginn_nach = p_beginn_nach,
+    rund_ende_vor = p_ende_vor, rund_ende_nach = p_ende_nach, geaendert_am = now() WHERE id;
+END $$;
+REVOKE ALL ON FUNCTION zeit_rundung_setzen(boolean, integer, integer, integer, integer) FROM anon, public;
+GRANT EXECUTE ON FUNCTION zeit_rundung_setzen(boolean, integer, integer, integer, integer) TO authenticated;
+
+-- Stempelzeit auf Plan-Beginn/-Ende runden, wenn sie im eingestellten Fenster liegt
+CREATE OR REPLACE FUNCTION zeit_runden(p_zeit time, p_plan time, p_art text) RETURNS time
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT CASE WHEN p_plan IS NOT NULL AND r.rundung AND
+    p_zeit BETWEEN p_plan - make_interval(mins => CASE WHEN p_art = 'beginn' THEN r.rund_beginn_vor ELSE r.rund_ende_vor END)
+               AND p_plan + make_interval(mins => CASE WHEN p_art = 'beginn' THEN r.rund_beginn_nach ELSE r.rund_ende_nach END)
+    THEN p_plan ELSE p_zeit END
+  FROM zeit_stempel_regel r WHERE r.id;
+$$;
+REVOKE ALL ON FUNCTION zeit_runden(time, time, text) FROM anon, public;
 
 -- Nur die Chefin, im Salon am Salon-WLAN aufgerufen: aktuelle IP als Salon-Netz merken.
 -- (Wechselt der Internetanbieter die IP, einfach nochmal im Salon tippen.)
@@ -727,7 +764,7 @@ DROP FUNCTION IF EXISTS zeit_automatik(date, boolean, boolean, boolean);
 CREATE OR REPLACE FUNCTION zeit_automatik(
   p_datum date DEFAULT ((now() AT TIME ZONE 'Europe/Vienna')::date - 1),
   p_auto_gehen boolean DEFAULT true, p_auto_pause boolean DEFAULT true, p_auto_fehltag boolean DEFAULT true,
-  p_nach_min integer DEFAULT 60
+  p_nach_min integer DEFAULT 15
 ) RETURNS integer
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE

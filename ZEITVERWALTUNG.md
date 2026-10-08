@@ -107,6 +107,11 @@ Am Tablet: Name antippen → PIN → Kommen / Pause / Gehen. Der Server prüft d
 
 Live entscheidet das der Server in `zeit_stempeln()` (Tabelle `zeit_stempel_regel`), die App blendet nur die Knöpfe aus. Für „Handy im Salon“ tippt die Chefin einmal **im Salon, im Salon-WLAN** auf „Salon-WLAN merken“ (`zeit_salon_netz_merken()`); gespeichert wird die öffentliche IP des Salon-Internetanschlusses in `zeit_salon_netze`. Wechselt der Anbieter die IP, im Salon nochmal tippen. Vertraut wird nur dem Header `cf-connecting-ip` (setzt die Supabase-Edge), nicht dem vom Client fälschbaren `X-Forwarded-For`; fehlt er, wird abgelehnt. **Vor Go-live testen:** Stempeln mit Handy-Daten (nicht WLAN) und mit gefälschtem `X-Forwarded-For` muss scheitern. Die GPS-Prüfung im Prototyp ist nur eine Vorschau – ein Handy-Standort lässt sich fälschen.
 
+**Wie TimeMoto eingestellt** (Einstellungen → Automatik):
+- *Automatisch ausstempeln* 15 Minuten nach Dienstende laut Plan.
+- *Auf Dienstplan runden*: Stempelung 30 min vor bis 5 min nach Plan-Beginn zählt ab Plan-Beginn (wer früher kommt, um pünktlich arbeitsbereit zu sein); 5 min vor bis 15 min nach Plan-Ende zählt bis Plan-Ende. Die echte Stempelzeit bleibt gespeichert (`beginn_roh`/`ende_roh`) und steht im Zeitbericht. Muss jemand tatsächlich früher arbeiten, ist das Arbeitszeit → als Korrektur eintragen.
+- *Fixe Pausenzeit je Person*: im Dienstplan „Pause ab“ (z. B. 11:30 → 11:30–12:30); bei unterschiedlichen Pausen je Person „Eigener Plan für diese Person“. Automatisch abgezogen wird die Pause erst, wenn die schriftliche Pausen-Vereinbarung vorliegt (§ 26 Abs 5 AZG).
+
 **Außentermine** (z. B. Hochzeit): Die Chefin gibt unter *Einstellungen → Stempeln* für eine Person und einen Tag das Handy-Stempeln frei – an diesem Tag geht es überall, alle anderen Tage bleiben wie eingestellt. Live: Tabelle `zeit_aussentermine` (RLS: eintragen/löschen nur die Chefin), geprüft in `zeit_handy_stempeln_erlaubt()`. Freigabe und Entfernen stehen im Protokoll.
 
 **Vergessen ein- oder auszustempeln:** Am Dashboard („Heute im Salon“) hat jede Person ✎ (Anwesenheit/Zeiten nachtragen) und 🌴 (Abwesenheit eintragen, z. B. krank). Für frühere Tage: *Zeiterfassung* → Person → Tag. Ein nachgetragener Krankenstand ersetzt automatisch ergänzte Arbeitstage. Alles wird mit Grund protokolliert.
