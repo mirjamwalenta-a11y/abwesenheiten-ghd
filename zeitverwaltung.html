@@ -2482,7 +2482,7 @@ function Auswertungen({ ctx }) {
       <div className="mt-4 flex flex-wrap gap-2">
         {istLeitung(user) && <button disabled={!vorbei || !abschliessbar.length} onClick={alleAbschliessen} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25 disabled:opacity-40">🔒 Alle abschließen{abschliessbar.length ? ` (${abschliessbar.length})` : ""}</button>}
         <button onClick={excelHerunterladen} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">⬇️ Excel herunterladen</button>
-        <button onClick={() => setDruck("monat")} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50">🖨️ Arbeitszeitnachweise (PDF)</button>
+        <button onClick={() => setDruck("monat")} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50">🖨️ Zeitberichte (PDF)</button>
       </div>
       {!vorbei && <p className="mt-3 text-xs opacity-80">Abschließen geht ab dem 1. des Folgemonats.</p>}
       <p className="mt-3 text-xs opacity-80">Excel: Übersicht, alle Arbeitszeiten pro Tag, Abwesenheiten und Änderungsprotokoll. PDF: pro Person ein Arbeitszeitnachweis{db.einstellungen.pdfUnterschrift ? " mit Unterschriftszeilen" : ""} – im Druckdialog „Als PDF speichern“ wählen.</p>
@@ -2561,33 +2561,93 @@ function DruckJahr({ db, jd }) {
 }
 
 // Arbeitszeitnachweise aller Personen eines Monats – je Person eine Seite
+// ISO-Kalenderwoche
+function kalenderWoche(d) {
+  const t = parseD(d); t.setDate(t.getDate() + 3 - ((t.getDay() + 6) % 7));
+  const w1 = new Date(t.getFullYear(), 0, 4);
+  return 1 + Math.round(((t - w1) / 864e5 - 3 + ((w1.getDay() + 6) % 7)) / 7);
+}
+// Monatlicher Zeitbericht je Person (Aufbau wie der bisherige Zeitbericht des Salons):
+// Kopf, Tage nach Wochen mit Zwischensummen, Monatssumme, Urlaub, Zeitkonto, Abwesenheiten
 function DruckNachweise({ db, liste, monat }) {
   const tage = tageImMonat(monat), bisD = tage[tage.length - 1] < heute() ? tage[tage.length - 1] : heute();
+  const jetzt = new Date();
+  const th = "py-1 font-semibold", num = "text-right tabular";
   return <div className="druck-bereich">
-    {liste.map((m, idx) => { const sm = summe(db, m, tage[0], tage[tage.length - 1]); const ab = abschlussVon(db, m.id, monat);
-      return <div key={m.id} className={idx < liste.length - 1 ? "seitenumbruch" : ""} style={{ fontSize: 10 }}>
-        <div className="flex justify-between items-end border-b border-stone-400 pb-1 mb-2">
-          <div><div className="text-[9px] uppercase tracking-widest text-stone-500">{db.einstellungen.firmenname} · Arbeitszeitnachweis gem. § 26 AZG</div>
-            <div className="text-base font-bold">{m.name} <span className="font-normal text-stone-600">({m.personalnr})</span></div></div>
-          <div className="text-right"><div className="text-base font-bold capitalize">{fmtMonat(monat)}</div><div className="text-stone-600">{modellVon(db, m).name}</div></div>
+    {liste.map((m, idx) => {
+      const ab = abschlussVon(db, m.id, monat);
+      const zeilen = tage.filter(d => beschaeftigt(m, d)).map(d => tagInfo(db, m, d))
+        .filter(t => t.soll > 0 || t.z || t.a || (t.ft && modellSollMin(db, m, t.d) > 0));
+      const wochen = [];
+      zeilen.forEach(t => { const kw = kalenderWoche(t.d); let w = wochen[wochen.length - 1]; if (!w || w.kw !== kw) wochen.push(w = { kw, tage: [] }); w.tage.push(t); });
+      const sum = ts => ts.reduce((s, t) => { if (t.zaehlt) { s.soll += t.soll; s.erf += t.ist + t.gut; s.saldo += t.saldo; } return s; }, { soll: 0, erf: 0, saldo: 0 });
+      const gesamt = sum(zeilen);
+      // Abwesenheiten im Monat (Arbeitstage laut Dienstplan)
+      const abw = { urlaub: 0, krank: 0, bezahlt: 0, unbezahlt: 0 };
+      zeilen.forEach(t => { if (!t.a || modellSollMin(db, m, t.d) <= 0 || ARTEN[t.a.art].stunden) return;
+        const x = anteil(t.a), art = t.a.art;
+        if (art === "urlaub") abw.urlaub += x; else if (KRANK_ARTEN.includes(art)) abw.krank += x; else if (ARTEN[art].gutschrift) abw.bezahlt += x; else abw.unbezahlt += x; });
+      const arztMin = zeilen.reduce((s, t) => s + (t.a && ARTEN[t.a.art].stunden ? t.gut : 0), 0);
+      const uk = urlaubsKonto(db, m, bisD);
+      const kontoVorher = zeitkonto(db, m, addTage(tage[0], -1)), kontoJetzt = zeitkonto(db, m, bisD);
+      const plan = WT.map((t, i) => { const x = planAusModell(modellVon(db, m), i, tage[0]); return x ? `${t} ${x.b}–${x.e}${x.p ? ` (${x.p}′)` : ""}` : null; }).filter(Boolean).join(" · ");
+      const code = t => [t.ft && t.ft.name, t.a ? `${ARTEN[t.a.art].kurz} ${ARTEN[t.a.art].label}${teilTag(t.a) ? ` (${abwZusatz(t.a)})` : ""}` : null,
+        t.z?.auto?.length ? `auto: ${t.z.auto.map(x => AUTO_TEXT[x]).join(", ")}` : null,
+        t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? "korrigiert" : null, t.z?.notiz || null].filter(Boolean).join(" · ");
+      return <div key={m.id} className={idx < liste.length - 1 ? "seitenumbruch" : ""} style={{ fontSize: 9.5 }}>
+        <div className="text-center text-[15px] font-bold tracking-wide">Zeitbericht</div>
+        <div className="flex justify-between border-b border-stone-500 pb-1 mb-2 text-[10px]">
+          <span className="font-semibold">{db.einstellungen.firmenname}</span>
+          <span>{fmtD(tage[0])} – {fmtD(tage[tage.length - 1])}</span>
         </div>
-        <table className="w-full" style={{ fontSize: 9.5 }}>
-          <thead><tr className="text-left border-b border-stone-300"><th className="py-0.5">Tag</th><th>Beginn</th><th>Ende</th><th className="text-right">Pause</th><th className="text-right">Ist</th><th className="text-right">Soll</th><th className="text-right">Saldo</th><th className="pl-3">Vermerk</th></tr></thead>
-          <tbody>{tage.map(d => { const t = tagInfo(db, m, d); if (!beschaeftigt(m, d)) return null;
-            const vermerk = [t.ft?.name, t.a ? ARTEN[t.a.art].label + (teilTag(t.a) ? ` (${abwZusatz(t.a)})` : "") : null, t.z?.auto?.length ? `auto: ${t.z.auto.map(x => AUTO_TEXT[x]).join(", ")}` : null, t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? "korrigiert" : null].filter(Boolean).join(" · ");
-            return <tr key={d} className="border-b border-stone-100" style={{ color: !t.soll && !t.z ? "#A59C88" : undefined }}>
-              <td className="py-[1px]">{fmtDk(d)}</td><td>{t.z?.beginn || ""}</td><td>{t.z?.ende || ""}</td><td className="text-right">{t.z ? `${t.z.pause}′` : ""}</td>
-              <td className="text-right">{t.z ? fmtH(t.ist) : t.gut ? fmtH(t.gut) : ""}</td><td className="text-right">{t.soll ? fmtH(t.soll) : ""}</td>
-              <td className="text-right">{t.zaehlt && (t.soll || t.ist) ? fmtH(t.saldo, true) : ""}</td><td className="pl-3">{vermerk}</td></tr>; })}</tbody>
+        <div className="grid grid-cols-[auto_1fr_auto_1fr] gap-x-3 gap-y-0.5 mb-2 text-[9.5px]">
+          <span className="text-stone-500">Name:</span><b>{m.name}</b>
+          <span className="text-stone-500">Bereich:</span><span>{m.abteilung || "–"}</span>
+          <span className="text-stone-500">Mitarbeiternr.:</span><span>{m.personalnr || "–"}</span>
+          <span className="text-stone-500">Funktion:</span><span>{m.funktion || "–"}</span>
+          <span className="text-stone-500">Dienstplan:</span><span className="col-span-3">{modellVon(db, m).name}{plan ? ` – ${plan}` : ""}</span>
+        </div>
+        <table className="w-full" style={{ fontSize: 9 }}>
+          <thead><tr className="text-left border-y border-stone-500"><th className={th}>Datum</th><th className={th}>Tag</th><th className={th}>Hinein</th><th className={th}>Hinaus</th><th className={`${th} text-right`}>Pause</th>
+            <th className={`${th} text-right`}>Geplant</th><th className={`${th} text-right`}>Erfüllt</th><th className={`${th} text-right`}>Saldo</th><th className={`${th} pl-3`}>Kommentar / Code</th></tr></thead>
+          {wochen.map(w => { const s = sum(w.tage); return <tbody key={w.kw}>
+            <tr><td colSpan={9} className="pt-1.5 font-semibold text-stone-600">Woche {w.kw}</td></tr>
+            {w.tage.map(t => <tr key={t.d} className="border-b border-stone-100">
+              <td className="py-[1px] tabular">{t.d.slice(8)}.{t.d.slice(5, 7)}.</td><td>{WT[wd(t.d)]}</td><td className="tabular">{t.z?.beginn || ""}</td><td className="tabular">{t.z?.ende || ""}</td>
+              <td className={num}>{t.z ? `${t.z.pause}′` : ""}</td><td className={num}>{t.soll ? fmtH(t.soll) : ""}</td>
+              <td className={num}>{t.z || t.gut ? fmtH(t.ist + t.gut) : ""}</td><td className={num}>{t.zaehlt && (t.soll || t.ist || t.gut) ? fmtH(t.saldo, true) : ""}</td>
+              <td className="pl-3">{code(t)}</td></tr>)}
+            <tr className="font-semibold"><td colSpan={5} /><td className={`${num} border-t border-stone-400`}>{fmtH(s.soll)}</td><td className={`${num} border-t border-stone-400`}>{fmtH(s.erf)}</td><td className={`${num} border-t border-stone-400`}>{fmtH(s.saldo, true)}</td><td /></tr>
+          </tbody>; })}
+          <tbody><tr className="font-bold text-[10px]"><td colSpan={5} className="pt-2">Summe {fmtMonat(monat)}</td><td className={`${num} pt-2 border-t-2 border-stone-600`}>{fmtH(gesamt.soll)}</td><td className={`${num} pt-2 border-t-2 border-stone-600`}>{fmtH(gesamt.erf)}</td><td className={`${num} pt-2 border-t-2 border-stone-600`}>{fmtH(gesamt.saldo, true)}</td><td /></tr></tbody>
         </table>
-        <div className="mt-2 flex gap-6 font-semibold">
-          <span>Soll {fmtH(sm.soll)} h</span><span>Ist {fmtH(sm.ist)} h</span><span>Abwesenheit {fmtH(sm.gut)} h</span><span>Saldo {fmtH(sm.saldo, true)} h</span><span>Zeitkonto {fmtH(zeitkonto(db, m, bisD), true)} h</span>
+        <div className="mt-3 grid grid-cols-3 gap-3 text-[9.5px]">
+          <div className="border border-stone-300 rounded p-2"><div className="font-bold mb-1">Urlaub (Tage)</div>
+            <div className="text-stone-500 mb-0.5">Urlaubsjahr {fmtD(uk.von)} – {fmtD(uk.bis)}</div>
+            {uk.imStart ? <div className="flex justify-between"><span>Offen am {fmtD(uk.ab)} (Startbestand)</span><b>{fmtTage(uk.uebertrag)}</b></div> : <>
+              <div className="flex justify-between"><span>Anspruch{uk.anteilig ? " (anteilig)" : ""}</span><b>{fmtTage(uk.anspruch)}</b></div>
+              {uk.uebertrag ? <div className="flex justify-between"><span>Rest aus Vorjahr</span><span>{fmtTage(uk.uebertrag)}</span></div> : null}</>}
+            <div className="flex justify-between"><span>Verbraucht bis heute</span><span>{fmtTage(uk.konsumiert)}</span></div>
+            <div className="flex justify-between"><span>Dieser Monat</span><span>{fmtTage(abw.urlaub)}</span></div>
+            {uk.geplant ? <div className="flex justify-between"><span>Schon eingeplant</span><span>{fmtTage(uk.geplant)}</span></div> : null}
+            <div className="flex justify-between border-t border-stone-300 mt-0.5 pt-0.5"><span>Offen</span><b>{fmtTage(uk.rest)}</b></div></div>
+          <div className="border border-stone-300 rounded p-2"><div className="font-bold mb-1">Zeitkonto (Stunden)</div>
+            <div className="flex justify-between"><span>Stand vorher</span><span>{fmtH(kontoVorher, true)}</span></div>
+            <div className="flex justify-between"><span>Dieser Monat</span><span>{fmtH(gesamt.saldo, true)}</span></div>
+            <div className="flex justify-between border-t border-stone-300 mt-0.5 pt-0.5"><span>Gesamtsaldo</span><b>{fmtH(kontoJetzt, true)}</b></div></div>
+          <div className="border border-stone-300 rounded p-2"><div className="font-bold mb-1">Abwesenheiten (Arbeitstage)</div>
+            <div className="flex justify-between"><span>Urlaub</span><span>{fmtTage(abw.urlaub)}</span></div>
+            <div className="flex justify-between"><span>Krankenstand / Unfall</span><span>{fmtTage(abw.krank)}</span></div>
+            <div className="flex justify-between"><span>Sonstige bezahlt</span><span>{fmtTage(abw.bezahlt)}</span></div>
+            <div className="flex justify-between"><span>Unbezahlt</span><span>{fmtTage(abw.unbezahlt)}</span></div>
+            {arztMin > 0 && <div className="flex justify-between"><span>Arztbesuche</span><span>{fmtH(arztMin)} h</span></div>}</div>
         </div>
-        <div className="mt-1 text-stone-600">{ab?.bestaetigtAm ? `Von Mitarbeiter/in bestätigt am ${fmtD(ab.bestaetigtAm)}. ` : ""}{ab?.abgeschlossenAm ? `Abgeschlossen am ${fmtD(ab.abgeschlossenAm)} von ${nameVon(db, ab.abgeschlossenVon)}.` : "Monat noch nicht abgeschlossen."}</div>
+        <div className="mt-2 text-stone-600 text-[9px]">{ab?.bestaetigtAm ? `Von Mitarbeiter/in bestätigt am ${fmtD(ab.bestaetigtAm)}. ` : ""}{ab?.abgeschlossenAm ? `Abgeschlossen am ${fmtD(ab.abgeschlossenAm)} von ${nameVon(db, ab.abgeschlossenVon)}.` : "Monat noch nicht abgeschlossen."} Arbeitszeitaufzeichnung gem. § 26 AZG{jugendlich(m, tage[0]) ? " · unter 18: KJBG" : ""}.</div>
         {db.einstellungen.pdfUnterschrift && <div className="flex justify-between gap-10 mt-10">
           <div className="flex-1 border-t border-stone-500 pt-1">Datum, Unterschrift Mitarbeiter/in</div>
           <div className="flex-1 border-t border-stone-500 pt-1">Datum, Unterschrift Arbeitgeber/in</div>
         </div>}
+        <div className="mt-3 flex justify-between text-[8.5px] text-stone-500"><span>Erstellt am {fmtD(heute())} um {pad(jetzt.getHours())}:{pad(jetzt.getMinutes())}</span><span>Blatt {idx + 1} / {liste.length}</span></div>
       </div>; })}
   </div>;
 }
