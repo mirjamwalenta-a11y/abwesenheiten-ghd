@@ -2076,9 +2076,17 @@ function Mitarbeiter({ ctx }) {
     <Seitenkopf titel={istLeitung(user) ? "Mitarbeiter" : "Mein Profil"} sub={istLeitung(user) ? `${db.mitarbeiter.filter(m => m.aktiv).length} aktive Mitarbeiter/innen` : "Deine Stammdaten – Änderungen bitte über die Verwaltung"}>
       {istLeitung(user) && <><input className={`${inputKlein} w-48`} placeholder="Suchen …" value={suche} onChange={e => setSuche(e.target.value)} />
         <label className="flex items-center gap-1.5 text-sm text-stone-600"><input type="checkbox" checked={nurAktiv} onChange={e => setNurAktiv(e.target.checked)} />nur aktive</label></>}
-      {istAdmin(user) && <Knopf art="sekundaer" icon="download" onClick={() => setDialog("import")}>Import</Knopf>}
-      {istAdmin(user) && <Knopf icon="plus" onClick={() => setDialog("neu")}>Neu</Knopf>}
+      {istAdmin(user) && <span className="hidden sm:contents"><Knopf art="sekundaer" icon="download" onClick={() => setDialog("import")}>Import</Knopf>
+        <Knopf icon="plus" onClick={() => setDialog("neu")}>Mitarbeiter hinzufügen</Knopf></span>}
     </Seitenkopf>
+    {/* Groß und gut sichtbar – vor allem am Handy und solange noch kein Team angelegt ist */}
+    {istAdmin(user) && <div className={`${db.mitarbeiter.length > 1 ? "sm:hidden" : ""} rounded-[14px] border border-stone-200 bg-white p-4`}>
+      {db.mitarbeiter.length <= 1 && <p className="text-sm text-stone-600 mb-3">Noch keine Mitarbeiter/innen angelegt. Einzeln hinzufügen oder deine Beschäftigungsstand-Liste (Excel) importieren:</p>}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <button onClick={() => setDialog("neu")} className="rounded-full bg-gold-500 hover:bg-gold-700 text-white py-3.5 text-[15px] font-bold">＋ Mitarbeiter hinzufügen</button>
+        <button onClick={() => setDialog("import")} className="rounded-full bg-white ring-1 ring-inset ring-stone-200 hover:ring-gold-500 py-3.5 text-[15px] font-bold text-stone-800">📄 Aus Excel-Liste importieren</button>
+      </div>
+    </div>}
     <Karte innen="p-0">
       <Tabelle kopf={["Name", "Pers.-Nr.", "Bereich", "Eintritt", "Dienstplan", { t: "Std./Wo.", cls: "text-right" }, { t: "Urlaub", cls: "text-right" }, { t: "Zeitkonto", cls: "text-right" }, "Genehmigt von", "Rolle", ""]}>
         {liste.map(m => { const konto = zeitkonto(db, m, heute()); const k = urlaubsKonto(db, m, m.austritt && m.austritt < heute() ? m.austritt : heute(), m.austritt && m.austritt < heute() ? { stichtag: true } : {}); return <tr key={m.id} className={m.aktiv ? "" : "text-stone-400"}>
