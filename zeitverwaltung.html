@@ -161,6 +161,28 @@ function feiertageJahr(j) {
   ].sort((a, b) => a.datum.localeCompare(b.datum));
 }
 const FT_CACHE = {};
+// Schulferien Wien (Schulzeitgesetz) – gelten für die ganzjährige Berufsschule.
+// Schulautonome Tage der jeweiligen Schule sind nicht enthalten.
+function schulferienJahr(j) {
+  const o = ostern(j);
+  const add = n => { const x = new Date(o); x.setDate(x.getDate() + n); return datStr(x); };
+  const fix = (m, t, y = j) => `${y}-${pad(m)}-${pad(t)}`;
+  const ersterWt = (m, w) => { const d = new Date(j, m - 1, 1); while (d.getDay() !== w) d.setDate(d.getDate() + 1); return datStr(d); }; // w: 0 = So, 1 = Mo, 6 = Sa
+  const semMo = ersterWt(2, 1);
+  let somSa = fix(6, 28); while (wd(somSa) !== 5) somSa = addTage(somSa, 1);
+  return [
+    { von: fix(1, 1), bis: fix(1, 6), name: "Weihnachtsferien" },
+    { von: semMo, bis: addTage(semMo, 6), name: "Semesterferien" },
+    { von: add(-8), bis: add(1), name: "Osterferien" },
+    { von: add(48), bis: add(50), name: "Pfingstferien" },
+    { von: somSa, bis: addTage(ersterWt(9, 1), -1), name: "Sommerferien" },
+    { von: fix(10, 26), bis: fix(11, 2), name: "Herbstferien" },
+    { von: fix(11, 15), bis: fix(11, 15), name: "Leopold (Wien schulfrei)" },
+    { von: fix(12, 24), bis: fix(12, 31), name: "Weihnachtsferien" },
+  ];
+}
+const SF_CACHE = {};
+function schulferien(d) { const j = parseInt(d); if (!SF_CACHE[j]) SF_CACHE[j] = schulferienJahr(j); return SF_CACHE[j].find(f => d >= f.von && d <= f.bis) || null; }
 function feiertage(j) { if (!FT_CACHE[j]) FT_CACHE[j] = feiertageJahr(j); return FT_CACHE[j]; }
 function feiertag(d) { return feiertage(parseInt(d)).find(f => f.datum === d) || null; }
 
@@ -524,11 +546,10 @@ function bsWochentage(db, ma) {
   return { tag1: t[0] ?? 1, tag2: t[1] ?? 2 };
 }
 // Termine im Zeitraum; das Lehrjahr wird pro Datum bestimmt, ein Wechsel (z. B. 1. → 2. Lj.) greift automatisch
-function bsTermine(db, ma, von, bis, plan, ohneSommer) {
+function bsTermine(db, ma, von, bis, plan, ohneFerien) {
   const out = [];
   for (const d of tageZw(von, bis)) {
-    const mo = +d.slice(5, 7);
-    if (ohneSommer && (mo === 7 || mo === 8)) continue;
+    if (ohneFerien && schulferien(d)) continue;
     if (feiertag(d) || !beschaeftigt(ma, d) || !modellSollMin(db, ma, d)) continue;
     const q = bsTageProWoche(db, ma, d);
     let a = 0;
@@ -1954,7 +1975,7 @@ function BsPlaner({ ctx, lehrlinge, onClose }) {
   const [plan, setPlan] = useState(() => ma ? bsWochentage(db, ma) : { tag1: 1, tag2: 2 });
   const [von, setVon] = useState(h);
   const [bis, setBis] = useState(schuljahrEnde);
-  const [ohneSommer, setOhneSommer] = useState(true);
+  const [ohneSommer, setOhneSommer] = useState(true); // = alle Wiener Schulferien auslassen
   const [ersetzen, setErsetzen] = useState(true);
   if (!ma) return <Modal titel="Berufsschule planen" onClose={onClose}><Leer text="Keine Lehrlinge, für die du zuständig bist." /></Modal>;
   const termine = bis >= von ? bsTermine(db, ma, von, bis, plan, ohneSommer) : [];
@@ -1982,7 +2003,9 @@ function BsPlaner({ ctx, lehrlinge, onClose }) {
       {tagWahl("tag1", "Schultag (ganzer Tag)")}
       {tagWahl("tag2", "Zusätzlicher halber Tag (1. Lehrjahr)")}
       <p className="text-xs text-stone-500 sm:col-span-2 -mt-2">Die gewählten Tage werden beim Lehrling als fixe Schultage gespeichert.</p>
-      <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ohneSommer} onChange={e => setOhneSommer(e.target.checked)} />Sommerferien (Juli/August) auslassen</label>
+      <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ohneSommer} onChange={e => setOhneSommer(e.target.checked)} />Schulferien Wien auslassen (Herbst, Weihnachten, Semester, Ostern, Pfingsten, Sommer, 15.11.)</label>
+      {ohneSommer && (() => { const fer = []; tageZw(von, bis > von ? bis : von).forEach(d => { const f = schulferien(d); if (f && !fer.some(x => x.von === f.von)) fer.push(f); });
+        return fer.length > 0 && <div className="sm:col-span-2 -mt-2 text-xs text-stone-500">Schulfrei im Zeitraum: {fer.map(f => `${f.name} ${f.von === f.bis ? fmtD(f.von) : fmtZr(f.von, f.bis)}`).join(" · ")}. Schulautonome Tage deiner Berufsschule bitte zusätzlich stornieren.</div>; })()}
       <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ersetzen} onChange={e => setErsetzen(e.target.checked)} />Bereits geplante Berufsschultage in diesem Zeitraum ersetzen ({bestehend.length})</label>
     </div>
     <div className="mt-4 space-y-2">
@@ -1991,7 +2014,7 @@ function BsPlaner({ ctx, lehrlinge, onClose }) {
         <div className="text-xs text-stone-500 mt-1">Regel: {Object.entries(db.einstellungen.bsTageJeLehrjahr).map(([lj, t]) => `${lj}. Lj. ${fmtTage(t)} Tag${+t === 1 ? "" : "e"}`).join(" · ")} pro Woche (änderbar unter Einstellungen). Feiertage werden übersprungen, ein Lehrjahreswechsel im Zeitraum wird automatisch berücksichtigt.</div>
       </div>
       {konflikt.length > 0 && <Hinweis ton="warn">{konflikt.length} Tage übersprungen, weil schon Urlaub oder eine andere Abwesenheit eingetragen ist.</Hinweis>}
-      <Hinweis>Herbst-, Weihnachts-, Semester- und Osterferien der Berufsschule danach einzeln unter „Alle Einträge“ (Filter Berufsschule) stornieren.</Hinweis>
+      <Hinweis>Die Wiener Schulferien sind fix hinterlegt und werden jedes Jahr neu berechnet. Nur schulautonome Tage der Berufsschule bitte einzeln unter „Alle Einträge“ (Filter Berufsschule) stornieren.</Hinweis>
     </div>
   </Modal>;
 }
