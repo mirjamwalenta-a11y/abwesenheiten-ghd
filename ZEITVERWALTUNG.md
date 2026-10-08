@@ -118,6 +118,12 @@ Live entscheidet das der Server in `zeit_stempeln()` (Tabelle `zeit_stempel_rege
 
 **Automatisch ausstempeln beim Verlassen des Salons** ist bewusst nicht eingebaut: Eine Web-App kann den Standort im Hintergrund nicht verfolgen (dafür bräuchte es eine eigene Handy-App mit dauerhafter Ortung), und laufende Standortüberwachung ist eine Kontrollmaßnahme, die in Österreich die schriftliche Zustimmung jeder Person braucht (§ 10 AVRAG, ohne Betriebsrat) und datenschutzrechtlich heikel ist. Stattdessen: **automatisch ausstempeln** wie bei TimeMoto – wer vergisst zu gehen, bekommt noch am selben Abend das Dienstende laut Plan eingetragen (Standard: 60 Minuten nach Dienstende, einstellbar unter *Einstellungen → Automatik*). Live erledigt das der Server-Job `zeit_automatik` alle 15 Minuten (pg_cron, siehe SQL-Entwurf); nachts läuft er zusätzlich für den Vortag.
 
+## 4b. Urlaub: Sperre je Gruppe und Nachrichten
+
+- **Urlaubssperre:** Aus jeder Gruppe (Stylist/innen, Lehrlinge, Rezeption, Assistenz) darf gleichzeitig nur eine Person Urlaub haben – beantragt oder genehmigt. Die Gruppe steht im Profil („Automatisch“ erkennt Stylist/innen und Lehrlinge an der Funktion). Die Chefin kann trotzdem eintragen. Einstellung: *Einstellungen → Urlaub*. Live: Trigger `zeit_urlaub_sperre` auf `abw_anfragen` (wirkt auch in der Abwesenheiten-App – vorher abstimmen).
+- **Nachrichten (🔔):** Neuer Antrag → Nachricht an die Chefin (und ggf. Salonleitung); Genehmigung/Ablehnung → Nachricht an die Person. Live: Tabelle `zeit_nachrichten` (RLS: nur Empfänger/in liest), E-Mail zusätzlich über Database Webhook + Edge Function, Adresse als Secret.
+- **Mein Urlaub & Krankenstand** (Dashboard der Mitarbeiter/innen): „Du hast noch 19 UT. Denk daran: Bei deinem nächsten genehmigten Urlaub werden noch 4 UT abgezogen – danach bleiben dir 15 UT.“ plus Liste der genehmigten/genommenen Urlaube und Krankenstände.
+
 ## 5. Nächste Schritte
 
 1. Offene Fragen unten klären, Schema anpassen.
