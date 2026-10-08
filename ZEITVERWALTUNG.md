@@ -97,6 +97,16 @@ Beide Wege laufen parallel und schreiben in dieselben Arbeitszeiten. Jede Person
 
 Am Tablet: Name antippen → PIN → Kommen / Pause / Gehen. Der Server prüft die PIN gegen den Login (`zeit_terminal_stempeln`), die PIN wird nirgends gespeichert. Nach 5 falschen PINs ist die Person 15 Minuten gesperrt. Das Tablet sieht nur Vornamen und den heutigen Stempel-Status, sonst keine Daten. Ein Mitarbeiter-Handy kann die Tablet-Funktion nicht nutzen, also nicht für andere stempeln. Ein verlorenes Tablet sperrst du mit `UPDATE zeit_terminals SET aktiv = false …`.
 
+**Wo darf gestempelt werden?** – Einstellung *Einstellungen → Stempeln – wo ist es erlaubt?*:
+
+| Modus | Handy | Tablet |
+|---|---|---|
+| **Nur am Salon-Tablet** (Standard, empfohlen) | sieht Zeiten, kann nicht stempeln | stempelt |
+| **Tablet + Handy im Salon** | nur im Salon-WLAN | stempelt |
+| **Überall** | ohne Einschränkung | stempelt |
+
+Live entscheidet das der Server in `zeit_stempeln()` (Tabelle `zeit_stempel_regel`), die App blendet nur die Knöpfe aus. Für „Handy im Salon“ tippt die Chefin einmal **im Salon, im Salon-WLAN** auf „Salon-WLAN merken“ (`zeit_salon_netz_merken()`); gespeichert wird die öffentliche IP des Salon-Internetanschlusses in `zeit_salon_netze`. Wechselt der Anbieter die IP, im Salon nochmal tippen. Vertraut wird nur dem Header `cf-connecting-ip` (setzt die Supabase-Edge), nicht dem vom Client fälschbaren `X-Forwarded-For`; fehlt er, wird abgelehnt. **Vor Go-live testen:** Stempeln mit Handy-Daten (nicht WLAN) und mit gefälschtem `X-Forwarded-For` muss scheitern. Die GPS-Prüfung im Prototyp ist nur eine Vorschau – ein Handy-Standort lässt sich fälschen.
+
 ## 5. Nächste Schritte
 
 1. Offene Fragen unten klären, Schema anpassen.

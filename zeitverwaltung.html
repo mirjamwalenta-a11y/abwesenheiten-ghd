@@ -92,6 +92,31 @@ function tageZw(v, b) { const t = []; for (let d = v; d <= b; d = addTage(d, 1))
 function hm2min(s) { if (!s) return null; const [h, m] = s.split(":").map(Number); return h * 60 + m; }
 function min2hm(m) { m = Math.round(m); return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; }
 function nowHM() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+// Entfernung zweier GPS-Punkte in Metern (Haversine)
+function entfernungM(a, b) {
+  const r = x => x * Math.PI / 180, R = 6371000;
+  const h = Math.sin(r(b.lat - a.lat) / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(r(b.lng - a.lng) / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(h)));
+}
+function standortHolen() {
+  return new Promise((ok, fehler) => {
+    if (!navigator.geolocation) return fehler(new Error("Dieses Gerät kann den Standort nicht bestimmen."));
+    navigator.geolocation.getCurrentPosition(p => ok({ lat: p.coords.latitude, lng: p.coords.longitude, genau: p.coords.accuracy }),
+      e => fehler(new Error(e.code === 1 ? "Standort-Freigabe wurde abgelehnt – bitte im Browser erlauben." : "Standort konnte nicht bestimmt werden.")),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  });
+}
+// Handy-Stempeln erlaubt? Liefert null (ok) oder einen Hinweistext.
+// Im Test nur per GPS (fälschbar) – live entscheidet der Server anhand des Salon-WLANs.
+async function handyStempelnPruefen(e) {
+  const modus = e.stempelOrt || "tablet";
+  if (modus === "ueberall") return null;
+  if (modus === "tablet") return "Gestempelt wird nur am Salon-Tablet.";
+  if (!e.salonOrt) return "Der Salon-Standort ist noch nicht gespeichert (Einstellungen → Stempeln).";
+  const pos = await standortHolen();
+  const m = entfernungM(e.salonOrt, pos);
+  return m <= (e.salonRadiusM || 150) + Math.min(pos.genau || 0, 100) ? null : `Du bist ca. ${m >= 1000 ? (m / 1000).toFixed(1).replace(".", ",") + " km" : m + " m"} vom Salon entfernt – stempeln geht nur im Salon.`;
+}
 // Dauer in Stunden:Minuten, optional mit Vorzeichen
 function fmtH(min, vorzeichen = false) {
   const m = Math.round(min || 0), a = Math.abs(m);
@@ -196,8 +221,13 @@ const STANDARD_EINSTELLUNGEN = {
   autoGehen: true,             // vergessenes „Gehen“ = Dienstende laut Plan
   autoFehltag: true,           // gar nicht gestempelt = Arbeitszeit laut Plan
   ueberstunden: false,         // Überstunden/Mehrarbeit vorgesehen? (fixer Plan: nein)
-  planToleranzMin: 15,
-  pdfUnterschrift: false,      // Unterschriftszeilen auf den Arbeitszeitnachweisen (gesetzlich nicht nötig)         // ab so vielen Minuten über Plan gibt es einen Hinweis
+  planToleranzMin: 15,         // ab so vielen Minuten über Plan gibt es einen Hinweis
+  pdfUnterschrift: false,      // Unterschriftszeilen auf den Arbeitszeitnachweisen (gesetzlich nicht nötig)
+  // Wo darf gestempelt werden? "tablet" = nur am Salon-Tablet, "salon" = auch Handy, aber nur im Salon,
+  // "ueberall" = Handy ohne Einschränkung. Live prüft das der Server (siehe zeit_stempeln im SQL-Entwurf).
+  stempelOrt: "tablet",
+  salonOrt: null,              // { lat, lng } – Salon-Standort für die Handy-Prüfung (nur zum Testen; live: Salon-WLAN)
+  salonRadiusM: 150,
   kontoStart: null,
 };
 
@@ -1152,8 +1182,17 @@ function Stempeluhr({ ctx }) {
   const pauseAb = kj ? db.einstellungen.kjbgPauseAbMin : db.einstellungen.pauseAbMin;
   const plan = planTag(db, user, d);
   const kommenVergessen = zustand === "aus" && plan && !a && hm2min(nowHM()) > hm2min(plan.b) + 30;
-  function stempel(aktion) { aendern(n => stempelBuchen(n, n.mitarbeiter.find(m => m.id === user.id), aktion)); }
+  const [pruefung, setPruefung] = useState(null); // null | "laeuft" | Hinweistext
+  const nurTablet = (db.einstellungen.stempelOrt || "tablet") === "tablet";
+  async function stempel(aktion) {
+    setPruefung("laeuft");
+    let grund;
+    try { grund = await handyStempelnPruefen(db.einstellungen); } catch (err) { grund = err.message; }
+    setPruefung(grund);
+    if (!grund) aendern(n => stempelBuchen(n, n.mitarbeiter.find(m => m.id === user.id), aktion));
+  }
   const weiss = "rounded-full font-bold text-sm px-5 py-2.5 transition disabled:opacity-40";
+  const laeuft = pruefung === "laeuft";
   return <section className="now-card rounded-[14px] text-white p-5">
     <div className="flex items-center justify-between gap-2">
       <span className="text-[11px] tracking-[.14em] font-bold opacity-90 uppercase">⏱️ Stempeluhr</span>
@@ -1167,13 +1206,19 @@ function Stempeluhr({ ctx }) {
     </div>
     {zustand !== "aus" && zustand !== "fertig" && netto > pauseAb - 30 && pauseBisher < db.einstellungen.pauseMin &&
       <div className="mt-4 rounded-xl bg-white/15 px-3 py-2.5 text-[13px]">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({kj ? "§ 15 KJBG" : "§ 11 AZG"}).{autoPauseAktiv(db.einstellungen) ? " Wird keine Pause gestempelt, trägt die App beim Gehen die Pause laut Plan ein." : " Bitte die Pause stempeln."}</div>}
+    {nurTablet && zustand !== "fertig" ? <div className="mt-5 rounded-xl bg-white/15 px-3 py-2.5 text-[13px] no-print">📍 Ein- und ausstempeln bitte am <b>Salon-Tablet</b>. Vergessene Zeiten trägt die App automatisch laut Dienstplan ein.</div> :
     <div className="mt-5 flex flex-wrap items-center gap-2 no-print">
+      {laeuft && <span className="text-[13px] opacity-90">📍 Standort wird geprüft …</span>}
+      {!laeuft && <>
       {zustand === "aus" && <button className={`${weiss} bg-white text-gold-700 hover:bg-stone-50`} onClick={() => stempel("kommen")} disabled={gesperrt(db, user.id, d)}>Kommen</button>}
       {kommenVergessen && <button className={`${weiss} bg-white/15 text-white hover:bg-white/25`} onClick={() => stempel("nurGehen")} title={`Beginn wird laut Plan (${plan.b}) eingetragen`}>Gehen (Kommen vergessen)</button>}
       {zustand === "arbeit" && <><button className={`${weiss} bg-white/15 text-white hover:bg-white/25`} onClick={() => stempel("pauseStart")}>Pause</button><button className={`${weiss} bg-white text-gold-700 hover:bg-stone-50`} onClick={() => stempel("gehen")}>Gehen</button></>}
       {zustand === "pause" && <><button className={`${weiss} bg-white text-gold-700 hover:bg-stone-50`} onClick={() => stempel("pauseEnde")}>Pause beenden</button><button className={`${weiss} bg-white/15 text-white hover:bg-white/25`} onClick={() => stempel("gehen")}>Gehen</button></>}
       {zustand === "fertig" && <span className="text-[13px] opacity-90">Änderungen bitte als Korrektur unter „Zeiterfassung“.</span>}
-    </div>
+      </>}
+    </div>}
+    {pruefung && !laeuft && !nurTablet && <div className="mt-3 rounded-xl bg-white text-rose-700 px-3 py-2.5 text-[13px] font-medium" role="alert">{pruefung}</div>}
+    {db.einstellungen.stempelOrt === "salon" && !pruefung && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-80 no-print">📍 Stempeln am Handy nur im Salon – beim Tippen wird einmal der Standort geprüft.</p>}
   </section>;
 }
 
@@ -2535,6 +2580,26 @@ function Einstellungen({ ctx }) {
           </div>; })}
       </div>
       <p className="mt-3 text-xs text-stone-500">Dienstpläne, die außerhalb der Öffnungszeiten liegen, werden markiert. Das Stempel-Tablet zeigt die heutigen Öffnungszeiten.</p>
+    </Karte>
+
+    <Karte titel="Stempeln – wo ist es erlaubt?">
+      <div className="grid md:grid-cols-3 gap-3">
+        {[
+          ["tablet", "Nur am Salon-Tablet", "Am Handy sehen alle ihre Zeiten, stempeln geht aber nur am Tablet im Salon. Am sichersten – empfohlen."],
+          ["salon", "Tablet + Handy im Salon", "Das Handy darf nur stempeln, wenn es im Salon ist (live: im Salon-WLAN)."],
+          ["ueberall", "Überall", "Handy ohne Einschränkung, z. B. für Außentermine."],
+        ].map(([k, t, h]) => <label key={k} className={`flex items-start gap-3 rounded-xl border p-3 text-sm ${(e.stempelOrt || "tablet") === k ? "border-gold-500 bg-gold-50" : "border-stone-200"}`}>
+          <input type="radio" name="stempelOrt" className="mt-1" disabled={!admin} checked={(e.stempelOrt || "tablet") === k} onChange={() => setE("stempelOrt", k)} />
+          <span><span className="font-medium">{t}</span><span className="block text-xs text-stone-500">{h}</span></span></label>)}
+      </div>
+      {e.stempelOrt === "salon" && <div className="mt-4 flex flex-wrap items-end gap-3">
+        <div className="text-sm">{e.salonOrt ? <>Salon-Standort gespeichert <span className="text-stone-500">({e.salonOrt.lat.toFixed(4)}, {e.salonOrt.lng.toFixed(4)})</span></> : <span className="text-rose-700 font-medium">Salon-Standort fehlt noch – solange kann am Handy niemand stempeln.</span>}</div>
+        {admin && <button className="rounded-full bg-stone-900 text-white text-sm font-semibold px-4 py-2" onClick={() => standortHolen().then(p => aendern(n => { n.einstellungen.salonOrt = { lat: p.lat, lng: p.lng }; }, "Salon-Standort gespeichert")).catch(err => alert(err.message))}>📍 Ich bin im Salon – Standort speichern</button>}
+        <div className="w-32"><Feld label="Umkreis (m)"><input type="number" className={inputCls} disabled={!admin} value={e.salonRadiusM} onChange={ev => setE("salonRadiusM", +ev.target.value)} /></Feld></div>
+      </div>}
+      <div className="mt-4"><Hinweis>
+        Die Einstellung gilt für das Handy – das Salon-Tablet stempelt immer. In der echten Version prüft das der <b>Server</b>: bei „Nur am Salon-Tablet“ werden Stempelungen vom Handy abgelehnt, bei „Handy im Salon“ nur angenommen, wenn das Handy im Salon-WLAN ist. Die Standort-Prüfung in dieser Testversion ist nur eine Vorschau – ein Handy-Standort lässt sich fälschen.
+      </Hinweis></div>
     </Karte>
 
     <Karte titel="Automatik & Überstunden">

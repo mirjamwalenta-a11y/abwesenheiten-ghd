@@ -393,12 +393,112 @@ BEGIN
   RETURN b;
 END $$;
 
+-- ════════════════════════════════════════════════════════════
+--  WO DARF GESTEMPELT WERDEN? (Einstellung der Chefin)
+--  'tablet'   = Handy darf NICHT stempeln, nur das Salon-Tablet (Standard)
+--  'salon'    = Handy nur aus dem Salon-WLAN (öffentliche IP in zeit_salon_netze)
+--  'ueberall' = Handy ohne Einschränkung
+--  Das Tablet (zeit_terminal_stempeln) ist davon nicht betroffen.
+--  Geprüft wird am Server – die Einstellung in der App blendet nur Knöpfe aus.
+-- ════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS zeit_stempel_regel (
+  id    boolean PRIMARY KEY DEFAULT true CHECK (id),   -- genau eine Zeile
+  modus text NOT NULL DEFAULT 'tablet' CHECK (modus IN ('tablet', 'salon', 'ueberall')),
+  geaendert_am timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE zeit_stempel_regel ENABLE ROW LEVEL SECURITY;  -- keine Policy: nur über Funktionen
+INSERT INTO zeit_stempel_regel (id) VALUES (true) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS zeit_salon_netze (
+  ip          inet PRIMARY KEY,          -- öffentliche IP des Salon-Internetanschlusses
+  name        text NOT NULL DEFAULT 'Salon-WLAN',
+  angelegt_am timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE zeit_salon_netze ENABLE ROW LEVEL SECURITY;    -- keine Policy: nur über Funktionen
+REVOKE ALL ON zeit_stempel_regel, zeit_salon_netze FROM anon, authenticated;
+
+-- Öffentliche IP des Aufrufers. NUR cf-connecting-ip wird vertraut (setzt die
+-- Supabase-Edge selbst, vom Client nicht fälschbar); X-Forwarded-For kann der
+-- Client vorne ergänzen und wird darum NICHT verwendet. Fehlt der Header → NULL
+-- → im Modus 'salon' wird abgelehnt (lieber zu streng als zu offen).
+-- VOR GO-LIVE TESTEN: Aufruf mit gefälschtem X-Forwarded-For muss scheitern.
+CREATE OR REPLACE FUNCTION zeit_client_ip() RETURNS inet
+LANGUAGE plpgsql STABLE AS $$
+DECLARE v text;
+BEGIN
+  v := nullif(trim(current_setting('request.headers', true)::json->>'cf-connecting-ip'), '');
+  RETURN v::inet;
+EXCEPTION WHEN others THEN RETURN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION zeit_handy_stempeln_erlaubt() RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT CASE COALESCE((SELECT modus FROM zeit_stempel_regel), 'tablet')
+    WHEN 'ueberall' THEN true
+    WHEN 'salon' THEN EXISTS (SELECT 1 FROM zeit_salon_netze WHERE ip = zeit_client_ip())
+    ELSE false END;
+$$;
+
+-- Für die App: welcher Modus gilt, und ist dieses Gerät gerade im Salon-Netz?
+CREATE OR REPLACE FUNCTION zeit_stempel_status() RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT jsonb_build_object('modus', COALESCE((SELECT modus FROM zeit_stempel_regel), 'tablet'),
+                            'erlaubt', zeit_handy_stempeln_erlaubt());
+$$;
+
+-- Nur die Chefin: Modus setzen
+CREATE OR REPLACE FUNCTION zeit_stempel_regel_setzen(p_modus text) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NOT abw_is_owner() THEN RAISE EXCEPTION 'Nur die Chefin'; END IF;
+  UPDATE zeit_stempel_regel SET modus = p_modus, geaendert_am = now() WHERE id;
+  INSERT INTO zeit_protokoll (von_person, person_id, datum, aktion, grund)
+    VALUES (abw_current_person_id(), abw_current_person_id(), (now() AT TIME ZONE 'Europe/Vienna')::date, 'Einstellung Stempeln: ' || p_modus, NULL);
+END $$;
+
+-- Nur die Chefin, im Salon am Salon-WLAN aufgerufen: aktuelle IP als Salon-Netz merken.
+-- (Wechselt der Internetanbieter die IP, einfach nochmal im Salon tippen.)
+CREATE OR REPLACE FUNCTION zeit_salon_netz_merken(p_name text DEFAULT 'Salon-WLAN') RETURNS inet
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE v inet := zeit_client_ip();
+BEGIN
+  IF NOT abw_is_owner() THEN RAISE EXCEPTION 'Nur die Chefin'; END IF;
+  IF v IS NULL THEN RAISE EXCEPTION 'IP-Adresse nicht ermittelbar'; END IF;
+  INSERT INTO zeit_salon_netze (ip, name) VALUES (v, p_name)
+    ON CONFLICT (ip) DO UPDATE SET name = excluded.name;
+  RETURN v;
+END $$;
+
+CREATE OR REPLACE FUNCTION zeit_salon_netz_entfernen(p_ip inet) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NOT abw_is_owner() THEN RAISE EXCEPTION 'Nur die Chefin'; END IF;
+  DELETE FROM zeit_salon_netze WHERE ip = p_ip;
+END $$;
+
+CREATE OR REPLACE FUNCTION zeit_salon_netze_liste() RETURNS SETOF zeit_salon_netze
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NOT abw_is_owner() THEN RAISE EXCEPTION 'Nur die Chefin'; END IF;
+  RETURN QUERY SELECT * FROM zeit_salon_netze ORDER BY angelegt_am;
+END $$;
+
+REVOKE ALL ON FUNCTION zeit_handy_stempeln_erlaubt(), zeit_client_ip() FROM anon, public;
+REVOKE ALL ON FUNCTION zeit_stempel_status(), zeit_stempel_regel_setzen(text), zeit_salon_netz_merken(text),
+  zeit_salon_netz_entfernen(inet), zeit_salon_netze_liste() FROM anon, public;
+GRANT EXECUTE ON FUNCTION zeit_stempel_status(), zeit_stempel_regel_setzen(text), zeit_salon_netz_merken(text),
+  zeit_salon_netz_entfernen(inet), zeit_salon_netze_liste() TO authenticated;
+
 -- HANDY: Person kommt aus dem eigenen Login
 DROP FUNCTION IF EXISTS zeit_stempeln(text);
 CREATE OR REPLACE FUNCTION zeit_stempeln(p_aktion text, p_auto_pause boolean DEFAULT true) RETURNS zeit_buchungen
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
   IF abw_current_person_id() IS NULL THEN RAISE EXCEPTION 'Nicht angemeldet'; END IF;
+  IF NOT zeit_handy_stempeln_erlaubt() THEN
+    RAISE EXCEPTION 'Stempeln nur im Salon (am Salon-Tablet%)',
+      CASE WHEN (SELECT modus FROM zeit_stempel_regel) = 'salon' THEN ' oder im Salon-WLAN' ELSE '' END;
+  END IF;
   RETURN zeit__stempeln_fuer(abw_current_person_id(), p_aktion, p_auto_pause);
 END $$;
 
