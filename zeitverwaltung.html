@@ -2827,7 +2827,11 @@ function App() {
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 30000); return () => clearInterval(t); }, []);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
 
-  const [terminal, setTerminal] = useState(false);
+  // Dieses Gerät ist das Stempel-Tablet? Merkt sich der Browser, damit es nach Neuladen
+  // direkt wieder im Tablet-Modus startet (live: eigener Geräte-Zugang, siehe SQL-Entwurf)
+  const TABLET_KEY = "ghd-zeitverwaltung-tablet";
+  const [terminal, setTerminalRoh] = useState(() => { try { return localStorage.getItem(TABLET_KEY) === "1"; } catch (e) { return false; } });
+  function setTerminal(an) { try { an ? localStorage.setItem(TABLET_KEY, "1") : localStorage.removeItem(TABLET_KEY); } catch (e) { } setTerminalRoh(an); }
   // Automatik beim Öffnen (live: nächtlicher Server-Job)
   useEffect(() => {
     const n = JSON.parse(JSON.stringify(db));
