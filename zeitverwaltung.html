@@ -223,6 +223,7 @@ const STANDARD_EINSTELLUNGEN = {
   autoPause: true,             // Pause laut Plan eintragen, wenn keine (ausreichende) gestempelt wurde
   pausenVereinbarung: false,   // § 26 Abs 5 AZG: schriftliche Pausen-Vereinbarung je Person liegt vor?
   autoGehen: true,             // vergessenes „Gehen“ = Dienstende laut Plan
+  autoGehenNachMin: 60,        // … noch am selben Tag, so viele Minuten nach Dienstende (wie TimeMoto)
   autoFehltag: true,           // gar nicht gestempelt = Arbeitszeit laut Plan
   ueberstunden: false,         // Überstunden/Mehrarbeit vorgesehen? (fixer Plan: nein)
   planToleranzMin: 15,         // ab so vielen Minuten über Plan gibt es einen Hinweis
@@ -579,9 +580,11 @@ function automatik(n) {
   let anzahl = 0;
   const log = (ma, d, was, alt, neu) => { anzahl++; n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: "system", maId: ma.id, datum: d, aktion: `automatisch ergänzt: ${was}`, alt, neu, grund: "laut Dienstplan (nicht gestempelt)" }); };
   for (const ma of n.mitarbeiter.filter(m => m.aktiv || m.austritt)) {
-    for (let d = ab; d < h; d = addTage(d, 1)) {
+    for (let d = ab; d <= h; d = addTage(d, 1)) {
       if (!beschaeftigt(ma, d) || feiertag(d) || gesperrt(n, ma.id, d)) continue;
       const plan = planTag(n, ma, d); if (!plan) continue;
+      // heute erst, wenn das Dienstende laut Plan + Wartezeit vorbei ist
+      if (d === h && hm2min(nowHM()) < hm2min(plan.e) + (e.autoGehenNachMin ?? 60)) continue;
       const a = abwAm(n, ma.id, d);
       if (a && (!teilTag(a) || ARTEN[a.art]?.soll0)) continue;
       let z = zeitAm(n, ma.id, d);
@@ -2755,7 +2758,7 @@ function Einstellungen({ ctx }) {
     <Karte titel="Automatik & Überstunden">
       <div className="grid md:grid-cols-2 gap-x-8 gap-y-3">
         {[
-          ["autoGehen", "Vergessenes „Gehen“ ergänzen", "Dienstende laut Plan eintragen"],
+          ["autoGehen", "Automatisch ausstempeln", `Wer vergisst zu gehen: Dienstende laut Plan wird ${e.autoGehenNachMin ?? 60} min danach eingetragen – noch am selben Tag`],
           ["autoFehltag", "Ganz vergessene Tage ergänzen", "Arbeitstag ohne Stempelung und ohne Abwesenheit = Arbeitszeit laut Plan"],
           ["ueberstunden", "Überstunden / Mehrarbeit vorgesehen", "aus: Auswertungen ohne Überstunden; längere Tage werden als Hinweis markiert"],
         ].map(([k, t, h]) => <label key={k} className="flex items-start gap-3 text-sm">
@@ -2770,6 +2773,7 @@ function Einstellungen({ ctx }) {
         <label className="flex items-start gap-3 text-sm">
           <input type="checkbox" className="mt-1" disabled={!admin} checked={!!e.pdfUnterschrift} onChange={ev => setE("pdfUnterschrift", ev.target.checked)} />
           <span><span className="font-medium">Unterschriftszeilen auf den Arbeitszeitnachweisen</span><span className="block text-xs text-stone-500">gesetzlich nicht nötig – die Bestätigung in der App reicht als Nachweis</span></span></label>
+        <Feld label="Automatisch ausstempeln nach (Minuten nach Dienstende)" hilfe="Bleibt jemand ausnahmsweise länger, bitte vorher ausstempeln oder die Zeit danach korrigieren."><input type="number" min="0" className={inputCls} disabled={!admin || !e.autoGehen} value={e.autoGehenNachMin ?? 60} onChange={ev => setE("autoGehenNachMin", Math.max(0, +ev.target.value || 0))} /></Feld>
         <Feld label="Hinweis ab (Minuten über Plan)"><input type="number" className={inputCls} disabled={!admin} value={e.planToleranzMin} onChange={ev => setE("planToleranzMin", +ev.target.value)} /></Feld>
       </div>
       <div className="mt-4"><Hinweis>
@@ -2929,13 +2933,19 @@ function App() {
   const TABLET_KEY = "ghd-zeitverwaltung-tablet";
   const [terminal, setTerminalRoh] = useState(() => { try { return localStorage.getItem(TABLET_KEY) === "1"; } catch (e) { return false; } });
   function setTerminal(an) { try { an ? localStorage.setItem(TABLET_KEY, "1") : localStorage.removeItem(TABLET_KEY); } catch (e) { } setTerminalRoh(an); }
-  // Automatik beim Öffnen (live: nächtlicher Server-Job)
+  // Automatik beim Öffnen und danach alle 5 Minuten, damit z. B. das Salon-Tablet abends
+  // vergessenes „Gehen“ noch am selben Tag ergänzt (live: Server-Job alle 15 Minuten)
   useEffect(() => {
-    const n = JSON.parse(JSON.stringify(db));
-    let geaendert = automatik(n);
-    // Wer ausgetreten ist (letzter Arbeitstag vorbei), kann sich nicht mehr anmelden
-    n.mitarbeiter.forEach(m => { if (m.aktiv && m.austritt && m.austritt < heute()) { m.aktiv = false; geaendert++; } });
-    if (geaendert) setDb(n);
+    const lauf = () => setDb(alt => {
+      const n = JSON.parse(JSON.stringify(alt));
+      let geaendert = automatik(n);
+      // Wer ausgetreten ist (letzter Arbeitstag vorbei), kann sich nicht mehr anmelden
+      n.mitarbeiter.forEach(m => { if (m.aktiv && m.austritt && m.austritt < heute()) { m.aktiv = false; geaendert++; } });
+      return geaendert ? n : alt;
+    });
+    lauf();
+    const t = setInterval(lauf, 5 * 60 * 1000);
+    return () => clearInterval(t);
   }, []);
 
   // fn darf eine Meldung zurückgeben (z. B. beim Stempeln)
