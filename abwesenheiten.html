@@ -1365,6 +1365,9 @@ function App() {
   const [neueAnfrage, setNeueAnfrage] = useState({typ:null,von:null,bis:null,fuerPerson:null});
   const [kalM, setKalM] = useState({y:new Date().getFullYear(),m:new Date().getMonth()});
   const [ersterStart, setErsterStart] = useState(false);
+  // Zeitverwaltung: Knopf „Zeit“ für die Chefin immer, für alle anderen ab dem Starttag
+  // (oder wenn die Chefin das Testen freigibt) – Einstellung kommt aus der Zeitverwaltung
+  const [zeitFrei, setZeitFrei] = useState(false);
 
   // Schreibschutz: globale Rollen-Referenz synchron mit dem React-State halten
   useEffect(()=>{ _aktuellerUser = user; }, [user]);
@@ -1374,6 +1377,13 @@ function App() {
     try {
       const t = await api.getTeamPublic();
       setTeam(t||[]);
+      // Rücksprung aus der Zeitverwaltung: bestehende Supabase-Sitzung weiterverwenden (keine neue PIN)
+      if (/[?&]zurueck\b/.test(location.search)) {
+        history.replaceState(null, "", location.pathname);
+        const { data: { session } } = await sbAuth.auth.getSession();
+        const p = session && (t||[]).find(x => abwEmail(x.name) === session.user.email);
+        if (p) { setUser(p); return; }
+      }
       setLadeStatus("bereit");
     } catch(e) { console.error(e); setLadeFehler(e.message); setLadeStatus("fehler"); }
   }
@@ -1393,6 +1403,12 @@ function App() {
       const ws=e?.find(x=>x.schluessel==="warnschwelle");
       const spz=e?.find(x=>x.schluessel==="sperrzeiten");
       const er=e?.find(x=>x.schluessel==="eroeffnung_erledigt");
+      const zv=e?.find(x=>x.schluessel==="zeitverwaltung");
+      try {
+        const w = typeof zv?.wert==="string" ? JSON.parse(zv.wert) : (zv?.wert||{});
+        const d = new Date(), h = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+        setZeitFrei(!!w.testFuerAlle || (!!w.kontoStart && h >= w.kontoStart));
+      } catch(_) { setZeitFrei(false); }
       if (sz) setSchliesztage(JSON.parse(sz.wert));
       if (ws) setWarnschwelle(parseInt(ws.wert,10));
       if (spz) setSperrzeiten(JSON.parse(spz.wert));
@@ -1542,9 +1558,10 @@ function App() {
     }
   }
 
+  const zeitItem = {id:"zeit",l:"Zeit",i:"⏱",href:"zeitverwaltung.html"};
   const navItems = isOwner
-    ? [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"anfragen",l:"Anfragen",i:"◎",b:offeneAnfragen.length},{id:"urlaubsstaende",l:"Urlaub",i:"▦"}]
-    : [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"meine-anfragen",l:"Anfragen",i:"◎"}];
+    ? [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"anfragen",l:"Anfragen",i:"◎",b:offeneAnfragen.length},{id:"urlaubsstaende",l:"Urlaub",i:"▦"},zeitItem]
+    : [{id:"home",l:"Home",i:"⌂"},{id:"kalender",l:"Kalender",i:"◫"},{id:"meine-anfragen",l:"Anfragen",i:"◎"},...(zeitFrei?[zeitItem]:[])];
 
   if (anfrageScreen) return <Shell>
     <AnfrageFlow
@@ -1588,7 +1605,7 @@ function App() {
 
       <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white border-t border-stone-200 flex z-10">
         {navItems.map(x=>(
-          <button key={x.id} onClick={()=>setScreen(x.id)}
+          <button key={x.id} onClick={()=>{ if (x.href) window.location.href = x.href; else setScreen(x.id); }}
             className={`flex-1 flex flex-col items-center py-3 gap-0.5 relative transition-colors ${screen===x.id?"text-stone-900":"text-stone-400"}`}>
             <span className="text-lg leading-none">{x.i}</span>
             <span style={{fontSize:"10px"}} className="font-medium">{x.l}</span>

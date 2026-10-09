@@ -6,8 +6,8 @@ R = pathlib.Path(__file__).resolve().parent.parent
 src = (R / "zeitverwaltung_schema_entwurf.sql").read_text()
 zeilen = src.split("\n")
 def ab(marke): return [i for i, l in enumerate(zeilen) if marke in l][0] - 1
-iB, iC = ab("URLAUBSSPERRE JE GRUPPE + NACHRICHTEN"), ab("SCHRITT 3 – ANBINDUNG DER APP")
-teilA, teilB, teilC = "\n".join(zeilen[:iB]), "\n".join(zeilen[iB:iC]), "\n".join(zeilen[iC:])
+iB, iC, iD = ab("URLAUBSSPERRE JE GRUPPE + NACHRICHTEN"), ab("SCHRITT 3 – ANBINDUNG DER APP"), ab("SCHRITT 4 – TESTEN BIS ZUM START")
+teilA, teilB, teilC, teilD = "\n".join(zeilen[:iB]), "\n".join(zeilen[iB:iC]), "\n".join(zeilen[iC:iD]), "\n".join(zeilen[iD:])
 # Teil C braucht die aktuelle Automatik-Funktion (offene Krankenstände) – aus Teil A übernehmen
 m = re.search(r"DROP FUNCTION IF EXISTS zeit_automatik\(date, boolean, boolean, boolean\);.*?END \$\$;\n", teilA, re.S)
 automatik = m.group(0)
@@ -50,6 +50,7 @@ C = kopf("SCHRITT 3 · TEIL C – Anbindung der App", "--  Einstellungen an eine
 SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN 'Automatik-Job eingerichtet (alle 15 Minuten)'
             ELSE 'Automatik-Job FEHLT – pg_cron aktivieren und Teil C nochmal ausführen' END AS automatik;
 """
-for n, t in [("zeitverwaltung_schritt2_teilA.sql", A), ("zeitverwaltung_schritt2_teilB.sql", B), ("zeitverwaltung_schritt3_teilC.sql", C)]:
+D = kopf("SCHRITT 4 · TEIL D – Testen bis zum Start", "--  Testdaten vor dem Start löschen (nur Chefin, nur vor dem Starttag).\n--  Erst NACH Teil C ausführen.") + "DO $pruef$ BEGIN\n  IF to_regprocedure('public.zeit_einst(text)') IS NULL THEN RAISE EXCEPTION 'Abbruch: zuerst Teil C ausführen.'; END IF;\nEND $pruef$;\n" + teilD + "\n\nCOMMIT;\n"
+for n, t in [("zeitverwaltung_schritt2_teilA.sql", A), ("zeitverwaltung_schritt2_teilB.sql", B), ("zeitverwaltung_schritt3_teilC.sql", C), ("zeitverwaltung_schritt4_teilD.sql", D)]:
     (R / "supabase" / n).write_text(t)
 print("ok")

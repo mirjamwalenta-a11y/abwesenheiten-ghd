@@ -400,7 +400,7 @@ function summe(db, ma, von, bis) {
   return s;
 }
 function kontoStart(db, ma) {
-  const st = db.einstellungen.kontoStart || "2000-01-01";
+  const st = db.einstellungen.kontoStart || db.testStart || "2000-01-01";
   return ma.eintritt && ma.eintritt > st ? ma.eintritt : st;
 }
 function zeitkonto(db, ma, bis) {
@@ -2849,6 +2849,37 @@ function DruckNachweise({ db, liste, monat }) {
 }
 
 // ─── EINSTELLUNGEN ────────────────────────────────────────────────────────────
+// Start der Zeitverwaltung (echter Betrieb): Starttag, Testen für alle, Testdaten löschen
+function StartKarte({ ctx }) {
+  const { db, user, aendern, sb } = ctx;
+  const e = db.einstellungen, admin = istAdmin(user);
+  const [frage, setFrage] = useState(false), [msg, setMsg] = useState(null);
+  const vorStart = !e.kontoStart || heute() < e.kontoStart;
+  async function loeschen() {
+    setFrage(false);
+    try { const r = await sbq(sb.rpc("zeit_testdaten_loeschen")); setMsg(`Gelöscht: ${r.buchungen} Arbeitszeiten, ${r.korrekturen} Korrekturanträge, ${r.protokoll} Protokolleinträge.`); aendern(() => {}); }
+    catch (err) { setMsg(err.message); }
+  }
+  return <Karte titel="Start der Zeitverwaltung">
+    <div className="grid md:grid-cols-2 gap-4 items-start">
+      <Feld label="Starttag" hilfe="Ab diesem Tag zählen Zeitkonto und Automatik (vergessenes Gehen, vergessene Tage). Vorher ist alles Testbetrieb.">
+        <input type="date" className={inputCls} disabled={!admin} value={e.kontoStart || ""} onChange={ev => aendern(n => { n.einstellungen.kontoStart = ev.target.value || null; })} />
+        {!e.kontoStart && <p className="mt-1 text-xs text-amber-700">Noch kein Starttag festgelegt – z. B. 01.01.2027.</p>}
+      </Feld>
+      <label className="flex items-start gap-3 text-sm mt-6">
+        <input type="checkbox" className="mt-1" disabled={!admin} checked={!!e.testFuerAlle} onChange={ev => aendern(n => { n.einstellungen.testFuerAlle = ev.target.checked; })} />
+        <span><span className="font-medium">Mitarbeiter/innen dürfen schon vorher testen</span><span className="block text-xs text-stone-500">Aus: Bis zum Starttag sehen sie „Die neue Zeiterfassung startet am …“ – in der Abwesenheiten-App erscheint der Knopf „Zeit“ erst ab dem Start.</span></span></label>
+    </div>
+    {admin && vorStart && e.kontoStart && <div className="mt-4 border-t border-stone-100 pt-4">
+      {!frage ? <Knopf art="rot" klein onClick={() => setFrage(true)}>Testdaten löschen</Knopf>
+      : <div className="flex flex-wrap items-center gap-2 text-sm"><span>Alle Arbeitszeiten, Korrekturen und Protokolle aus der Testphase löschen? Dienstpläne, Profile und Urlaube bleiben.</span>
+          <Knopf art="rot" klein onClick={loeschen}>Ja, löschen</Knopf><Knopf art="sekundaer" klein onClick={() => setFrage(false)}>Abbrechen</Knopf></div>}
+      <p className="mt-2 text-xs text-stone-500">Geht nur vor dem Starttag. Danach sind es echte Aufzeichnungen und bleiben 7 Jahre erhalten.</p>
+    </div>}
+    {msg && <div className="mt-3"><Hinweis>{msg}</Hinweis></div>}
+  </Karte>;
+}
+
 // Salon-WLAN (echter Betrieb): die öffentliche IP des Salon-Anschlusses merkt sich der Server
 function SalonWlan({ ctx }) {
   const { sb, user } = ctx;
@@ -2944,6 +2975,8 @@ function Einstellungen({ ctx }) {
       </div>
       <p className="mt-3 text-xs text-stone-500">Dienstpläne, die außerhalb der Öffnungszeiten liegen, werden markiert. Das Stempel-Tablet zeigt die heutigen Öffnungszeiten.</p>
     </Karte>
+
+    {ctx.live && <StartKarte ctx={ctx} />}
 
     <Karte titel="Urlaub">
       <label className="flex items-start gap-3 text-sm">
@@ -3201,6 +3234,7 @@ function EinfachApp({ ctx, logout, toastEl }) {
       <div className="max-w-xl mx-auto flex items-center gap-3 px-4 h-14">
         <Avatar name={user.name} klein />
         <div className="flex-1 min-w-0 leading-tight"><div className="text-sm font-semibold truncate">{user.name}</div><div className="text-[11px] text-stone-500">Great Hair Day</div></div>
+        {ctx.live && <a href="abwesenheiten.html?zurueck=1" className="p-1.5 rounded-full hover:bg-white text-[18px] leading-none" title="Abwesenheiten-App">🌴</a>}
         <Glocke ctx={c} />
         <button onClick={logout} className="p-1.5 rounded-full text-stone-500 hover:text-gold-700 hover:bg-white" title="Abmelden"><Icon n="abmelden" className="w-4 h-4" /></button>
       </div>
@@ -3296,6 +3330,8 @@ async function liveLaden(sb) {
   const pz = o => o ? { beginn: hm5(o.beginn), ende: hm5(o.ende), pause: o.pause_min } : null;
   const db = {
     version: 1, live: true, modelle: mod, mitarbeiter,
+    // ohne festgelegten Start zählt das Zeitkonto zur Anzeige ab dem ersten Testeintrag (wird nicht gespeichert)
+    testStart: buch.reduce((m, b) => b.datum < m ? b.datum : m, h),
     zeiten: buch.map(b => ({ id: b.id, maId: b.person_id, datum: b.datum, beginn: hm5(b.beginn), ende: hm5(b.ende), pause: b.pause_min || 0, pauseStart: hm5(b.pause_start),
       quelle: b.quelle, ...(b.auto?.length ? { auto: b.auto } : {}), notiz: b.notiz || "", ...(b.beginn_roh || b.ende_roh ? { roh: { ...(b.beginn_roh ? { beginn: hm5(b.beginn_roh) } : {}), ...(b.ende_roh ? { ende: hm5(b.ende_roh) } : {}) } } : {}) })),
     abwesenheiten: anfr.filter(a => a.person_id && (TYP_ART[a.typ] || ARTEN[a.zeit_art])).map(a => {
@@ -3319,8 +3355,8 @@ async function liveLaden(sb) {
   return { db, ohnePlan };
 }
 
-// Erster Start durch die Chefin: Standard-Dienstpläne anlegen, allen ohne Plan „Vollzeit“
-// bzw. „Lehrling“ zuordnen und den Start der Zeitverwaltung (Zeitkonto, Automatik) festhalten
+// Erster Start durch die Chefin: Standard-Dienstpläne anlegen und allen ohne Plan „Vollzeit“
+// bzw. „Lehrling“ zuordnen
 async function liveEinrichten(sb, { db, ohnePlan }) {
   let geaendert = false, mod = db.modelle;
   if (!mod.length) {
@@ -3338,10 +3374,7 @@ async function liveEinrichten(sb, { db, ohnePlan }) {
     await sbq(sb.from("zeit_modell_zuordnung").upsert({ person_id: id, gueltig_ab: "2000-01-01", modell_id: urlaubsGruppe(m) === "lehrling" ? le.id : vz.id }));
     geaendert = true;
   }
-  if (!db.einstellungen.kontoStart) {
-    await sbq(sb.from("abw_einstellungen").upsert({ schluessel: "zeitverwaltung", wert: { ...db.einstellungen, kontoStart: heute() } }));
-    geaendert = true;
-  }
+  // Den Starttag (kontoStart) legt die Chefin selbst in den Einstellungen fest – vorher keine Automatik
   return geaendert;
 }
 
@@ -3507,7 +3540,21 @@ function LiveApp() {
     const ma = db.mitarbeiter.find(m => m.id === maId);
     try { setToast(await liveStempeln(sb, db, ma, aktion)); } finally { neuLaden().catch(() => {}); }
   };
+  if (!istAdmin(user) && !zeitFreigegeben(db)) return <StartBald db={db} user={user} onAbmelden={abmelden} />;
   return <Rahmen key={user.id} db={db} setDb={setDb} user={user} aendern={aendern} logout={abmelden} login={() => {}} toastEl={toastEl} stempeln={stempeln} live sb={sb} />;
+}
+
+// Bis zum Start sehen nur die Chefin (und ggf. freigegebene Tester/innen) die Zeiterfassung
+function zeitFreigegeben(db) { const e = db.einstellungen; return !!e.testFuerAlle || (!!e.kontoStart && heute() >= e.kontoStart); }
+function StartBald({ db, user, onAbmelden }) {
+  const st = db.einstellungen.kontoStart;
+  return <div className="min-h-screen flex items-center justify-center p-6 text-center"><div className="max-w-sm">
+    <div className="text-5xl">⏱️</div>
+    <h1 className="mt-4 text-xl font-bold">Hallo {user.name.split(" ")[0]}!</h1>
+    <p className="mt-2 text-stone-600">Die neue Zeiterfassung startet {st ? <>am <b>{fmtD(st)}</b></> : "bald"}. Bis dahin bleibt alles wie bisher.</p>
+    <a href="abwesenheiten.html?zurueck=1" className="mt-6 inline-block rounded-full bg-gold-500 text-white font-bold px-6 py-3">🌴 Zur Abwesenheiten-App</a>
+    <div className="mt-4"><button className="text-sm text-stone-500 underline" onClick={onAbmelden}>Abmelden</button></div>
+  </div></div>;
 }
 
 // Anmeldung: Name antippen → PIN (dieselbe wie in der Abwesenheiten-App)
@@ -3721,6 +3768,7 @@ function Rahmen({ db, setDb, user, aendern, logout, login, toastEl, stempeln, li
         <span className="text-[17px] w-6 text-center">{n.em}</span><span className="flex-1 text-left">{navLabel(n)}</span>
         {badges[n.id] > 0 && <span className="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-rose-100 text-rose-600 text-[11px] font-bold flex items-center justify-center">{badges[n.id]}</span>}
       </button>)}
+      {live && <a href="abwesenheiten.html?zurueck=1" className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-full text-[13.5px] font-semibold text-stone-600 hover:bg-white border border-transparent"><span className="text-[17px] w-6 text-center">🌴</span><span className="flex-1 text-left">Abwesenheiten-App</span></a>}
     </nav>
     <div className="p-3 border-t border-stone-200">
       <div className="flex items-center gap-2.5 px-2 py-2">
