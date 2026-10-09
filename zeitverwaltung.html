@@ -307,6 +307,15 @@ function planAusModell(m, i, d) {
 function pauseTxt(t) { return !t?.p ? "" : t.pb ? `Pause ${t.pb}–${min2hm(hm2min(t.pb) + +t.p)}` : `${t.p}′ Pause`; }
 // Früh eingecheckt (vor Dienstbeginn laut Plan)? → freundlicher Kaffee-Hinweis
 function kaffeeText(plan, jetzt = nowHM()) { return plan && hm2min(jetzt) < hm2min(plan.b) ? `Trink noch gemütlich einen Kaffee – wir beginnen um ${plan.b} Uhr.` : null; }
+// Verabschiedung beim Gehen: schönen Abend / am Samstag schönes Wochenende / vor dem Urlaub schönen Urlaub
+function abschied(db, ma, d = heute()) {
+  let naechster = null;
+  for (let i = 1; i <= 21 && !naechster; i++) { const x = addTage(d, i); if (beschaeftigt(ma, x) && !feiertag(x) && planTag(db, ma, x)) naechster = x; }
+  const a = naechster && abwAm(db, ma.id, naechster);
+  if (a && a.art === "urlaub") return { em: "🌴", text: "Einen schönen Urlaub!" };
+  if (wd(d) === 5) return { em: "☀️", text: "Ein schönes Wochenende!" };
+  return { em: "🌙", text: "Einen schönen Abend!" };
+}
 // Stempelzeit auf Plan-Beginn bzw. -Ende runden, wenn sie im eingestellten Fenster liegt
 function aufPlanRunden(e, plan, t, art) {
   if (!e.rundungAn || !plan) return t;
@@ -691,7 +700,8 @@ function stempelBuchen(n, ma, aktion) {
     if (x.pauseStart) { x.pause += Math.max(0, hm2min(t) - hm2min(x.pauseStart)); x.pauseStart = null; }
     x.ende = aufPlanRunden(n.einstellungen, plan, t, "e");
     if (x.ende !== t) x.roh = { ...(x.roh || {}), ende: t };
-    let msg = `${vn}: Gehen ${t}${x.ende !== t ? ` (zählt bis ${x.ende} laut Plan)` : ""}`;
+    const ab = abschied(n, ma, d);
+    let msg = `Danke ${vn}! ${ab.text} ${ab.em} (Gehen ${t}${x.ende !== t ? `, zählt bis ${x.ende}` : ""})`;
     if (x.auto?.includes("kommen")) msg += ` · Beginn ${x.beginn} laut Plan`;
     if (autoPauseAktiv(n.einstellungen) && pauseFehlt(n, ma, x)) {
       x.pause = Math.max(+plan?.p || 0, n.einstellungen.pauseMin);
@@ -1197,9 +1207,12 @@ function Terminal({ db, aendern, onEnde }) {
   useEffect(() => { if (!gruss) return; const t = setTimeout(() => setGruss(null), 7000); return () => clearTimeout(t); }, [gruss]);
   function buchen(m, aktion) {
     const kaffee = aktion === "kommen" ? kaffeeText(planTag(db, m, d)) : null;
-    aendern(n => { const r = stempelBuchen(n, n.mitarbeiter.find(x => x.id === m.id), aktion); return kaffee ? undefined : r; });
+    const tschuess = aktion === "gehen" || aktion === "nurGehen" ? abschied(db, m, d) : null;
+    aendern(n => { const r = stempelBuchen(n, n.mitarbeiter.find(x => x.id === m.id), aktion); return kaffee || tschuess ? undefined : r; });
     setWahl(null);
-    if (kaffee) setGruss({ name: m.name.split(" ")[0], text: kaffee });
+    const vn = m.name.split(" ")[0];
+    if (kaffee) setGruss({ em: "☕", titel: `Guten Morgen ${vn}!`, text: kaffee, sub: "Du bist eingecheckt." });
+    if (tschuess) setGruss({ em: tschuess.em, titel: `Danke ${vn}!`, text: tschuess.text, sub: "Du bist ausgecheckt." });
   }
   const farbe = { da: "bg-emerald-400", pause: "bg-amber-400", aus: "bg-stone-500", fertig: "bg-stone-300", abw: "bg-sky-300" };
   const gross = "flex-1 min-w-[9rem] rounded-full py-5 text-xl font-bold flex items-center justify-center gap-2";
@@ -1224,10 +1237,10 @@ function Terminal({ db, aendern, onEnde }) {
     </div>
     {gruss && <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-6 z-50" onClick={() => setGruss(null)}>
       <div className="bg-stone-50 text-stone-900 rounded-[22px] p-8 w-full max-w-xl text-center einblenden">
-        <div className="text-6xl">☕</div>
-        <div className="mt-4 text-2xl font-bold">Guten Morgen {gruss.name}!</div>
+        <div className="text-6xl">{gruss.em}</div>
+        <div className="mt-4 text-2xl font-bold">{gruss.titel}</div>
         <div className="mt-2 text-xl">{gruss.text}</div>
-        <div className="mt-5 text-sm text-stone-500">Du bist eingecheckt. Antippen zum Schließen.</div>
+        <div className="mt-5 text-sm text-stone-500">{gruss.sub} Antippen zum Schließen.</div>
       </div>
     </div>}
     {m && <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-40" onClick={() => setWahl(null)}>
@@ -1281,7 +1294,7 @@ function Stempeluhr({ ctx }) {
       <span className="text-[11px] tracking-[.14em] font-bold opacity-90 uppercase">⏱️ Stempeluhr</span>
       <span className="text-xs opacity-80">{WT_LANG[wd(d)]}, {fmtD(d)}</span>
     </div>
-    <div className="mt-2 text-[19px] font-bold leading-snug">{{ aus: a ? `Heute: ${ARTEN[a.art].label}` : plan ? "Noch nicht eingestempelt" : "Heute frei", arbeit: kaffeeText(plan) ? `☕ Trink noch gemütlich einen Kaffee – wir beginnen um ${plan.b} Uhr` : `Im Dienst seit ${z?.beginn}`, pause: `In Pause seit ${z?.pauseStart}`, fertig: `Dienst beendet · ${z?.beginn}–${z?.ende}` }[zustand]}</div>
+    <div className="mt-2 text-[19px] font-bold leading-snug">{{ aus: a ? `Heute: ${ARTEN[a.art].label}` : plan ? "Noch nicht eingestempelt" : "Heute frei", arbeit: kaffeeText(plan) ? `☕ Trink noch gemütlich einen Kaffee – wir beginnen um ${plan.b} Uhr` : `Im Dienst seit ${z?.beginn}`, pause: `In Pause seit ${z?.pauseStart}`, fertig: `${abschied(db, user, d).em} ${abschied(db, user, d).text} Dienst beendet · ${z?.beginn}–${z?.ende}` }[zustand]}</div>
     <div className="mt-3 flex items-end gap-6 flex-wrap">
       <div><div className="text-4xl font-bold tabular leading-none">{fmtH(netto)}</div><div className="text-xs opacity-80 mt-1">Arbeitszeit heute</div></div>
       <div><div className="text-lg font-semibold tabular leading-none">{plan ? `${plan.b}–${plan.e}` : fmtH(soll)}</div><div className="text-xs opacity-80 mt-1">Dienstplan</div></div>
