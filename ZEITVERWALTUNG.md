@@ -172,6 +172,13 @@ Sicherheits-Check (CLAUDE.md): jede neue Tabelle mit RLS; keine anon-Policy; Tab
    `INSERT INTO zeit_terminals (user_id, name) SELECT id, 'Tablet Empfang' FROM auth.users WHERE email = '<Tablet-Adresse>';`
    Am Tablet: „Dieses Gerät als Stempel-Tablet einrichten“.
 
+## 4e. Eine App für die Mitarbeiter/innen, Start im Jänner
+
+- **Abwesenheiten-App → „⏱ Zeit“** (untere Leiste) öffnet die Zeitverwaltung – ohne neue Anmeldung (gleiche Sitzung). Zurück über 🌴 („Abwesenheiten-App“), ebenfalls ohne PIN (`abwesenheiten.html?zurueck=1`).
+- Den Knopf sieht die **Chefin immer**, alle anderen **erst ab dem Starttag** – oder vorher, wenn „Mitarbeiter/innen dürfen schon vorher testen“ an ist (*Zeitverwaltung → Einstellungen → Start der Zeitverwaltung*). Wer vorher direkt hineingeht, sieht „Die neue Zeiterfassung startet am …“.
+- **Starttag** (`kontoStart`): ab dann zählen Zeitkonto und Automatik. Ohne Starttag trägt die Automatik nichts ein.
+- **Testdaten löschen** (`zeit_testdaten_loeschen`, Teil D): löscht alle Arbeitszeiten, Korrekturen, Monatsabschlüsse und Protokolle – nur durch die Chefin und nur vor dem Starttag. Dienstpläne, Profile und Urlaube bleiben.
+
 ## 5. Nächste Schritte
 
 1. Offene Fragen unten klären, Schema anpassen.
