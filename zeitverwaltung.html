@@ -4,7 +4,7 @@
   <meta charset="UTF-8"/>
   <!-- Prototyp: verbindet sich bewusst mit KEINER Datenbank (connect-src 'self').
        Erst wenn zeitverwaltung_schema_entwurf.sql inkl. RLS steht, wird Supabase angebunden. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; connect-src 'self'; font-src 'self' data: https://fonts.gstatic.com; base-uri 'self'; form-action 'self'"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; connect-src 'self' https://wrxlaltgtgkdomklgrlj.supabase.co wss://wrxlaltgtgkdomklgrlj.supabase.co; font-src 'self' data: https://fonts.gstatic.com; base-uri 'self'; form-action 'self'"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="theme-color" content="#F8F4EA">
   <title>Zeitverwaltung · Great Hair Day</title>
@@ -33,6 +33,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
   <style>
     * { -webkit-tap-highlight-color: transparent; }
     body { background: #F8F4EA; color: #211D17; font-family: "Poppins", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
@@ -61,7 +62,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useMemo } = React;
+const { useState, useEffect, useMemo, useRef } = React;
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  ZEITVERWALTUNG · PROTOTYP
@@ -129,7 +130,7 @@ function fmtH(min, vorzeichen = false) {
   return m < 0 ? `−${s}` : s;
 }
 function fmtDez(min) { return ((min || 0) / 60).toFixed(2).replace(".", ","); }
-function uid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); }
+function uid() { return window.crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); }
 function dienstjahre(eintritt, stichtag) {
   if (!eintritt) return 0;
   const e = parseD(eintritt), s = parseD(stichtag || heute());
@@ -1268,7 +1269,7 @@ function Terminal({ db, aendern, onEnde }) {
 
 // ─── STEMPELUHR ───────────────────────────────────────────────────────────────
 function Stempeluhr({ ctx }) {
-  const { db, user, aendern } = ctx;
+  const { db, user } = ctx;
   const d = heute(), z = zeitAm(db, user.id, d), a = abwAm(db, user.id, d);
   const soll = sollMin(db, user, d), netto = nettoMin(z);
   const zustand = !z ? "aus" : z.ende ? "fertig" : z.pauseStart ? "pause" : "arbeit";
@@ -1283,9 +1284,10 @@ function Stempeluhr({ ctx }) {
   async function stempel(aktion) {
     setPruefung("laeuft");
     let grund = null;
-    if (!aussen) try { grund = await handyStempelnPruefen(db.einstellungen); } catch (err) { grund = err.message; }
+    if (!aussen && !ctx.live) try { grund = await handyStempelnPruefen(db.einstellungen); } catch (err) { grund = err.message; }
+    if (!grund && ctx.live) { try { await ctx.stempeln(user.id, aktion); } catch (err) { grund = err.message; } setPruefung(grund); return; }
     setPruefung(grund);
-    if (!grund) aendern(n => stempelBuchen(n, n.mitarbeiter.find(m => m.id === user.id), aktion));
+    if (!grund) ctx.stempeln(user.id, aktion);
   }
   const weiss = "rounded-full font-bold text-sm px-5 py-2.5 transition disabled:opacity-40";
   const laeuft = pruefung === "laeuft";
@@ -1315,7 +1317,7 @@ function Stempeluhr({ ctx }) {
     </div>}
     {pruefung && !laeuft && !nurTablet && <div className="mt-3 rounded-xl bg-white text-rose-700 px-3 py-2.5 text-[13px] font-medium" role="alert">{pruefung}</div>}
     {aussen && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-90 no-print">🚗 Heute Außentermin{aussen.notiz ? ` (${aussen.notiz})` : ""} – Stempeln am Handy freigegeben.</p>}
-    {!aussen && db.einstellungen.stempelOrt === "salon" && !pruefung && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-80 no-print">📍 Stempeln am Handy nur im Salon – beim Tippen wird einmal der Standort geprüft.</p>}
+    {!aussen && db.einstellungen.stempelOrt === "salon" && !pruefung && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-80 no-print">{ctx.live ? "📍 Stempeln am Handy nur im Salon-WLAN." : "📍 Stempeln am Handy nur im Salon – beim Tippen wird einmal der Standort geprüft."}</p>}
   </section>;
 }
 
@@ -1344,6 +1346,14 @@ function Dashboard({ ctx }) {
 
   return <div className="space-y-5">
     <Seitenkopf titel={`Hallo ${user.name.split(" ")[0]}`} sub={`${WT_LANG[wd(h)]}, ${fmtD(h)} · ${ROLLEN[user.rolle].label}`} />
+    {ctx.live && istAdmin(user) && (() => {
+      const fehlt = db.mitarbeiter.filter(m => m.aktiv).map(m => ({ m, was: [!m.eintritt && "Eintrittsdatum", !urlaubBekannt(db, m) && "offener Urlaub (Startbestand)"].filter(Boolean) })).filter(x => x.was.length);
+      return fehlt.length > 0 && <Karte titel="Noch einzutragen" aktion={<button className="text-xs font-semibold text-gold-700 hover:underline" onClick={() => setSeite("mitarbeiter")}>Zu den Mitarbeiter/innen →</button>}>
+        <p className="text-sm text-stone-600 mb-2">Damit Urlaub und Zeitkonto stimmen, fehlt noch:</p>
+        <ul className="text-sm space-y-1">{fehlt.map(({ m, was }) => <li key={m.id}><b>{m.name}</b>: {was.join(", ")}</li>)}</ul>
+        <p className="text-xs text-stone-500 mt-2">Am schnellsten: Mitarbeiter → „Import“ mit deiner Beschäftigungsstand-Liste – oder je Person im Profil eintragen. Bis dahin sehen die Mitarbeiter/innen „Urlaubsstand wird eingetragen“.</p>
+      </Karte>;
+    })()}
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <Kpi label="Mein Zeitkonto" wert={fmtH(konto, true)} sub="Stand bis gestern" ton={konto >= 0 ? "pos" : "neg"} />
       <Kpi label="Resturlaub" wert={`${fmtTage(Math.round(uk.rest * 10) / 10)} T`} sub={`${uk.konsumiert} verbraucht · ${uk.geplant} geplant`} />
@@ -1717,7 +1727,8 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
       {art.au && <Feld label="Arbeitsunfähigkeitsbestätigung" breit hilfe={`Firmenregel: Bestätigung ab dem ${db.einstellungen.auAbTag}. Kalendertag vorlegen (änderbar unter Einstellungen).`}>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.au || neueDateien.length > 0} onChange={e => setF({ ...f, au: e.target.checked })} />AU-Bestätigung liegt vor</label>
       </Feld>}
-      {art.beleg && <Feld label={art.au ? "Bestätigung hochladen (Foto oder PDF)" : "Bestätigung (optional, Foto oder PDF)"} breit hilfe="Am Handy kannst du direkt fotografieren. Nur du und die Leitung sehen die Datei.">
+      {art.beleg && ctx.live && <div className="sm:col-span-2"><Hinweis>{art.au ? "Die Krankmeldung (AU-Bestätigung) bitte wie bisher an die Chefin geben." : "Bestätigung bitte an die Chefin geben."} Hochladen kommt in einem nächsten Schritt.</Hinweis></div>}
+      {art.beleg && !ctx.live && <Feld label={art.au ? "Bestätigung hochladen (Foto oder PDF)" : "Bestätigung (optional, Foto oder PDF)"} breit hilfe="Am Handy kannst du direkt fotografieren. Nur du und die Leitung sehen die Datei.">
         <div className="flex flex-wrap items-center gap-2">
           {(bestand?.dateien || []).map(d => <button key={d.id} onClick={() => belegOeffnen(d)} className="rounded-full bg-sky-50 text-sky-800 ring-1 ring-inset ring-sky-200 px-2.5 py-1 text-xs font-semibold">📎 {d.name}</button>)}
           {neueDateien.map((d, i) => <span key={i} className="inline-flex items-center gap-1 rounded-full bg-gold-50 text-gold-700 ring-1 ring-inset ring-gold-300 px-2.5 py-1 text-xs font-semibold">📎 {d.name}<button onClick={() => setNeueDateien(neueDateien.filter((_, j) => j !== i))} className="ml-1 text-stone-500 hover:text-rose-600">×</button></span>)}
@@ -1798,6 +1809,9 @@ function Glocke({ ctx, oben }) {
   </div>;
 }
 
+// Urlaubsstand bekannt? Im echten Betrieb braucht es den offenen Urlaub beim Start (Startbestand),
+// außer die Person ist erst nach dem Start der Zeitverwaltung eingetreten.
+function urlaubBekannt(db, ma) { return !db.live || ma.urlaubStart !== undefined || (ma.eintritt && ma.eintritt >= (db.einstellungen.kontoStart || "9999")); }
 // Eigener Urlaub & Krankenstand – „Du hast noch … UT“
 function MeinUrlaub({ ctx }) {
   const { db, user, setSeite } = ctx;
@@ -1812,7 +1826,8 @@ function MeinUrlaub({ ctx }) {
   const zeile = (a, rechts, ton = "") => <li key={a.id} className="flex items-center justify-between gap-3 px-5 py-2 text-sm"><span className="tabular">{fmtZr(a.von, a.bis)}</span><span className={`text-xs ${ton}`}>{rechts}</span></li>;
   return <Karte titel="Mein Urlaub & Krankenstand" innen="p-0" aktion={<button className="text-xs font-semibold text-gold-700 hover:underline" onClick={() => setSeite("urlaub")}>Urlaub beantragen →</button>}>
     <div className="px-5 py-4 bg-emerald-50/60 border-b border-stone-100">
-      <p className="text-[15px]">Du hast noch <b className="text-emerald-800 text-lg">{fmtTage(jetzt)} UT</b>.</p>
+      {!urlaubBekannt(db, user) ? <p className="text-[15px]">Dein Urlaubsstand wird gerade von der Chefin eingetragen.</p> :
+      <p className="text-[15px]">Du hast noch <b className="text-emerald-800 text-lg">{fmtTage(jetzt)} UT</b>.</p>}
       {kommend.length > 0 && <p className="text-sm mt-1 text-stone-700">Denk daran: Bei {kommend.length === 1 ? "deinem nächsten genehmigten Urlaub" : "deinen genehmigten Urlauben"} ({kommend.map(a => fmtZr(a.von, a.bis)).join(", ")}) werden noch <b>{fmtTage(uk.geplant)} UT</b> abgezogen – danach bleiben dir <b>{fmtTage(uk.rest)} UT</b>.</p>}
       {beantragt.length > 0 && <p className="text-sm mt-1 text-amber-800">Noch nicht genehmigt: {beantragt.map(a => `${fmtZr(a.von, a.bis)} (${urlaubsTage(db, user, a.von, a.bis || a.von)} UT)`).join(", ")}.</p>}
       <p className="text-xs text-stone-500 mt-1">Urlaubsjahr {fmtD(uk.von)} – {fmtD(uk.bis)}</p>
@@ -1919,7 +1934,7 @@ function Krankenstand({ ctx }) {
           {laufend.map(a => { const tag = tageZw(a.von, h).length; const auNoetig = KRANK_ARTEN.includes(a.art) && !a.au && tag >= db.einstellungen.auAbTag; return <li key={a.id} className="px-5 py-3">
             <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{nameVon(db, a.maId)}</span><ArtChip art={a.art} /></div>
             <div className="text-xs text-stone-500 mt-0.5">{fmtZr(a.von, a.bis)} · {tag}. Tag{KRANK_ARTEN.includes(a.art) ? ` · AU ${a.au ? "liegt vor" : "fehlt"}` : ""}</div>
-            {ARTEN[a.art].beleg && <div className="mt-2 no-print"><Belege ctx={ctx} a={a} darf={darfBearbeiten(a)} /></div>}
+            {ARTEN[a.art].beleg && !ctx.live && <div className="mt-2 no-print"><Belege ctx={ctx} a={a} darf={darfBearbeiten(a)} /></div>}
             {auNoetig && <div className="mt-2"><Hinweis ton="warn">AU-Bestätigung ab dem {db.einstellungen.auAbTag}. Tag erforderlich.</Hinweis></div>}
             {darfBearbeiten(a) && ARTEN[a.art].offen && <div className="mt-2 flex flex-wrap gap-2 no-print">
               {gesund === a.id ? <GesundForm a={a} onOk={b => gesundMelden(a, b)} onAbbruch={() => setGesund(null)} /> : <>
@@ -2137,9 +2152,9 @@ function MaDialog({ ctx, ma, onClose }) {
   return <Modal breit titel={neu ? "Neue/r Mitarbeiter/in" : f.name} onClose={onClose}
     fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>Speichern</Knopf></>}>
     {!neu && f.id === user.id && <div className="mb-4 space-y-3"><Hinweis>Das ist <b>dein eigenes Profil</b> (Chefin / Administratorin). Mitarbeiter/innen legst du unter „+ Neu“ oder „Import“ an – nicht hier.</Hinweis>
-      {istAdmin(user) && <ChefinTausch ctx={ctx} ma={ma} onClose={onClose} />}</div>}
+      {istAdmin(user) && !ctx.live && <ChefinTausch ctx={ctx} ma={ma} onClose={onClose} />}</div>}
     <div className="grid sm:grid-cols-2 gap-4">
-      <Feld label="Name"><input className={inputCls} value={f.name} onChange={e => set("name", e.target.value)} /></Feld>
+      <Feld label="Name" hilfe={ctx.live ? "Namen ändern in der Abwesenheiten-App (Teil der Anmeldung)" : null}><input className={inputCls} value={f.name} disabled={ctx.live} onChange={e => set("name", e.target.value)} /></Feld>
       <Feld label="Personalnummer"><input className={inputCls} value={f.personalnr} onChange={e => set("personalnr", e.target.value)} /></Feld>
       <Feld label="Bereich (optional)" hilfe="Nur zum Sortieren und Filtern – kann leer bleiben.">
         <input className={inputCls} value={f.abteilung || ""} placeholder="z. B. Salon" onChange={e => set("abteilung", e.target.value)} />
@@ -2158,7 +2173,7 @@ function MaDialog({ ctx, ma, onClose }) {
         <div className="flex gap-2"><input type="number" className={inputCls} value={f.urlaubstage} onChange={e => set("urlaubstage", e.target.value)} />{+f.urlaubstage !== vorschlag && <Knopf art="sekundaer" klein onClick={() => set("urlaubstage", vorschlag)}>übernehmen</Knopf>}</div></Feld>
       {(!f.eintritt || f.eintritt < (f.urlaubStartAm || heute())) ? <Feld label="Offener Urlaub (Startbestand)" hilfe={`alle noch offenen Tage am Stichtag, inkl. Anspruch des laufenden Urlaubsjahres · Urlaubsjahr ab ${f.eintritt ? fmtD(ujBeginn(f, heute())).slice(0, 6) : "Eintritt"}`}>
         <div className="flex gap-2">
-          <input type="number" step="0.5" className={inputCls} value={f.urlaubStart ?? ""} placeholder="Tage" onChange={e => set("urlaubStart", e.target.value)} />
+          <input type="number" step="0.5" className={inputCls} value={f.urlaubStart ?? ""} placeholder="Tage" onChange={e => setF({ ...f, urlaubStart: e.target.value, urlaubStartAm: f.urlaubStartAm || db.einstellungen.kontoStart || heute() })} />
           <input type="date" className={inputCls} value={f.urlaubStartAm || ""} title="Stand am" onChange={e => set("urlaubStartAm", e.target.value || undefined)} />
         </div></Feld> : <div />}
       <div className="text-sm self-end pb-2">{f.eintritt && (() => { const k = urlaubsKonto(db, { ...f, urlaubstage: +f.urlaubstage || 0, urlaubStart: +f.urlaubStart || 0 }, heute()); return <>Urlaubsjahr {fmtD(k.von)} – {fmtD(k.bis)} · heute offen: <b>{fmtTage(k.rest)} Tage</b></>; })()}</div>
@@ -2172,7 +2187,7 @@ function MaDialog({ ctx, ma, onClose }) {
           {Object.entries(URLAUB_GRUPPEN).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
           <option value="keine">keine Sperre</option>
         </select></Feld>
-      <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || (f.id === user.id && !db.mitarbeiter.some(m => m.id !== user.id && m.aktiv && m.rolle === "admin"))} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>
+      {!ctx.live && <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || (f.id === user.id && !db.mitarbeiter.some(m => m.id !== user.id && m.aktiv && m.rolle === "admin"))} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>}
       <Feld label="Geburtsdatum" hilfe={f.geburtsdatum ? (jugendlich(f, heute()) ? `Unter 18 – KJBG-Regeln gelten bis ${fmtD(`${parseInt(f.geburtsdatum) + 18}${f.geburtsdatum.slice(4)}`)}, danach automatisch AZG` : "Volljährig – es gilt das AZG") : "Für Lehrlinge wichtig: bis 18 gelten automatisch die strengeren KJBG-Regeln"}>
         <input type="date" className={inputCls} value={f.geburtsdatum || ""} onChange={e => set("geburtsdatum", e.target.value || undefined)} /></Feld>
       {f.lehrbeginn && <Feld label="Lehrbeginn" hilfe={`Derzeit ${lehrjahr(f, heute()) || "–"}. Lehrjahr · Berufsschule ${fmtTage(bsTageProWoche(db, f, heute()))} Tag(e)/Woche`}>
@@ -2268,7 +2283,7 @@ function ImportDialog({ ctx, onClose }) {
       const ws = wb.Sheets[wb.SheetNames[0]];
       const d = leseBeschaeftigungsstand(X.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null }));
       if (!d.personen.length) throw new Error("In der Datei wurden keine Mitarbeiter/innen erkannt.");
-      d.personen.forEach(p => { p.vorhanden = db.mitarbeiter.some(m => m.name.trim().toLowerCase() === p.name.toLowerCase()); if (p.vorhanden) p.mitnehmen = false; });
+      d.personen.forEach(p => { p.vorhanden = db.mitarbeiter.some(m => m.name.trim().toLowerCase() === p.name.toLowerCase()); p.mitnehmen = ctx.live ? p.vorhanden : p.mitnehmen && !p.vorhanden; });
       setDaten(d);
     } catch (e) { setFehler(e.message || "Datei konnte nicht gelesen werden."); }
     setLaedt(false); ev.target.value = "";
@@ -2276,6 +2291,19 @@ function ImportDialog({ ctx, onClose }) {
   const vorjahr = daten?.jahr === aktJahr - 1;
   const gewaehlt = daten ? daten.personen.filter(p => p.mitnehmen && p.eintritt) : [];
   function uebernehmen() {
+    // Echter Betrieb: Personen kommen aus der Abwesenheiten-App – hier nur Eintritt, Urlaubstage und offenen Urlaub aktualisieren
+    if (ctx.live) {
+      aendern(n => {
+        gewaehlt.forEach(p => {
+          const ma = n.mitarbeiter.find(m => m.name.trim().toLowerCase() === p.name.toLowerCase()); if (!ma) return;
+          Object.assign(ma, { eintritt: p.eintritt, ...(p.urlaubstage != null ? { urlaubstage: p.urlaubstage } : {}),
+            ...(daten.jahr && !p.austritt && p.rest != null ? { urlaubStart: p.rest, urlaubStartAm: `${daten.jahr + 1}-01-01` } : {}) });
+          n.personalLog.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: ma.id, aktion: "aktualisiert (Import)",
+            details: `aus Beschäftigungsstand ${daten.jahr ?? ""} · Eintritt ${fmtD(p.eintritt)} · ${p.urlaubstage ?? ma.urlaubstage} UT${p.rest != null && daten.jahr ? ` · offen ${p.rest} am 01.01.${daten.jahr + 1}` : ""}` });
+        });
+      }, `${gewaehlt.length} Mitarbeiter/innen aktualisiert`);
+      onClose(); return;
+    }
     aendern(n => {
       n.personalLog = n.personalLog || [];
       let nr = n.mitarbeiter.length;
@@ -2295,7 +2323,7 @@ function ImportDialog({ ctx, onClose }) {
     onClose();
   }
   return <Modal breit titel="Mitarbeiter importieren" onClose={onClose}
-    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf disabled={!gewaehlt.length} onClick={uebernehmen}>{gewaehlt.length} übernehmen</Knopf></>}>
+    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf disabled={!gewaehlt.length} onClick={uebernehmen}>{gewaehlt.length} {ctx.live ? "aktualisieren" : "übernehmen"}</Knopf></>}>
     {!daten ? <div className="space-y-4">
       <p className="text-sm text-stone-600">Wähle deine Excel-Liste „Beschäftigungsstand“ (wie für den Steuerberater). Erkannt werden Name, Eintritt bzw. „von – bis“, Urlaubsanspruch (UT) und Resttage.</p>
       <label className="flex flex-col items-center justify-center gap-2 rounded-[14px] border-2 border-dashed border-gold-300 bg-gold-50 py-10 cursor-pointer hover:border-gold-500">
@@ -2308,18 +2336,19 @@ function ImportDialog({ ctx, onClose }) {
       <div className="text-sm">Beschäftigungsstand <b>{daten.jahr ?? "?"}</b> · {daten.personen.length} Personen erkannt</div>
       <Tabelle kopf={["", "Name", "Eintritt", "Austritt", { t: "UT", cls: "text-right" }, { t: "Rest", cls: "text-right" }, ""]}>
         {daten.personen.map((p, i) => <tr key={i} className={p.mitnehmen ? "" : "text-stone-400"}>
-          <td className="px-3 py-2"><input type="checkbox" disabled={!p.eintritt} checked={p.mitnehmen && !!p.eintritt} onChange={e => { const ps = [...daten.personen]; ps[i] = { ...p, mitnehmen: e.target.checked }; setDaten({ ...daten, personen: ps }); }} /></td>
+          <td className="px-3 py-2"><input type="checkbox" disabled={!p.eintritt || (ctx.live && !p.vorhanden)} checked={p.mitnehmen && !!p.eintritt} onChange={e => { const ps = [...daten.personen]; ps[i] = { ...p, mitnehmen: e.target.checked }; setDaten({ ...daten, personen: ps }); }} /></td>
           <td className="px-3 py-2 font-medium">{p.name}</td>
           <td className="px-3 py-2 tabular">{p.eintritt ? fmtD(p.eintritt) : <span className="text-rose-700">nicht erkannt</span>}</td>
           <td className="px-3 py-2 tabular">{p.austritt ? fmtD(p.austritt) : "–"}</td>
           <td className="px-3 py-2 text-right tabular">{p.urlaubstage ?? "–"}</td>
           <td className="px-3 py-2 text-right tabular">{p.rest ?? "–"}</td>
-          <td className="px-3 py-2 text-xs">{p.vorhanden ? <span className="text-amber-700">schon vorhanden</span> : p.austritt ? "wird als ausgetreten angelegt" : ""}</td>
+          <td className="px-3 py-2 text-xs">{ctx.live ? (p.vorhanden ? <span className="text-emerald-700">wird aktualisiert</span> : <span className="text-amber-700">nicht in der Abwesenheiten-App – dort zuerst anlegen</span>)
+            : p.vorhanden ? <span className="text-amber-700">schon vorhanden</span> : p.austritt ? "wird als ausgetreten angelegt" : ""}</td>
         </tr>)}
       </Tabelle>
       {daten.jahr ? <Hinweis>Die Resttage werden als <b>offener Urlaub am 01.01.{daten.jahr + 1}</b> übernommen. Danach genommenen Urlaub bitte als Urlaub nachtragen{vorjahr ? "" : ` (die Liste ist von ${daten.jahr})`} – der neue Anspruch kommt jeweils am Jahrestag des Eintritts dazu.</Hinweis>
         : <Hinweis ton="warn">Kein Jahr erkannt – die Resttage werden nicht übernommen. Offenen Urlaub bitte je Person eintragen.</Hinweis>}
-      <p className="text-xs text-stone-500">Dienstplan: „{db.modelle[0]?.name}“, Personalnummern werden vergeben. Funktion, Geburtsdatum (Lehrlinge) usw. danach je Person ergänzen.</p>
+      <p className="text-xs text-stone-500">{ctx.live ? "Übernommen werden Eintritt, Urlaubstage und offener Urlaub. Namen müssen genau wie in der Abwesenheiten-App geschrieben sein." : `Dienstplan: „${db.modelle[0]?.name}“, Personalnummern werden vergeben. Funktion, Geburtsdatum (Lehrlinge) usw. danach je Person ergänzen.`}</p>
     </div>}
   </Modal>;
 }
@@ -2336,10 +2365,11 @@ function Mitarbeiter({ ctx }) {
       {istLeitung(user) && <><input className={`${inputKlein} w-48`} placeholder="Suchen …" value={suche} onChange={e => setSuche(e.target.value)} />
         <label className="flex items-center gap-1.5 text-sm text-stone-600"><input type="checkbox" checked={nurAktiv} onChange={e => setNurAktiv(e.target.checked)} />nur aktive</label></>}
       {istAdmin(user) && <span className="hidden sm:contents"><Knopf art="sekundaer" icon="download" onClick={() => setDialog("import")}>Import</Knopf>
-        <Knopf icon="plus" onClick={() => setDialog("neu")}>Mitarbeiter hinzufügen</Knopf></span>}
+        {!ctx.live && <Knopf icon="plus" onClick={() => setDialog("neu")}>Mitarbeiter hinzufügen</Knopf>}</span>}
     </Seitenkopf>
     {/* Groß und gut sichtbar – vor allem am Handy und solange noch kein Team angelegt ist */}
-    {istAdmin(user) && <div className={`${db.mitarbeiter.length > 1 ? "sm:hidden" : ""} rounded-[14px] border border-stone-200 bg-white p-4`}>
+    {istAdmin(user) && ctx.live && <Hinweis>Neue Mitarbeiter/innen legst du in der <a className="underline font-semibold" href="https://mirjamwalenta-a11y.github.io/abwesenheiten-ghd/abwesenheiten.html" target="_blank" rel="noopener">Abwesenheiten-App</a> an – dort bekommen sie ihre PIN. Danach erscheinen sie hier automatisch; Dienstplan, Funktion usw. ergänzt du hier. Mit „Import“ übernimmst du Eintritt, Urlaubstage und offenen Urlaub aus deiner Beschäftigungsstand-Liste.</Hinweis>}
+    {istAdmin(user) && !ctx.live && <div className={`${db.mitarbeiter.length > 1 ? "sm:hidden" : ""} rounded-[14px] border border-stone-200 bg-white p-4`}>
       {db.mitarbeiter.length <= 1 && <p className="text-sm text-stone-600 mb-3">Noch keine Mitarbeiter/innen angelegt. Einzeln hinzufügen oder deine Beschäftigungsstand-Liste (Excel) importieren:</p>}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <button onClick={() => setDialog("neu")} className="rounded-full bg-gold-500 hover:bg-gold-700 text-white py-3.5 text-[15px] font-bold">＋ Mitarbeiter hinzufügen</button>
@@ -2819,6 +2849,24 @@ function DruckNachweise({ db, liste, monat }) {
 }
 
 // ─── EINSTELLUNGEN ────────────────────────────────────────────────────────────
+// Salon-WLAN (echter Betrieb): die öffentliche IP des Salon-Anschlusses merkt sich der Server
+function SalonWlan({ ctx }) {
+  const { sb, user } = ctx;
+  const [netze, setNetze] = useState([]), [status, setStatus] = useState(null), [fehl, setFehl] = useState(null);
+  const holen = () => Promise.all([sbq(sb.rpc("zeit_salon_netze_liste")).then(setNetze), sbq(sb.rpc("zeit_stempel_status")).then(setStatus)]).catch(e => setFehl(e.message));
+  useEffect(() => { holen(); }, []);
+  const tu = p => p.then(holen).catch(e => setFehl(e.message));
+  return <div className="mt-4 rounded-xl border border-stone-200 p-3 text-sm space-y-2">
+    <div className="font-medium">Salon-WLAN</div>
+    {netze.length ? <ul className="text-xs text-stone-600">{netze.map(n => <li key={n.ip} className="flex justify-between gap-2"><span>{n.name} · {n.ip}</span>{istAdmin(user) && <button className="text-rose-700 underline" onClick={() => tu(sbq(sb.rpc("zeit_salon_netz_entfernen", { p_ip: n.ip })))}>entfernen</button>}</li>)}</ul>
+      : <p className="text-rose-700 text-xs font-medium">Noch kein Salon-WLAN gemerkt – solange kann am Handy niemand stempeln.</p>}
+    {status && <p className="text-xs">{status.im_salon_netz ? "✓ Dieses Gerät ist gerade im Salon-WLAN." : "Dieses Gerät ist gerade nicht im gemerkten Salon-WLAN."}</p>}
+    {istAdmin(user) && <button className="rounded-full bg-stone-900 text-white text-sm font-semibold px-4 py-2" onClick={() => tu(sbq(sb.rpc("zeit_salon_netz_merken", { p_name: "Salon-WLAN" })))}>📶 Ich bin im Salon-WLAN – merken</button>}
+    <p className="text-xs text-stone-500">Im Salon mit dem Salon-WLAN verbunden tippen. Wechselt der Internetanbieter die Adresse, einfach nochmal tippen.</p>
+    {fehl && <Hinweis ton="fehler">{fehl}</Hinweis>}
+  </div>;
+}
+
 // Außentermine: an diesen Tagen darf die Person überall am Handy stempeln (z. B. Hochzeit)
 function AussenTermine({ ctx }) {
   const { db, user, aendern } = ctx;
@@ -2914,7 +2962,8 @@ function Einstellungen({ ctx }) {
           <input type="radio" name="stempelOrt" className="mt-1" disabled={!admin} checked={(e.stempelOrt || "tablet") === k} onChange={() => setE("stempelOrt", k)} />
           <span><span className="font-medium">{t}</span><span className="block text-xs text-stone-500">{h}</span></span></label>)}
       </div>
-      {e.stempelOrt === "salon" && <div className="mt-4 flex flex-wrap items-end gap-3">
+      {e.stempelOrt === "salon" && ctx.live && <SalonWlan ctx={ctx} />}
+      {e.stempelOrt === "salon" && !ctx.live && <div className="mt-4 flex flex-wrap items-end gap-3">
         <div className="text-sm">{e.salonOrt ? <>Salon-Standort gespeichert <span className="text-stone-500">({e.salonOrt.lat.toFixed(4)}, {e.salonOrt.lng.toFixed(4)})</span></> : <span className="text-rose-700 font-medium">Salon-Standort fehlt noch – solange kann am Handy niemand stempeln.</span>}</div>
         {admin && <button className="rounded-full bg-stone-900 text-white text-sm font-semibold px-4 py-2" onClick={() => standortHolen().then(p => aendern(n => { n.einstellungen.salonOrt = { lat: p.lat, lng: p.lng }; }, "Salon-Standort gespeichert")).catch(err => alert(err.message))}>📍 Ich bin im Salon – Standort speichern</button>}
         <div className="w-32"><Feld label="Umkreis (m)"><input type="number" className={inputCls} disabled={!admin} value={e.salonRadiusM} onChange={ev => setE("salonRadiusM", +ev.target.value)} /></Feld></div>
@@ -3016,7 +3065,7 @@ function Einstellungen({ ctx }) {
         <p className="px-5 py-3 text-xs text-stone-500">Vorgesetzte genehmigen nur für Personen, bei denen sie als Vorgesetzte/r eingetragen sind – nie für sich selbst. In der Live-Version setzt die Datenbank (RLS) das durch.</p>
       </Karte>
     </div>
-    {admin && <Karte titel="Testdaten">
+    {admin && !ctx.live && <Karte titel="Testdaten">
       <p className="text-sm text-stone-600">Alle Daten liegen nur in diesem Browser. {db.eigeneDaten ? "Du testest mit deinen eigenen Mitarbeiter/innen." : "Derzeit erfundene Demo-Daten."} Mit „Sichern“ und „Laden“ nimmst du die Testdaten auf ein anderes Gerät mit.</p>
       <div className="mt-4 flex flex-wrap gap-2">
         <Knopf art="sekundaer" icon="download" onClick={async () => {
@@ -3163,7 +3212,7 @@ function EinfachApp({ ctx, logout, toastEl }) {
         <Stempeluhr ctx={c} />
         <div className="grid grid-cols-2 gap-2">
           <div className="bg-white rounded-[14px] border border-stone-200 p-3"><div className="text-[11px] text-stone-500">Heute laut Plan</div><div className="font-semibold tabular">{plan ? `${plan.b} – ${plan.e}` : "frei"}</div>{plan?.p ? <div className="text-xs text-stone-500">{pauseTxt(plan)}</div> : null}</div>
-          <button className="bg-white rounded-[14px] border border-stone-200 p-3 text-left" onClick={() => setTab("urlaub")}><div className="text-[11px] text-stone-500">Urlaub</div><div className="font-semibold">noch {fmtTage(r2u(uk.rest + uk.geplant))} UT</div>{uk.geplant ? <div className="text-xs text-stone-500">davon {fmtTage(uk.geplant)} schon verplant</div> : null}</button>
+          <button className="bg-white rounded-[14px] border border-stone-200 p-3 text-left" onClick={() => setTab("urlaub")}><div className="text-[11px] text-stone-500">Urlaub</div><div className="font-semibold">{urlaubBekannt(db, user) ? `noch ${fmtTage(r2u(uk.rest + uk.geplant))} UT` : "wird eingetragen"}</div>{uk.geplant ? <div className="text-xs text-stone-500">davon {fmtTage(uk.geplant)} schon verplant</div> : null}</button>
         </div>
       </>}
       {tab === "zeiten" && <MeineZeiten ctx={c} />}
@@ -3183,6 +3232,414 @@ function EinfachApp({ ctx, logout, toastEl }) {
   </div>;
 }
 
+// ─── ECHTER BETRIEB (gemeinsame Datenbank mit der Abwesenheiten-App) ───────────
+// Ohne „?test“ in der Adresse arbeitet die App mit den echten Daten. Was jemand sehen
+// und ändern darf, entscheidet immer der Server (RLS und Funktionen in
+// supabase/*.sql) – die App blendet nur ein und aus.
+const LIVE = !/[?&]test\b/.test(location.search);
+const SB_URL = "https://wrxlaltgtgkdomklgrlj.supabase.co";
+const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndyeGxhbHRndGdrZG9ta2xncmxqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNDYwMzYsImV4cCI6MjA5OTgyMjAzNn0.Bw8ch-EJb_cLYTwxHdpjUJWgoCjje3Jc32pB0yiBS8g"; // öffentlicher anon-Schlüssel (wie in abwesenheiten.html)
+// Login wie in der Abwesenheiten-App: Name → <name>.abwesenheit@greathairday.at, Passwort = PIN + "-ghd"
+function abwEmail(name) { return name.trim().toLowerCase().replace(/\s+/g, ".") + ".abwesenheit@greathairday.at"; }
+const hm5 = t => t ? String(t).slice(0, 5) : null;
+async function sbq(p) { const { data, error } = await p; if (error) throw new Error(error.message); return data; }
+// wie sbq, aber es muss eine Zeile betroffen sein (sonst hat der Server es verweigert)
+async function sbMuss(p, text) { const d = await sbq(p); if (!d || (Array.isArray(d) && !d.length)) throw new Error(text || "Keine Berechtigung"); return d; }
+async function sbAlle(mk) { const out = []; for (let i = 0; ; i += 1000) { const d = await sbq(mk().range(i, i + 999)); out.push(...d); if (d.length < 1000) return out; } }
+const TYP_ART = { urlaub: "urlaub", krankenstand: "krank", sonstige: "sonder" };
+const artTyp = art => art === "urlaub" ? "urlaub" : KRANK_ARTEN.includes(art) ? "krankenstand" : "sonstige";
+const AKTION_RPC = { kommen: "kommen", pauseStart: "pause_start", pauseEnde: "pause_ende", gehen: "gehen", nurGehen: "nur_gehen" };
+
+// Alle Daten, die die angemeldete Person sehen darf, ins Format der Oberfläche bringen
+async function liveLaden(sb) {
+  const vonJ = `${new Date().getFullYear() - 1}-01-01`, h = heute();
+  const [team, profile, modelle, tage, zuo, buch, anfr, korr, abs, prot, verl, nachr, aussen, einst] = await Promise.all([
+    sbq(sb.from("abw_team_scoped").select("id,name,role,urlaub_anspruch,eintrittsdatum,ausgeschieden_am").order("name")),
+    sbq(sb.from("zeit_profil").select("*")),
+    sbq(sb.from("zeit_arbeitsmodelle").select("*").order("name")),
+    sbAlle(() => sb.from("zeit_modell_tage").select("*").order("modell_id").order("gueltig_ab").order("wochentag")),
+    sbq(sb.from("zeit_modell_zuordnung").select("*")),
+    sbAlle(() => sb.from("zeit_buchungen").select("*").gte("datum", vonJ).order("datum").order("person_id")),
+    sbAlle(() => sb.from("abw_anfragen").select("*").order("id")),
+    sbAlle(() => sb.from("zeit_korrekturen").select("*").order("beantragt_am").order("id")),
+    sbAlle(() => sb.from("zeit_monatsabschluss").select("*").order("monat").order("person_id")),
+    sbAlle(() => sb.from("zeit_protokoll").select("*").gte("datum", vonJ).order("id")),
+    sbAlle(() => sb.from("zeit_personal_verlauf").select("*").order("id")),
+    sbAlle(() => sb.from("zeit_nachrichten").select("*").order("id")),
+    sbq(sb.from("zeit_aussentermine").select("*")),
+    sbq(sb.from("abw_einstellungen").select("wert").eq("schluessel", "zeitverwaltung")),
+  ]);
+  const prof = Object.fromEntries(profile.map(p => [p.person_id, p]));
+  const mod = modelle.map(m => {
+    const vs = {};
+    tage.filter(t => t.modell_id === m.id).forEach(t => { (vs[t.gueltig_ab] = vs[t.gueltig_ab] || Array(7).fill(null))[t.wochentag] = { b: hm5(t.beginn), e: hm5(t.ende), p: t.pause_min, ...(t.pause_beginn ? { pb: hm5(t.pause_beginn) } : {}) }; });
+    const versionen = Object.keys(vs).sort().map(ab => ({ ab, plan: vs[ab] }));
+    if (!versionen.length) versionen.push({ ab: "2000-01-01", plan: Array(7).fill(null) });
+    return mitStunden({ id: m.id, name: m.name, versionen, plan: (versionen.filter(v => v.ab <= h).pop() || versionen[0]).plan });
+  });
+  const vorgesetzte = new Set(profile.map(p => p.vorgesetzter_id).filter(Boolean));
+  const ohnePlan = [];
+  const mitarbeiter = team.map(t => {
+    const p = prof[t.id] || {};
+    const z = zuo.filter(x => x.person_id === t.id).sort((a, b) => a.gueltig_ab.localeCompare(b.gueltig_ab));
+    const akt = z.filter(x => x.gueltig_ab <= h).pop() || z[0];
+    if (!akt) ohnePlan.push(t.id);
+    const leer = v => v === null || v === undefined ? undefined : v;
+    return { id: t.id, name: t.name, personalnr: p.personalnr || "", abteilung: p.abteilung || "", funktion: p.funktion || "",
+      eintritt: leer(t.eintrittsdatum), austritt: leer(t.ausgeschieden_am), aktiv: !t.ausgeschieden_am || t.ausgeschieden_am >= h,
+      modellId: akt?.modell_id || mod[0]?.id, urlaubstage: t.urlaub_anspruch ?? 25,
+      urlaubStart: p.urlaub_start == null ? undefined : +p.urlaub_start, urlaubStartAm: leer(p.urlaub_start_am), saldoStart: p.saldo_start_min || 0,
+      vorgesetzterId: p.vorgesetzter_id || null, rolle: t.role === "owner" ? "admin" : vorgesetzte.has(t.id) ? "vorgesetzt" : "mitarbeiter",
+      geburtsdatum: leer(p.geburtsdatum), lehrbeginn: leer(p.lehrbeginn), bsTag1: leer(p.bs_tag1), bsTag2: leer(p.bs_tag2),
+      urlaubsGruppe: leer(p.urlaub_gruppe), austrittArt: leer(p.austritt_art), austrittNotiz: leer(p.austritt_notiz) };
+  });
+  const pz = o => o ? { beginn: hm5(o.beginn), ende: hm5(o.ende), pause: o.pause_min } : null;
+  const db = {
+    version: 1, live: true, modelle: mod, mitarbeiter,
+    zeiten: buch.map(b => ({ id: b.id, maId: b.person_id, datum: b.datum, beginn: hm5(b.beginn), ende: hm5(b.ende), pause: b.pause_min || 0, pauseStart: hm5(b.pause_start),
+      quelle: b.quelle, ...(b.auto?.length ? { auto: b.auto } : {}), notiz: b.notiz || "", ...(b.beginn_roh || b.ende_roh ? { roh: { ...(b.beginn_roh ? { beginn: hm5(b.beginn_roh) } : {}), ...(b.ende_roh ? { ende: hm5(b.ende_roh) } : {}) } } : {}) })),
+    abwesenheiten: anfr.filter(a => a.person_id && (TYP_ART[a.typ] || ARTEN[a.zeit_art])).map(a => {
+      const art = ARTEN[a.zeit_art] ? a.zeit_art : TYP_ART[a.typ];
+      return { id: String(a.id), maId: a.person_id, art, von: a.von, bis: a.offen ? null : a.bis,
+        status: a.status === "ausstehend" ? "beantragt" : a.status === "genehmigt" ? (ARTEN[art].meldung ? "gemeldet" : "genehmigt") : a.status,
+        ...(a.anteil && +a.anteil < 1 ? { anteil: +a.anteil } : {}), ...(a.minuten ? { minuten: a.minuten } : {}), au: !!a.au_bestaetigung, notiz: a.notiz || "",
+        beantragtAm: a.erstellt, entschiedenVon: a.entschieden_von || undefined, dateien: [] };
+    }),
+    korrekturen: korr.map(k => { const z = buch.find(b => b.person_id === k.person_id && b.datum === k.datum);
+      return { id: k.id, maId: k.person_id, datum: k.datum, zeitId: z?.id || null, alt: pz(z), neu: k.neu_beginn ? { beginn: hm5(k.neu_beginn), ende: hm5(k.neu_ende), pause: k.neu_pause_min ?? 0 } : null,
+        grund: k.grund, status: k.status, von: k.beantragt_von, am: String(k.beantragt_am).slice(0, 10), entschiedenVon: k.entschieden_von || undefined }; }),
+    abschluesse: abs.map(a => ({ maId: a.person_id, monat: a.monat.slice(0, 7), ...(a.bestaetigt_am ? { bestaetigtAm: a.bestaetigt_am.slice(0, 10) } : {}),
+      ...(a.abgeschlossen_am ? { abgeschlossenAm: a.abgeschlossen_am.slice(0, 10), abgeschlossenVon: a.abgeschlossen_von } : {}) })),
+    protokoll: prot.map(p => ({ id: String(p.id), am: p.am, von: p.von_person || "system", maId: p.person_id, datum: p.datum, aktion: p.aktion, alt: pz(p.alt), neu: pz(p.neu), grund: p.grund })),
+    personalLog: verl.map(v => ({ id: String(v.id), am: v.am, von: v.von_person, maId: v.person_id, aktion: v.aktion, details: v.details })),
+    nachrichten: nachr.map(x => ({ id: String(x.id), an: x.an_person, am: x.erstellt_am, text: x.text, seite: x.seite, gelesen: !!x.gelesen_am })),
+    aussentermine: aussen.map(x => ({ id: `${x.person_id}|${x.datum}`, maId: x.person_id, datum: x.datum, notiz: x.notiz || "" })),
+    einstellungen: { ...STANDARD_EINSTELLUNGEN, ...(einst[0]?.wert || {}) },
+  };
+  return { db, ohnePlan };
+}
+
+// Erster Start durch die Chefin: Standard-Dienstpläne anlegen, allen ohne Plan „Vollzeit“
+// bzw. „Lehrling“ zuordnen und den Start der Zeitverwaltung (Zeitkonto, Automatik) festhalten
+async function liveEinrichten(sb, { db, ohnePlan }) {
+  let geaendert = false, mod = db.modelle;
+  if (!mod.length) {
+    for (const m of standardModelle()) {
+      const id = crypto.randomUUID();
+      await sbq(sb.from("zeit_arbeitsmodelle").insert({ id, name: m.name }));
+      await sbq(sb.from("zeit_modell_tage").insert(m.plan.map((t, i) => t && { modell_id: id, gueltig_ab: "2000-01-01", wochentag: i, beginn: t.b, ende: t.e, pause_min: +t.p || 0 }).filter(Boolean)));
+      mod = [...mod, { id, name: m.name }];
+    }
+    geaendert = true;
+  }
+  const vz = mod.find(m => /vollzeit/i.test(m.name)) || mod[0], le = mod.find(m => /lehrling/i.test(m.name)) || vz;
+  for (const id of ohnePlan) {
+    const m = db.mitarbeiter.find(x => x.id === id); if (!m?.aktiv) continue;
+    await sbq(sb.from("zeit_modell_zuordnung").upsert({ person_id: id, gueltig_ab: "2000-01-01", modell_id: urlaubsGruppe(m) === "lehrling" ? le.id : vz.id }));
+    geaendert = true;
+  }
+  if (!db.einstellungen.kontoStart) {
+    await sbq(sb.from("abw_einstellungen").upsert({ schluessel: "zeitverwaltung", wert: { ...db.einstellungen, kontoStart: heute() } }));
+    geaendert = true;
+  }
+  return geaendert;
+}
+
+// Änderungen der Oberfläche (alt → neu) in die Datenbank schreiben – nur über die
+// Wege, die der Server erlaubt. Danach wird immer neu geladen.
+async function liveSpeichern(sb, alt, neu, user) {
+  const ich = user.id, chefin = istAdmin(user);
+  const gleich = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const nachId = l => Object.fromEntries((l || []).map(x => [x.id, x]));
+  const neuProt = (neu.protokoll || []).filter(p => !(alt.protokoll || []).some(q => q.id === p.id));
+  const grundFuer = (maId, datum, std) => neuProt.find(p => p.maId === maId && p.datum === datum && p.grund)?.grund || std;
+  // Einstellungen (nur Chefin – RLS auf abw_einstellungen)
+  if (!gleich(alt.einstellungen, neu.einstellungen)) await sbMuss(sb.from("abw_einstellungen").upsert({ schluessel: "zeitverwaltung", wert: neu.einstellungen }).select("schluessel"), "Nur die Chefin darf Einstellungen ändern.");
+  // Dienstpläne mit Versionen (gültig ab)
+  for (const m of neu.modelle) {
+    const a = alt.modelle.find(x => x.id === m.id);
+    if (a && a.name === m.name && gleich(a.versionen, m.versionen)) continue;
+    await sbMuss(sb.from("zeit_arbeitsmodelle").upsert({ id: m.id, name: m.name }).select("id"), "Nur Chefin/Leitung dürfen Dienstpläne ändern.");
+    const vsNeu = m.versionen || [{ ab: "2000-01-01", plan: m.plan }], vsAlt = a?.versionen || [];
+    for (const v of vsNeu) {
+      if (gleich(vsAlt.find(x => x.ab === v.ab)?.plan, v.plan)) continue;
+      await sbq(sb.from("zeit_modell_tage").delete().eq("modell_id", m.id).eq("gueltig_ab", v.ab));
+      const zeilen = v.plan.map((t, i) => t && t.b && t.e ? { modell_id: m.id, gueltig_ab: v.ab, wochentag: i, beginn: t.b, ende: t.e, pause_min: +t.p || 0, pause_beginn: t.pb || null } : null).filter(Boolean);
+      if (zeilen.length) await sbq(sb.from("zeit_modell_tage").insert(zeilen));
+    }
+    for (const v of vsAlt) if (!vsNeu.some(x => x.ab === v.ab)) await sbq(sb.from("zeit_modell_tage").delete().eq("modell_id", m.id).eq("gueltig_ab", v.ab));
+  }
+  // Mitarbeiter/innen: Stammdaten in abw_team (wie Abwesenheiten-App) und zeit_profil
+  const PROFIL = { personalnr: "personalnr", abteilung: "abteilung", funktion: "funktion", vorgesetzterId: "vorgesetzter_id", geburtsdatum: "geburtsdatum",
+    urlaubStart: "urlaub_start", urlaubStartAm: "urlaub_start_am", austrittArt: "austritt_art", austrittNotiz: "austritt_notiz", lehrbeginn: "lehrbeginn",
+    bsTag1: "bs_tag1", bsTag2: "bs_tag2", saldoStart: "saldo_start_min", urlaubsGruppe: "urlaub_gruppe" };
+  for (const m of neu.mitarbeiter) {
+    const a = alt.mitarbeiter.find(x => x.id === m.id);
+    if (!a) throw new Error("Neue Mitarbeiter/innen bitte in der Abwesenheiten-App anlegen – dort bekommen sie ihre PIN.");
+    if (gleich(a, m)) continue;
+    if (a.name !== m.name) throw new Error("Namen bitte in der Abwesenheiten-App ändern – der Name ist Teil der Anmeldung.");
+    const team = {};
+    if ((a.eintritt || null) !== (m.eintritt || null)) team.eintrittsdatum = m.eintritt || null;
+    if (+a.urlaubstage !== +m.urlaubstage) team.urlaub_anspruch = +m.urlaubstage || 0;
+    if ((a.austritt || null) !== (m.austritt || null)) team.ausgeschieden_am = m.austritt || null;
+    if (Object.keys(team).length) await sbMuss(sb.from("abw_team").update(team).eq("id", m.id).select("id"), "Nur die Chefin darf Stammdaten ändern.");
+    if (Object.keys(PROFIL).some(k => !gleich(a[k] === "" ? null : a[k], m[k] === "" ? null : m[k]))) {
+      const zeile = { person_id: m.id };
+      Object.entries(PROFIL).forEach(([k, sp]) => { const v = m[k]; zeile[sp] = v === undefined || v === "" ? null : v; });
+      zeile.saldo_start_min = Math.round(+m.saldoStart || 0);
+      if (zeile.urlaub_start !== null) zeile.urlaub_start = +zeile.urlaub_start;
+      await sbMuss(sb.from("zeit_profil").upsert(zeile).select("person_id"), "Keine Berechtigung für dieses Profil.");
+    }
+    if (a.modellId !== m.modellId) await sbMuss(sb.from("zeit_modell_zuordnung").upsert({ person_id: m.id, gueltig_ab: heute(), modell_id: m.modellId }).select("person_id"), "Keine Berechtigung für den Dienstplan.");
+  }
+  for (const l of (neu.personalLog || []).filter(l => !(alt.personalLog || []).some(q => q.id === l.id)))
+    await sbq(sb.from("zeit_personal_verlauf").insert({ person_id: l.maId, von_person: ich, aktion: l.aktion, details: l.details || null }));
+  // Außentermine (nur Chefin – RLS)
+  const aA = nachId(alt.aussentermine), aN = nachId(neu.aussentermine);
+  for (const x of neu.aussentermine || []) if (!aA[x.id]) await sbMuss(sb.from("zeit_aussentermine").insert({ person_id: x.maId, datum: x.datum, notiz: x.notiz || null, angelegt_von: ich }).select("person_id"), "Nur die Chefin darf Außentermine freigeben.");
+  for (const x of alt.aussentermine || []) if (!aN[x.id]) await sbMuss(sb.from("zeit_aussentermine").delete().eq("person_id", x.maId).eq("datum", x.datum).select("person_id"), "Nur die Chefin darf Außentermine entfernen.");
+  // Korrekturanträge: stellen (Mitarbeiter/in) oder entscheiden (Leitung, Server übernimmt die Zeit)
+  const erledigt = new Set(), kA = nachId(alt.korrekturen);
+  for (const k of neu.korrekturen) {
+    const a = kA[k.id];
+    if (!a) { await sbq(sb.from("zeit_korrekturen").insert({ person_id: k.maId, datum: k.datum, neu_beginn: k.neu?.beginn || null, neu_ende: k.neu?.ende || null, neu_pause_min: k.neu ? +k.neu.pause || 0 : null, grund: k.grund, beantragt_von: ich })); continue; }
+    if (a.status === "offen" && k.status !== "offen") { await sbq(sb.rpc("zeit_korrektur_entscheiden", { p_id: k.id, p_genehmigt: k.status === "genehmigt" })); erledigt.add(`${k.maId}|${k.datum}`); }
+  }
+  // Arbeitszeiten ändern (Chefin/Leitung) – immer über zeit_buchung_aendern: mit Grund, protokolliert
+  const schl = z => `${z.maId}|${z.datum}`;
+  const zA = Object.fromEntries(alt.zeiten.map(z => [schl(z), z])), zN = Object.fromEntries(neu.zeiten.map(z => [schl(z), z]));
+  for (const k of new Set([...Object.keys(zA), ...Object.keys(zN)])) {
+    if (erledigt.has(k)) continue;
+    const a = zA[k], n = zN[k], [maId, datum] = k.split("|");
+    if (a && n && a.beginn === n.beginn && a.ende === n.ende && +a.pause === +n.pause) continue;
+    if (!darfVerwalten(user, neu.mitarbeiter.find(m => m.id === maId)) && !chefin) continue; // Nebeneffekt bei Mitarbeiter/innen – zählt nur der Server
+    const grund = grundFuer(maId, datum, "Korrektur");
+    if (!n) await sbq(sb.rpc("zeit_buchung_aendern", { p_person: maId, p_datum: datum, p_beginn: null, p_ende: null, p_pause_min: null, p_grund: grund, p_loeschen: true }));
+    else await sbq(sb.rpc("zeit_buchung_aendern", { p_person: maId, p_datum: datum, p_beginn: n.beginn, p_ende: n.ende, p_pause_min: +n.pause || 0, p_grund: grund, p_loeschen: false }));
+  }
+  // Monatsabschluss
+  const mk = a => `${a.maId}|${a.monat}`, bA = Object.fromEntries(alt.abschluesse.map(a => [mk(a), a]));
+  for (const b of neu.abschluesse) {
+    const a = bA[mk(b)] || {}, monat = `${b.monat}-01`;
+    if (!a.bestaetigtAm && b.bestaetigtAm && b.maId === ich) await sbq(sb.rpc("zeit_monat_bestaetigen", { p_monat: monat }));
+    if (!a.abgeschlossenAm && b.abgeschlossenAm) await sbq(sb.rpc("zeit_monat_abschliessen", { p_person: b.maId, p_monat: monat }));
+    if (a.abgeschlossenAm && !b.abgeschlossenAm) await sbq(sb.rpc("zeit_monat_oeffnen", { p_person: b.maId, p_monat: monat, p_grund: neuProt.find(p => p.maId === b.maId && p.grund)?.grund || "wieder geöffnet" }));
+  }
+  // Urlaub, Krankenstand & Co. – dieselbe Tabelle wie die Abwesenheiten-App
+  const zeile = x => ({ person_id: x.maId, typ: artTyp(x.art), zeit_art: x.art, von: x.von, bis: x.bis || x.von, offen: !x.bis,
+    status: !chefin || x.status === "beantragt" ? "ausstehend" : x.status === "abgelehnt" ? "abgelehnt" : "genehmigt",
+    anteil: x.anteil || 1, minuten: x.minuten || null, au_bestaetigung: ARTEN[x.art]?.au ? !!x.au : null, notiz: x.notiz || null });
+  const abA = nachId(alt.abwesenheiten), neueAbw = [];
+  for (const x of neu.abwesenheiten) {
+    const a = abA[x.id];
+    if (!a) { if (x.status !== "storniert") neueAbw.push({ ...zeile(x), erstellt: heute(), ...(chefin && x.status !== "beantragt" ? { entschieden_von: ich, entschieden_am: new Date().toISOString() } : {}) }); continue; }
+    if (gleich(a, x)) continue;
+    if (x.status === "storniert") { await sbMuss(sb.from("abw_anfragen").delete().eq("id", x.id).select("id"), "Nur die Chefin kann Einträge löschen – bitte bei ihr melden."); continue; }
+    const z = zeile(x);
+    if (a.status !== x.status) { z.entschieden_von = ich; z.entschieden_am = new Date().toISOString(); }
+    await sbMuss(sb.from("abw_anfragen").update(z).eq("id", x.id).select("id"), "Nur die Chefin kann das ändern.");
+  }
+  for (const x of alt.abwesenheiten) if (!neu.abwesenheiten.some(y => y.id === x.id)) await sbMuss(sb.from("abw_anfragen").delete().eq("id", x.id).select("id"), "Nur die Chefin kann Einträge löschen.");
+  if (neueAbw.length) await sbq(sb.from("abw_anfragen").insert(neueAbw));
+  // Nachrichten als gelesen markieren (neue Nachrichten schreibt nur der Server)
+  const nA = nachId(alt.nachrichten);
+  for (const x of neu.nachrichten || []) if (nA[x.id] && !nA[x.id].gelesen && x.gelesen) await sbq(sb.from("zeit_nachrichten").update({ gelesen_am: new Date().toISOString() }).eq("id", x.id));
+}
+
+// Stempeln am eigenen Handy: Uhrzeit, Rundung, Ort und Pause bestimmt der Server
+async function liveStempeln(sb, db, ma, aktion) {
+  const plan = planTag(db, ma, heute()), vn = ma.name.split(" ")[0];
+  const b = await sbq(sb.rpc("zeit_stempeln", { p_aktion: AKTION_RPC[aktion], p_auto_pause: true }));
+  if (aktion === "kommen") { const k = kaffeeText(plan); return k ? `Guten Morgen ${vn}! ${k}` : `${vn}: Kommen ${hm5(b.beginn)}`; }
+  if (aktion === "gehen" || aktion === "nurGehen") { const ab = abschied(db, ma); return `Danke ${vn}! ${ab.text} ${ab.em}`; }
+  return aktion === "pauseStart" ? `${vn}: Pause ab ${nowHM()}` : `${vn}: Pause beendet`;
+}
+
+function LiveApp() {
+  const sb = useMemo(() => window.supabase.createClient(SB_URL, SB_KEY), []);
+  const [phase, setPhase] = useState("start"); // start | login | laden | app | terminal
+  const [db, setDb] = useState(null);
+  const [ichId, setIchId] = useState(null);
+  const [fehler, setFehler] = useState(null);
+  const [toast, setToast] = useState(null);
+  const dbRef = useRef(null); dbRef.current = db;
+  const speichert = useRef(0);
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 4000); return () => clearTimeout(t); }, [toast]);
+  const neuLaden = () => liveLaden(sb).then(r => setDb(r.db));
+  async function nachAnmeldung() {
+    setFehler(null);
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) { setPhase("login"); return; }
+    if (await sbq(sb.rpc("zeit_ist_terminal"))) { setPhase("terminal"); return; }
+    setPhase("laden");
+    let r = await liveLaden(sb);
+    const me = r.db.mitarbeiter.find(m => abwEmail(m.name) === session.user.email);
+    if (!me || !me.aktiv) { await sb.auth.signOut(); setFehler("Für diesen Zugang gibt es kein aktives Profil."); setPhase("login"); return; }
+    if (me.rolle === "admin" && await liveEinrichten(sb, r)) r = await liveLaden(sb);
+    setIchId(me.id); setDb(r.db); setPhase("app");
+  }
+  useEffect(() => { nachAnmeldung().catch(e => { setFehler(e.message); setPhase("login"); }); }, []);
+  // Daten anderer Geräte (Tablet, Handys) regelmäßig und beim Zurückkehren holen
+  useEffect(() => {
+    if (phase !== "app") return;
+    const hol = () => { if (!speichert.current) neuLaden().catch(() => {}); };
+    const t = setInterval(hol, 60000);
+    const sicht = () => { if (document.visibilityState === "visible") hol(); };
+    document.addEventListener("visibilitychange", sicht);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", sicht); };
+  }, [phase]);
+  async function abmelden() { await sb.auth.signOut(); setDb(null); setIchId(null); setPhase("login"); }
+  const toastEl = toast && <div className="no-print fixed bottom-20 sm:bottom-4 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white text-sm px-5 py-3 rounded-full shadow-lg flex items-center gap-2 max-w-[92vw]">{toast}</div>;
+  if (phase === "start" || phase === "laden") return <div className="min-h-screen flex items-center justify-center text-stone-500 text-sm">Lade Zeitverwaltung …</div>;
+  if (phase === "terminal") return <LiveTerminal sb={sb} onAbmelden={abmelden} />;
+  if (phase === "login" || !db) return <LiveLogin sb={sb} fehler={fehler} onAngemeldet={() => nachAnmeldung().catch(e => { setFehler(e.message); setPhase("login"); })} />;
+  const user = db.mitarbeiter.find(m => m.id === ichId);
+  if (!user) return <LiveLogin sb={sb} fehler="Profil nicht gefunden." onAngemeldet={nachAnmeldung} />;
+  const aendern = (fn, meldung) => {
+    const alt = dbRef.current, n = JSON.parse(JSON.stringify(alt)), r = fn(n);
+    setDb(n); speichert.current++;
+    liveSpeichern(sb, alt, n, user)
+      .then(() => { if (meldung || typeof r === "string") setToast(meldung || r); })
+      .catch(e => setToast(`⚠️ Nicht gespeichert: ${e.message}`))
+      .finally(() => neuLaden().catch(() => {}).finally(() => { speichert.current--; }));
+  };
+  const stempeln = async (maId, aktion) => {
+    const ma = db.mitarbeiter.find(m => m.id === maId);
+    try { setToast(await liveStempeln(sb, db, ma, aktion)); } finally { neuLaden().catch(() => {}); }
+  };
+  return <Rahmen key={user.id} db={db} setDb={setDb} user={user} aendern={aendern} logout={abmelden} login={() => {}} toastEl={toastEl} stempeln={stempeln} live sb={sb} />;
+}
+
+// Anmeldung: Name antippen → PIN (dieselbe wie in der Abwesenheiten-App)
+function LiveLogin({ sb, fehler, onAngemeldet }) {
+  const [team, setTeam] = useState(null);
+  const [wahl, setWahl] = useState(null);
+  const [fehl, setFehl] = useState(fehler);
+  const [laeuft, setLaeuft] = useState(false);
+  const [tablet, setTablet] = useState(false);
+  useEffect(() => { sbq(sb.from("abw_team_login").select("id,name").order("name")).then(setTeam).catch(e => setFehl("Keine Verbindung: " + e.message)); }, []);
+  async function pin(p) {
+    setLaeuft(true); setFehl(null);
+    const { error } = await sb.auth.signInWithPassword({ email: abwEmail(wahl.name), password: p + "-ghd" });
+    setLaeuft(false);
+    if (error) { setFehl(/invalid/i.test(error.message) ? "PIN falsch." : error.message); return; }
+    onAngemeldet();
+  }
+  if (tablet) return <TabletEinrichten sb={sb} onZurueck={() => setTablet(false)} onFertig={onAngemeldet} />;
+  return <div className="min-h-screen flex items-center justify-center p-4">
+    <div className="w-full max-w-sm">
+      <p className="text-[11px] text-stone-500 uppercase tracking-[.14em] font-semibold text-center">Great Hair Day</p>
+      <h1 className="text-2xl font-bold text-center mb-6">Zeitverwaltung</h1>
+      {fehl && <div className="mb-4"><Hinweis ton="fehler">{fehl}</Hinweis></div>}
+      {!wahl ? <div className="bg-white rounded-[14px] border border-stone-200 divide-y divide-stone-100">
+        {!team ? <p className="p-4 text-sm text-stone-500">Lade …</p> : team.map(m => <button key={m.id} onClick={() => { setWahl(m); setFehl(null); }} className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-stone-50">
+          <Avatar name={m.name} klein /><span className="font-semibold">{m.name}</span></button>)}
+      </div> : <div className="bg-white rounded-[14px] border border-stone-200 p-6">
+        <button className="text-sm text-stone-500 mb-3" onClick={() => setWahl(null)}>‹ zurück</button>
+        <div className="text-center font-bold text-lg">{wahl.name}</div>
+        <p className="text-center text-sm text-stone-500 mb-5">PIN eingeben (wie in der Abwesenheiten-App)</p>
+        {laeuft ? <p className="text-center text-sm text-stone-500 py-10">Anmelden …</p> : <PinFeld onFertig={pin} />}
+      </div>}
+      <button onClick={() => setTablet(true)} className="mt-6 w-full text-sm text-stone-500 underline">Dieses Gerät als Stempel-Tablet einrichten</button>
+      <p className="mt-4 text-center text-xs text-stone-400"><a className="underline" href="?test">Testversion mit Beispieldaten</a></p>
+    </div>
+  </div>;
+}
+
+// Einmalig am Salon-Tablet: mit dem eigenen Geräte-Zugang anmelden (nur die Chefin kennt das Passwort)
+function TabletEinrichten({ sb, onZurueck, onFertig }) {
+  const [email, setEmail] = useState(""), [pw, setPw] = useState(""), [fehl, setFehl] = useState(null);
+  async function los() {
+    setFehl(null);
+    const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password: pw });
+    if (error) { setFehl("Anmeldung fehlgeschlagen."); return; }
+    if (!(await sbq(sb.rpc("zeit_ist_terminal")))) { await sb.auth.signOut(); setFehl("Dieser Zugang ist nicht als Stempel-Tablet freigeschaltet."); return; }
+    onFertig();
+  }
+  return <div className="min-h-screen flex items-center justify-center p-4"><div className="w-full max-w-sm bg-white rounded-[14px] border border-stone-200 p-6 space-y-4">
+    <button className="text-sm text-stone-500" onClick={onZurueck}>‹ zurück</button>
+    <h1 className="text-xl font-bold">Stempel-Tablet einrichten</h1>
+    <p className="text-sm text-stone-600">Einmalig mit dem Geräte-Zugang des Tablets anmelden. Danach zeigt dieses Gerät nur noch die Stempeluhr.</p>
+    <Feld label="E-Mail des Tablet-Zugangs"><input className={inputCls} type="email" autoComplete="off" value={email} onChange={e => setEmail(e.target.value)} /></Feld>
+    <Feld label="Passwort"><input className={inputCls} type="password" autoComplete="off" value={pw} onChange={e => setPw(e.target.value)} /></Feld>
+    {fehl && <Hinweis ton="fehler">{fehl}</Hinweis>}
+    <Knopf onClick={los} disabled={!email || !pw}>Einrichten</Knopf>
+  </div></div>;
+}
+
+// Salon-Tablet im echten Betrieb: sieht nur Vornamen und den heutigen Status (zeit_terminal_liste),
+// jede Stempelung mit persönlicher PIN – geprüft am Server, 5 Fehlversuche = 15 min Sperre
+function LiveTerminal({ sb, onAbmelden }) {
+  const [liste, setListe] = useState([]);
+  const [wahl, setWahl] = useState(null);
+  const [pin, setPin] = useState(null);
+  const [fehl, setFehl] = useState(null);
+  const [gruss, setGruss] = useState(null);
+  const [uhr, setUhr] = useState(nowHM());
+  const [ende, setEnde] = useState(false);
+  const holen = () => sbq(sb.rpc("zeit_terminal_liste")).then(setListe).catch(e => setFehl(e.message));
+  useEffect(() => { holen(); const t = setInterval(() => { setUhr(nowHM()); holen(); }, 30000); const u = setInterval(() => setUhr(nowHM()), 5000); return () => { clearInterval(t); clearInterval(u); }; }, []);
+  useEffect(() => { if (!wahl) return; const t = setTimeout(() => { setWahl(null); setPin(null); }, 45000); return () => clearTimeout(t); }, [wahl]);
+  useEffect(() => { if (!gruss) return; const t = setTimeout(() => setGruss(null), 7000); return () => clearTimeout(t); }, [gruss]);
+  const d = heute(), jetzt = hm2min(nowHM());
+  const info = p => p.abwesend ? p.abwesend : p.status === "aus" ? (p.plan_beginn ? `Plan ${hm5(p.plan_beginn)}–${hm5(p.plan_ende)}` : "heute frei")
+    : p.status === "fertig" ? "schon gegangen" : p.status === "pause" ? `Pause seit ${hm5(p.seit)}` : p.plan_beginn && jetzt < hm2min(hm5(p.plan_beginn)) ? `☕ da seit ${hm5(p.seit)} · Beginn ${hm5(p.plan_beginn)}` : `da seit ${hm5(p.seit)}`;
+  async function buchen(aktion) {
+    const p = wahl; setFehl(null);
+    try {
+      const r = await sbq(sb.rpc("zeit_terminal_stempeln", { p_person: p.person_id, p_pin: pin, p_aktion: AKTION_RPC[aktion] }));
+      if (!r.ok) { setFehl(r.fehler); setPin(null); return; }
+      setWahl(null); setPin(null); holen();
+      if (aktion === "kommen") { const k = kaffeeText(p.plan_beginn && { b: hm5(p.plan_beginn) }); setGruss({ em: k ? "☕" : "👋", titel: `${k ? "Guten Morgen" : "Hallo"} ${p.vorname}!`, text: k || `Eingecheckt um ${nowHM()}.`, sub: "Du bist eingecheckt." }); }
+      else if (aktion === "gehen" || aktion === "nurGehen") { const ab = p.urlaub_ab ? { em: "🌴", text: "Einen schönen Urlaub!" } : wd(d) === 5 ? { em: "☀️", text: "Ein schönes Wochenende!" } : { em: "🌙", text: "Einen schönen Abend!" }; setGruss({ em: ab.em, titel: `Danke ${p.vorname}!`, text: ab.text, sub: "Du bist ausgecheckt." }); }
+      else setGruss({ em: aktion === "pauseStart" ? "🥪" : "💪", titel: p.vorname, text: aktion === "pauseStart" ? "Gute Pause!" : "Pause beendet.", sub: "" });
+    } catch (e) { setFehl(e.message); setPin(null); }
+  }
+  const gross = "flex-1 min-w-[9rem] rounded-full py-5 text-xl font-bold flex items-center justify-center gap-2";
+  const farbe = { da: "bg-emerald-400", pause: "bg-amber-400", aus: "bg-stone-500", fertig: "bg-stone-300" };
+  return <div className="min-h-screen bg-stone-900 text-white flex flex-col">
+    <div className="flex items-center justify-between px-6 py-4">
+      <div><div className="text-[11px] text-stone-400 uppercase tracking-[.14em] font-semibold">Great Hair Day</div><div className="text-lg font-bold">{WT_LANG[wd(d)]}, {fmtD(d)}</div></div>
+      <div className="text-5xl font-semibold tabular">{uhr}</div>
+    </div>
+    <div className="px-6 text-stone-400 text-sm">Name antippen zum Stempeln</div>
+    {fehl && !wahl && <div className="mx-6 mt-3 rounded-xl bg-rose-900/60 px-4 py-2 text-sm">{fehl}</div>}
+    <div className="flex-1 p-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 content-start">
+      {liste.map(p => <button key={p.person_id} onClick={() => { setWahl(p); setPin(null); setFehl(null); }} className="rounded-[14px] bg-stone-800 border border-stone-700 hover:border-gold-400 p-5 text-left">
+        <div className="flex items-center gap-3"><span className="w-9 h-9 rounded-full bg-gold-500 text-white text-sm font-bold flex items-center justify-center">{p.vorname[0]}</span><span className={`ml-auto w-3 h-3 rounded-full ${p.abwesend ? "bg-sky-300" : farbe[p.status]}`} /></div>
+        <div className="mt-3 text-lg font-semibold">{p.vorname}</div>
+        <div className="text-sm text-stone-400">{info(p)}</div>
+      </button>)}
+    </div>
+    <div className="px-6 py-4 flex items-center justify-between text-xs text-stone-500">
+      <span>PIN und Uhrzeit prüft der Server</span>
+      {!ende ? <button onClick={() => setEnde(true)} className="underline hover:text-stone-300">Tablet abmelden</button>
+        : <span>Wirklich abmelden? Danach braucht es den Geräte-Zugang. <button className="underline text-rose-300" onClick={onAbmelden}>Ja</button> · <button className="underline" onClick={() => setEnde(false)}>Nein</button></span>}
+    </div>
+    {gruss && <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-6 z-50" onClick={() => setGruss(null)}>
+      <div className="bg-stone-50 text-stone-900 rounded-[22px] p-8 w-full max-w-xl text-center einblenden">
+        <div className="text-6xl">{gruss.em}</div><div className="mt-4 text-2xl font-bold">{gruss.titel}</div><div className="mt-2 text-xl">{gruss.text}</div>
+        <div className="mt-5 text-sm text-stone-500">{gruss.sub} Antippen zum Schließen.</div>
+      </div></div>}
+    {wahl && <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-40" onClick={() => { setWahl(null); setPin(null); }}>
+      <div className="bg-stone-50 text-stone-900 rounded-[22px] p-6 w-full max-w-xl einblenden" onClick={e => e.stopPropagation()}>
+        <div className="text-center text-2xl font-bold">{wahl.vorname}</div>
+        <div className="text-center text-sm text-stone-500 mb-4">{info(wahl)}</div>
+        {fehl && <div className="mb-4"><Hinweis ton="fehler">{fehl}</Hinweis></div>}
+        {wahl.abwesend ? <p className="text-center text-stone-600">Heute eingetragen: {wahl.abwesend}.</p>
+        : !pin ? <PinFeld onFertig={setPin} />
+        : <div className="flex flex-wrap gap-3">
+          {wahl.status === "aus" && <button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen("kommen")}>▶ Kommen</button>}
+          {wahl.status === "aus" && wahl.plan_beginn && jetzt > hm2min(hm5(wahl.plan_beginn)) + 30 && <button className={`${gross} bg-stone-200`} onClick={() => buchen("nurGehen")}>Gehen<span className="text-sm font-normal">(Kommen vergessen)</span></button>}
+          {wahl.status === "da" && <><button className={`${gross} bg-amber-400`} onClick={() => buchen("pauseStart")}>⏸ Pause</button><button className={`${gross} bg-gold-500 text-white`} onClick={() => buchen("gehen")}>■ Gehen</button></>}
+          {wahl.status === "pause" && <><button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen("pauseEnde")}>▶ Pause Ende</button><button className={`${gross} bg-stone-900 text-white`} onClick={() => buchen("gehen")}>■ Gehen</button></>}
+          {wahl.status === "fertig" && <p className="text-stone-600">Heute schon ausgestempelt. Änderungen bitte bei der Chefin.</p>}
+        </div>}
+      </div>
+    </div>}
+  </div>;
+}
+
 // ─── APP-RAHMEN ───────────────────────────────────────────────────────────────
 const NAV = [
   { id: "dashboard",  label: "Dashboard",     em: "🏠" },
@@ -3198,8 +3655,6 @@ const NAV = [
 function App() {
   const [db, setDb] = useState(ladeDb);
   const [userId, setUserId] = useState(() => { try { return sessionStorage.getItem(SESS_KEY); } catch (e) { return null; } });
-  const [seite, setSeiteRoh] = useState("dashboard");
-  const [navOffen, setNavOffen] = useState(false);
   const [toast, setToast] = useState(null);
   const [, setTick] = useState(0);
   useEffect(() => { try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch (e) { /* ohne Speicher weiter */ } }, [db]);
@@ -3230,13 +3685,21 @@ function App() {
   const aendern = (fn, meldung) => { const n = JSON.parse(JSON.stringify(db)); const r = fn(n); setDb(n); if (meldung || typeof r === "string") setToast(meldung || r); };
   const toastEl = toast && <div className="no-print fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white text-sm px-5 py-3 rounded-full shadow-lg flex items-center gap-2 max-w-[92vw]"><Icon n="haken" className="w-4 h-4 text-emerald-400 shrink-0" />{toast}</div>;
   const user = db.mitarbeiter.find(m => m.id === userId && m.aktiv);
-  function login(id) { try { sessionStorage.setItem(SESS_KEY, id); } catch (e) { } setUserId(id); setSeiteRoh("dashboard"); }
+  function login(id) { try { sessionStorage.setItem(SESS_KEY, id); } catch (e) { } setUserId(id); }
   function logout() { try { sessionStorage.removeItem(SESS_KEY); } catch (e) { } setUserId(null); }
   if (terminal) return <>{<Terminal db={db} aendern={aendern} onEnde={() => setTerminal(false)} />}{toastEl}</>;
   if (!user) return <Login db={db} onLogin={login} onTerminal={() => setTerminal(true)} onEigene={name => { const n = leereDaten(name); setDb(n); login(n.mitarbeiter[0].id); }} />;
 
+  const stempeln = (maId, aktion) => aendern(n => stempelBuchen(n, n.mitarbeiter.find(m => m.id === maId), aktion));
+  return <Rahmen key={user.id} db={db} setDb={setDb} user={user} aendern={aendern} logout={logout} login={login} toastEl={toastEl} stempeln={stempeln} />;
+}
+
+// Oberfläche nach dem Anmelden – gleich für Testversion und echten Betrieb (live)
+function Rahmen({ db, setDb, user, aendern, logout, login, toastEl, stempeln, live, sb }) {
+  const [seite, setSeiteRoh] = useState("dashboard");
+  const [navOffen, setNavOffen] = useState(false);
   const setSeite = s => { setSeiteRoh(s); setNavOffen(false); window.scrollTo(0, 0); };
-  const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite, login };
+  const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite, login, stempeln, live: !!live, sb };
   // Mitarbeiter/innen: einfache Ansicht wie im bisherigen System; Chefin/Leitung: volle Ansicht
   if (!istLeitung(user)) return <EinfachApp ctx={ctx} logout={logout} toastEl={toastEl} />;
   const badges = {
@@ -3281,14 +3744,14 @@ function App() {
       <Avatar name={user.name} klein />
     </header>
     <main className="lg:ml-60 print-full">
-      <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-xs px-4 lg:px-8 py-1.5">{db.eigeneDaten ? "Testbetrieb mit deinen Daten – gespeichert nur in diesem Browser auf diesem Gerät, keine Verbindung zur Datenbank." : "Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank."}</div>
+      {!live && <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-xs px-4 lg:px-8 py-1.5">{db.eigeneDaten ? "Testbetrieb mit deinen Daten – gespeichert nur in diesem Browser auf diesem Gerät, keine Verbindung zur Datenbank." : "Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank."}</div>}
       <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 print-full"><Seite ctx={ctx} /></div>
     </main>
     {toastEl}
   </div>;
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+ReactDOM.createRoot(document.getElementById("root")).render(LIVE ? <LiveApp /> : <App />);
 </script>
 </body>
 </html>
