@@ -3125,7 +3125,6 @@ function EinfachApp({ ctx, logout, toastEl }) {
       </div>
       <nav className="hidden sm:flex max-w-xl mx-auto px-4 gap-1 pb-2">{TABS.map(([k, em, t]) => <button key={k} onClick={() => setTab(k)} className={`flex-1 rounded-full px-3 py-2 text-sm font-semibold border ${tab === k ? "bg-white border-gold-500 text-gold-700" : "border-transparent text-stone-600 hover:bg-white"}`}>{em} {t}</button>)}</nav>
     </header>
-    {true && <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-[11px] px-4 py-1 text-center">Testbetrieb – Daten nur auf diesem Gerät</div>}
     <main className="max-w-xl mx-auto px-4 py-5 space-y-4">
       {tab === "heute" && <>
         <h1 className="text-xl font-bold">Hallo {user.name.split(" ")[0]} 👋</h1>

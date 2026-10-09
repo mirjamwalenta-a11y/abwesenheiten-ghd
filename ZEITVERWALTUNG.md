@@ -130,6 +130,17 @@ Mitarbeiter/innen (Rolle „Mitarbeiter/in“) sehen nur drei Reiter – wie im 
 
 - **Berufsschule & Schulferien Wien:** Der Berufsschul-Planer lässt die Wiener Schulferien automatisch aus (Herbst 26.10.–2.11., 15.11. Leopold, Weihnachten 24.12.–6.1., Semester ab 1. Montag im Februar, Ostern Sa vor Palmsonntag bis Ostermontag, Pfingsten Sa–Mo, Sommer ab Samstag 28.6.–4.7. bis vor dem 1. Montag im September) – jedes Jahr neu berechnet. Schulautonome Tage einzeln stornieren. An Berufsschultagen ist kein Urlaub möglich.
 
+## 4c. Schritt 2 – Datenbank einrichten (Supabase)
+
+Zwei Skripte in `supabase/` (erzeugt aus `zeitverwaltung_schema_entwurf.sql`, der Entwurf bleibt die Quelle):
+
+1. **`zeitverwaltung_schritt2_teilA.sql`** – alle `zeit_*`-Tabellen und -Funktionen. Ändert nichts am Verhalten der Abwesenheiten-App. Prüft vorab das Projekt (abw_team.id = text, ausgeschieden_am, abw_is_owner …) und bricht sonst ohne Änderung ab. Am Ende eine Kontrolltabelle: jede `zeit_*`-Tabelle muss `rls = true` haben.
+2. **`zeitverwaltung_schritt2_teilB.sql`** – Urlaubssperre und Nachrichten (Trigger auf `abw_anfragen`, wirkt auch in der Abwesenheiten-App). Erst nach Teil A.
+
+Beide laufen als eine Transaktion (Fehler → nichts geändert) und sind mehrfach ausführbar. Ausführen: Supabase → SQL Editor → New query → Inhalt einfügen → Run.
+
+Sicherheits-Check (CLAUDE.md): jede neue Tabelle mit RLS; keine anon-Policy; Tabellen ohne Policy nur über SECURITY-DEFINER-Funktionen; Rollenprüfung ausschließlich serverseitig (`abw_is_owner()`, `zeit_darf_verwalten()`); keine Zugangsdaten oder E-Mail-Adressen im SQL. `SICHERHEIT-RLS-CHECK.md` war in den verfügbaren Repos nicht vorhanden – die Punkte wurden anhand der CLAUDE.md-Regeln geprüft.
+
 ## 5. Nächste Schritte
 
 1. Offene Fragen unten klären, Schema anpassen.
