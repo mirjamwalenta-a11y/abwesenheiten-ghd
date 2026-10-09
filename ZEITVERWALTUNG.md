@@ -118,6 +118,10 @@ Live entscheidet das der Server in `zeit_stempeln()` (Tabelle `zeit_stempel_rege
 
 **Automatisch ausstempeln beim Verlassen des Salons** ist bewusst nicht eingebaut: Eine Web-App kann den Standort im Hintergrund nicht verfolgen (dafür bräuchte es eine eigene Handy-App mit dauerhafter Ortung), und laufende Standortüberwachung ist eine Kontrollmaßnahme, die in Österreich die schriftliche Zustimmung jeder Person braucht (§ 10 AVRAG, ohne Betriebsrat) und datenschutzrechtlich heikel ist. Stattdessen: **automatisch ausstempeln** wie bei TimeMoto – wer vergisst zu gehen, bekommt noch am selben Abend das Dienstende laut Plan eingetragen (Standard: 60 Minuten nach Dienstende, einstellbar unter *Einstellungen → Automatik*). Live erledigt das der Server-Job `zeit_automatik` alle 15 Minuten (pg_cron, siehe SQL-Entwurf); nachts läuft er zusätzlich für den Vortag.
 
+## 4a. Einfache Ansicht für Mitarbeiter/innen
+
+Mitarbeiter/innen (Rolle „Mitarbeiter/in“) sehen nur drei Reiter – wie im bisherigen System: **Heute** (Stempeluhr, Plan, Urlaubstage), **Meine Zeiten** (Monatsliste Hinein/Hinaus/Stunden, Tag antippen = Änderung beantragen, Monat bestätigen) und **Urlaub & Krank** (beantragen, krank melden, „Du hast noch … UT“). Chefin und Salonleitung behalten die volle Ansicht.
+
 ## 4b. Urlaub: Sperre je Gruppe und Nachrichten
 
 - **Urlaubssperre:** Aus jeder Gruppe (Stylist/innen, Lehrlinge, Rezeption, Assistenz) darf gleichzeitig nur eine Person Urlaub haben – beantragt oder genehmigt. Die Gruppe steht im Profil („Automatisch“ erkennt Stylist/innen und Lehrlinge an der Funktion). Die Chefin kann trotzdem eintragen. Einstellung: *Einstellungen → Urlaub*. Live: Trigger `zeit_urlaub_sperre` auf `abw_anfragen` (wirkt auch in der Abwesenheiten-App – vorher abstimmen).
