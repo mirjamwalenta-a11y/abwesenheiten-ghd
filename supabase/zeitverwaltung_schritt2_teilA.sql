@@ -1,6 +1,6 @@
 -- ════════════════════════════════════════════════════════════
 --  ZEITVERWALTUNG · SCHRITT 2 · TEIL A – Tabellen und Funktionen
---  Erzeugt aus zeitverwaltung_schema_entwurf.sql (dort wird weiter gepflegt).
+--  Erzeugt aus zeitverwaltung_schema_entwurf.sql mit supabase/erzeugen.py.
 --  Ändert NICHTS am Verhalten der Abwesenheiten-App (nur neue Spalten
 --  an abw_anfragen und ein Protokoll-Trigger bei Austritten).
 --  Läuft als EINE Transaktion: bei einem Fehler wird gar nichts geändert.
@@ -8,7 +8,6 @@
 -- ════════════════════════════════════════════════════════════
 BEGIN;
 
--- Vorab-Prüfung: richtiges Projekt, erwartete Tabellen und Funktionen vorhanden?
 DO $pruef$
 BEGIN
   IF to_regclass('public.abw_team') IS NULL OR to_regclass('public.abw_anfragen') IS NULL THEN
@@ -199,6 +198,8 @@ ALTER TABLE abw_anfragen DROP CONSTRAINT IF EXISTS abw_anfragen_anteil_check;
 ALTER TABLE abw_anfragen ADD CONSTRAINT abw_anfragen_anteil_check CHECK (anteil IN (0.5, 1));
 -- Arztbesuch u. ä. in Stunden: angerechnete Minuten (höchstens die Sollzeit des Tages)
 ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS minuten integer CHECK (minuten > 0);
+ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS zeit_art text;   -- feinere Art: berufsschule, arzt, pflege …
+ALTER TABLE abw_anfragen ADD COLUMN IF NOT EXISTS offen boolean NOT NULL DEFAULT false;  -- Krankenstand ohne Ende
 -- Berufsschultage je Lehrjahr kommen in die bestehende abw_einstellungen,
 -- Schlüssel 'bs_tage_je_lehrjahr', z. B. {"1":1.5,"2":1,"3":1,"4":1} (Wien).
 
@@ -811,7 +812,8 @@ BEGIN
     IF NOT FOUND THEN
       -- jede genehmigte Abwesenheit (auch halbe Tage, Arztbesuch) → nichts automatisch anlegen
       CONTINUE WHEN NOT p_auto_fehltag OR EXISTS (
-        SELECT 1 FROM abw_anfragen WHERE person_id = p.id AND status = 'genehmigt' AND p_datum BETWEEN von AND bis);
+        SELECT 1 FROM abw_anfragen WHERE person_id = p.id AND status = 'genehmigt'
+          AND p_datum BETWEEN von AND CASE WHEN offen THEN 'infinity'::date ELSE bis END);
       INSERT INTO zeit_buchungen (person_id, datum, beginn, ende, pause_min, quelle, auto)
         VALUES (p.id, p_datum, v_plan.beginn, v_plan.ende, v_plan.pause_min, 'auto', ARRAY['tag']);
       INSERT INTO zeit_protokoll (person_id, datum, aktion, grund)
@@ -920,7 +922,7 @@ GRANT EXECUTE ON FUNCTION zeit_stempeln(text, boolean), zeit_plan_am(text, date)
 
 COMMIT;
 
--- ── Kontrolle: alle neuen Tabellen haben RLS (Spalte rls muss überall true sein) ──
+-- ── Kontrolle: alle Tabellen der Zeitverwaltung haben RLS (Spalte rls muss überall true sein) ──
 SELECT c.relname AS tabelle, c.relrowsecurity AS rls
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname LIKE 'zeit\_%'

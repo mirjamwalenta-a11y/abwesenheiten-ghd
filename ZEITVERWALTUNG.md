@@ -141,6 +141,37 @@ Beide laufen als eine Transaktion (Fehler → nichts geändert) und sind mehrfac
 
 Sicherheits-Check (CLAUDE.md): jede neue Tabelle mit RLS; keine anon-Policy; Tabellen ohne Policy nur über SECURITY-DEFINER-Funktionen; Rollenprüfung ausschließlich serverseitig (`abw_is_owner()`, `zeit_darf_verwalten()`); keine Zugangsdaten oder E-Mail-Adressen im SQL. `SICHERHEIT-RLS-CHECK.md` war in den verfügbaren Repos nicht vorhanden – die Punkte wurden anhand der CLAUDE.md-Regeln geprüft.
 
+## 4d. Schritt 3 – echter Betrieb
+
+**Adresse:** `zeitverwaltung.html` = echter Betrieb mit der gemeinsamen Datenbank. `zeitverwaltung.html?test` = Testversion mit Beispieldaten (nur im Browser).
+
+**Anmeldung** wie in der Abwesenheiten-App: Name antippen → PIN (Supabase Auth, Passwort = PIN + „-ghd“). Wer in der Abwesenheiten-App am selben Gerät angemeldet ist, ist es auch hier (gleiche Sitzung).
+
+**Wer darf was** – geprüft am Server, nicht in der App:
+
+| Wer | Sieht | Darf |
+|---|---|---|
+| Mitarbeiter/in | eigene Zeiten, eigenes Profil, eigene + genehmigte Abwesenheiten | stempeln (`zeit_stempeln`), Urlaub/Krank beantragen (Status „ausstehend“), Änderung beantragen, Monat bestätigen |
+| Chefin (`role = owner`) | alles | Zeiten ändern (`zeit_buchung_aendern`, mit Grund), genehmigen, Dienstpläne, Profile, Einstellungen, Monatsabschluss |
+| Stempel-Tablet (`zeit_terminals`) | Vornamen + heutiger Status | stempeln mit PIN (`zeit_terminal_stempeln`) |
+
+**Wie die App speichert:** Jede Änderung in der Oberfläche wird in die erlaubten Schreibwege übersetzt (`liveSpeichern`) – Tabellen mit RLS oder SECURITY-DEFINER-Funktionen – und danach neu geladen; Daten anderer Geräte holt die App jede Minute. Neue Personen und Namensänderungen nur in der Abwesenheiten-App (Name = Login). Einstellungen liegen als ein Datensatz in `abw_einstellungen` (`zeitverwaltung`), Server-Funktionen lesen sie über `zeit_einst()`.
+
+**Automatik** (vergessenes Gehen, ganz vergessene Tage, Pausen mit Vereinbarung): pg_cron-Job `zeit-automatik` alle 15 Minuten, erst ab `kontoStart` (wird bei der ersten Anmeldung der Chefin gesetzt).
+
+**Noch nicht im echten Betrieb:** Hochladen von Bestätigungen (vorerst auf Papier), Excel-Import legt keine Personen an (aktualisiert nur Eintritt/UT/offenen Urlaub).
+
+**Getestet** gegen PostgREST 12 + Postgres 16 mit nachgebildetem Supabase-Auth: Login/PIN, Ersteinrichtung, Profile/Dienstpläne mit fixer Pause, Einstellungen, Stempeln mit Rundung, Urlaubsantrag + Sperre, Genehmigung + Nachrichten, Korrektur, Korrekturantrag, Krankmeldung, Berufsschul-Planung, Außentermin, Startbestand, Tablet mit PIN-Sperre; 12 direkte Angriffe über die REST-Schnittstelle (fremde Daten lesen/ändern, Einstellungen, Nachrichten, Automatik …) werden abgewiesen.
+
+### Einrichten (Chefin)
+1. Supabase → Database → Extensions → **pg_cron** aktivieren.
+2. SQL Editor → `supabase/zeitverwaltung_schritt3_teilC.sql` ausführen (Kontrolle am Ende: alle `rls = true`, Automatik-Job eingerichtet).
+3. `zeitverwaltung.html` öffnen, als Chefin anmelden → Standard-Dienstpläne werden angelegt und allen zugeordnet, Start = heute.
+4. Mitarbeiter → Import (Beschäftigungsstand) oder je Person: Eintritt, offener Urlaub, Funktion; eigene Pausenzeit über „Eigener Plan für diese Person“.
+5. Stempel-Tablet: Supabase → Authentication → Add user (eigene Tablet-Adresse, langes Passwort, „Auto Confirm“), dann im SQL Editor
+   `INSERT INTO zeit_terminals (user_id, name) SELECT id, 'Tablet Empfang' FROM auth.users WHERE email = '<Tablet-Adresse>';`
+   Am Tablet: „Dieses Gerät als Stempel-Tablet einrichten“.
+
 ## 5. Nächste Schritte
 
 1. Offene Fragen unten klären, Schema anpassen.

@@ -1,12 +1,12 @@
 -- ════════════════════════════════════════════════════════════
 --  ZEITVERWALTUNG · SCHRITT 2 · TEIL B – Urlaubssperre + Nachrichten
---  Erzeugt aus zeitverwaltung_schema_entwurf.sql.
---  ACHTUNG: wirkt auch in der Abwesenheiten-App (Trigger auf abw_anfragen):
---  ein zweiter Stylist / Lehrling kann dort nicht mehr gleichzeitig Urlaub
---  beantragen, und bei jedem neuen Antrag entsteht eine Nachricht.
---  Erst NACH Teil A ausführen. Eine Transaktion, mehrfach ausführbar.
+--  Erzeugt aus zeitverwaltung_schema_entwurf.sql mit supabase/erzeugen.py.
+--  ACHTUNG: wirkt auch in der Abwesenheiten-App (Trigger auf abw_anfragen).
+--  Erst NACH Teil A ausführen.
 --  Rückgängig: DROP TRIGGER zeit_urlaub_sperre ON abw_anfragen;
 --              DROP TRIGGER zeit_anfrage_nachricht ON abw_anfragen;
+--  Läuft als EINE Transaktion: bei einem Fehler wird gar nichts geändert.
+--  Mehrfach ausführbar.
 -- ════════════════════════════════════════════════════════════
 BEGIN;
 DO $pruef$ BEGIN
@@ -117,7 +117,7 @@ CREATE TRIGGER zeit_anfrage_nachricht AFTER INSERT OR UPDATE OF status ON abw_an
 
 COMMIT;
 
--- ── Kontrolle: alle neuen Tabellen haben RLS (Spalte rls muss überall true sein) ──
+-- ── Kontrolle: alle Tabellen der Zeitverwaltung haben RLS (Spalte rls muss überall true sein) ──
 SELECT c.relname AS tabelle, c.relrowsecurity AS rls
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname LIKE 'zeit\_%'
