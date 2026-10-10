@@ -42,4 +42,5 @@ REVOKE ALL ON FUNCTION zeit_testdaten_loeschen() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION zeit_testdaten_loeschen() TO authenticated;
 
 
+
 COMMIT;

@@ -179,6 +179,11 @@ Sicherheits-Check (CLAUDE.md): jede neue Tabelle mit RLS; keine anon-Policy; Tab
 - **Starttag** (`kontoStart`): ab dann zählen Zeitkonto und Automatik. Ohne Starttag trägt die Automatik nichts ein.
 - **Testdaten löschen** (`zeit_testdaten_loeschen`, Teil D): löscht alle Arbeitszeiten, Korrekturen, Monatsabschlüsse und Protokolle – nur durch die Chefin und nur vor dem Starttag. Dienstpläne, Profile und Urlaube bleiben.
 
+## 4f. Pausen-Erinnerung und neue Versionen
+
+- **„☕ Es wird Zeit für deine Pause“** für alle, die eingestempelt sind und noch keine Pause hatten – zur fixen Pausenzeit laut Dienstplan („Pause ab“), sonst zu Beginn des Pausenfensters (Standard 11:30–13:30, *Einstellungen → Automatik*). Einmal pro Tag und Person in der 🔔-Glocke (Server-Job `zeit-pausen-erinnerung` alle 5 Minuten, Teil E), dazu groß auf der Stempeluhr und als „☕ Pause fällig“ am Salon-Tablet. Echte Handy-Benachrichtigungen bei geschlossener App (Web-Push) wären ein eigener nächster Schritt.
+- **„✨ Neue Version verfügbar – tippen zum Aktualisieren“** (`ghd-sitzung.js`): vergleicht das Änderungsdatum der geladenen Seite mit der veröffentlichten – beim Öffnen, alle 5 Minuten und beim Zurückkehren in die App.
+
 ## 5. Nächste Schritte
 
 1. Offene Fragen unten klären, Schema anpassen.

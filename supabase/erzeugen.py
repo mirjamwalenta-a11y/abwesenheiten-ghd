@@ -6,8 +6,8 @@ R = pathlib.Path(__file__).resolve().parent.parent
 src = (R / "zeitverwaltung_schema_entwurf.sql").read_text()
 zeilen = src.split("\n")
 def ab(marke): return [i for i, l in enumerate(zeilen) if marke in l][0] - 1
-iB, iC, iD = ab("URLAUBSSPERRE JE GRUPPE + NACHRICHTEN"), ab("SCHRITT 3 – ANBINDUNG DER APP"), ab("SCHRITT 4 – TESTEN BIS ZUM START")
-teilA, teilB, teilC, teilD = "\n".join(zeilen[:iB]), "\n".join(zeilen[iB:iC]), "\n".join(zeilen[iC:iD]), "\n".join(zeilen[iD:])
+iB, iC, iD, iE = ab("URLAUBSSPERRE JE GRUPPE + NACHRICHTEN"), ab("SCHRITT 3 – ANBINDUNG DER APP"), ab("SCHRITT 4 – TESTEN BIS ZUM START"), ab("SCHRITT 5 – PAUSEN-ERINNERUNG")
+teilA, teilB, teilC, teilD, teilE = "\n".join(zeilen[:iB]), "\n".join(zeilen[iB:iC]), "\n".join(zeilen[iC:iD]), "\n".join(zeilen[iD:iE]), "\n".join(zeilen[iE:])
 # Teil C braucht die aktuelle Automatik-Funktion (offene Krankenstände) – aus Teil A übernehmen
 m = re.search(r"DROP FUNCTION IF EXISTS zeit_automatik\(date, boolean, boolean, boolean\);.*?END \$\$;\n", teilA, re.S)
 automatik = m.group(0)
@@ -51,6 +51,10 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') T
             ELSE 'Automatik-Job FEHLT – pg_cron aktivieren und Teil C nochmal ausführen' END AS automatik;
 """
 D = kopf("SCHRITT 4 · TEIL D – Testen bis zum Start", "--  Testdaten vor dem Start löschen (nur Chefin, nur vor dem Starttag).\n--  Erst NACH Teil C ausführen.") + "DO $pruef$ BEGIN\n  IF to_regprocedure('public.zeit_einst(text)') IS NULL THEN RAISE EXCEPTION 'Abbruch: zuerst Teil C ausführen.'; END IF;\nEND $pruef$;\n" + teilD + "\n\nCOMMIT;\n"
-for n, t in [("zeitverwaltung_schritt2_teilA.sql", A), ("zeitverwaltung_schritt2_teilB.sql", B), ("zeitverwaltung_schritt3_teilC.sql", C), ("zeitverwaltung_schritt4_teilD.sql", D)]:
+E = kopf("SCHRITT 5 · TEIL E – Pausen-Erinnerung", "--  Nachricht „Es wird Zeit für deine Pause“ (alle 5 Minuten, pg_cron).\n--  Erst NACH Teil C ausführen.") + "DO $pruef$ BEGIN\n  IF to_regprocedure('public.zeit_einst(text)') IS NULL THEN RAISE EXCEPTION 'Abbruch: zuerst Teil C ausführen.'; END IF;\nEND $pruef$;\n" + teilE + "\n\nCOMMIT;\n" + """
+SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN 'Pausen-Erinnerung eingerichtet (alle 5 Minuten)'
+            ELSE 'Pausen-Erinnerung FEHLT – pg_cron aktivieren und Teil E nochmal ausführen' END AS pausen_erinnerung;
+"""
+for n, t in [("zeitverwaltung_schritt5_teilE.sql", E), ("zeitverwaltung_schritt2_teilA.sql", A), ("zeitverwaltung_schritt2_teilB.sql", B), ("zeitverwaltung_schritt3_teilC.sql", C), ("zeitverwaltung_schritt4_teilD.sql", D)]:
     (R / "supabase" / n).write_text(t)
 print("ok")
