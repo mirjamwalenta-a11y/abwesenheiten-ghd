@@ -47,6 +47,29 @@
   ["pointerdown", "keydown", "touchstart", "wheel"].forEach(function (e) { addEventListener(e, aktiv, { passive: true, capture: true }); });
   setInterval(pruefen, 20000);
   document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") pruefen(); });
+  // Neue Version veröffentlicht? (GitHub hält Seiten bis zu 10 min zwischen, Handys oft länger)
+  // → Hinweis oben „Neue Version – tippen zum Aktualisieren“
+  function hinweis() {
+    if (document.getElementById("ghd-neue-version")) return;
+    var d = document.createElement("button");
+    d.id = "ghd-neue-version";
+    d.textContent = "✨ Neue Version verfügbar – tippen zum Aktualisieren";
+    d.style.cssText = "position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#896C32;color:#fff;border:0;border-radius:999px;padding:10px 18px;font:600 14px/1.2 Poppins,system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:92vw";
+    d.onclick = function () { location.reload(); };
+    (document.body || document.documentElement).appendChild(d);
+  }
+  function versionPruefen() {
+    if (location.protocol !== "https:" && location.hostname !== "127.0.0.1") return;
+    var geladen = Date.parse(document.lastModified);
+    if (!geladen) return;
+    fetch(location.href.split("#")[0], { method: "HEAD", cache: "no-store" }).then(function (r) {
+      var aktuell = Date.parse(r.headers.get("last-modified") || "");
+      if (aktuell && aktuell - geladen > 60000) hinweis();
+    }).catch(function () {});
+  }
+  setTimeout(versionPruefen, 10000);
+  setInterval(versionPruefen, 5 * 60000);
+  document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") versionPruefen(); });
   window.ghdSitzung = {
     minuten: MINUTEN,
     // nur für den gerade angemeldeten Zugang (Stempel-Tablet); meldet sich jemand anderer an, gilt sie nicht mehr

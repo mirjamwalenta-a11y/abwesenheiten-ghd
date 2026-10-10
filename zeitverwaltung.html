@@ -272,6 +272,8 @@ const STANDARD_EINSTELLUNGEN = {
   // Rundung auf den Dienstplan (wie TimeMoto „Rundungen zu festen Zeiten“): Stempelung im Fenster
   // um Plan-Beginn/-Ende zählt als Plan-Zeit; die echte Stempelzeit bleibt gespeichert (roh)
   rundungAn: true, rundBVor: 30, rundBNach: 5, rundEVor: 5, rundENach: 15,
+  // Pausen-Erinnerung „Es wird Zeit für deine Pause“: zur fixen Pausenzeit laut Plan, sonst ab Fensterbeginn
+  pausenErinnerung: true, pausenFensterVon: "11:30", pausenFensterBis: "13:30",
   autoFehltag: true,           // gar nicht gestempelt = Arbeitszeit laut Plan
   ueberstunden: false,         // Überstunden/Mehrarbeit vorgesehen? (fixer Plan: nein)
   planToleranzMin: 15,         // ab so vielen Minuten über Plan gibt es einen Hinweis
@@ -317,6 +319,13 @@ function abschied(db, ma, d = heute()) {
   if (a && a.art === "urlaub") return { em: "🌴", text: "Einen schönen Urlaub!" };
   if (wd(d) === 5) return { em: "☀️", text: "Ein schönes Wochenende!" };
   return { em: "🌙", text: "Einen schönen Abend!" };
+}
+// Pause fällig? Eingestempelt, noch keine Pause, Pausenzeit (fix laut Plan oder Fensterbeginn) erreicht
+function pauseFaellig(db, ma, z, jetzt = nowHM()) {
+  const e = db.einstellungen, plan = planTag(db, ma, heute());
+  if (e.pausenErinnerung === false || !plan?.p || !z || z.ende || z.pauseStart || (z.pause || 0) > 0) return null;
+  const ab = hm2min(plan.pb || e.pausenFensterVon || "11:30"), t = hm2min(jetzt);
+  return t >= ab && t <= ab + 120 ? { text: `Es wird Zeit für deine Pause${plan.pb ? ` (${pauseTxt(plan).replace("Pause ", "")})` : ""}.` } : null;
 }
 // Stempelzeit auf Plan-Beginn bzw. -Ende runden, wenn sie im eingestellten Fenster liegt
 function aufPlanRunden(e, plan, t, art) {
@@ -1203,6 +1212,7 @@ function Terminal({ db, aendern, onEnde }) {
     if (z.ende) return { k: "fertig", text: `${z.beginn}–${z.ende}` };
     if (z.pauseStart) return { k: "pause", text: `Pause seit ${z.pauseStart}` };
     if (kaffeeText(plan)) return { k: "da", text: `☕ da seit ${z.roh?.beginn || z.beginn} · Beginn ${plan.b}` };
+    if (pauseFaellig(db, m, z)) return { k: "da", text: "☕ Pause fällig" };
     return { k: "da", text: `da seit ${z.beginn}` };
   };
   const [gruss, setGruss] = useState(null);
@@ -1303,7 +1313,8 @@ function Stempeluhr({ ctx }) {
       <div><div className="text-lg font-semibold tabular leading-none">{plan ? `${plan.b}–${plan.e}` : fmtH(soll)}</div><div className="text-xs opacity-80 mt-1">Dienstplan</div></div>
       <div><div className="text-lg font-semibold tabular leading-none">{pauseBisher} min</div><div className="text-xs opacity-80 mt-1">Pause{plan?.p ? ` (Plan ${plan.p})` : ""}</div></div>
     </div>
-    {zustand !== "aus" && zustand !== "fertig" && netto > pauseAb - 30 && pauseBisher < db.einstellungen.pauseMin &&
+    {zustand === "arbeit" && pauseFaellig(db, user, z) && <div className="mt-4 rounded-xl bg-white text-stone-900 px-4 py-3 text-[15px] font-semibold flex items-center gap-3"><span className="text-2xl">☕</span>{pauseFaellig(db, user, z).text}</div>}
+    {zustand !== "aus" && zustand !== "fertig" && netto > pauseAb - 30 && pauseBisher < db.einstellungen.pauseMin && !pauseFaellig(db, user, z) &&
       <div className="mt-4 rounded-xl bg-white/15 px-3 py-2.5 text-[13px]">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({kj ? "§ 15 KJBG" : "§ 11 AZG"}).{autoPauseAktiv(db.einstellungen) ? " Wird keine Pause gestempelt, trägt die App beim Gehen die Pause laut Plan ein." : " Bitte die Pause stempeln."}</div>}
     {nurTablet && zustand !== "fertig" ? <div className="mt-5 rounded-xl bg-white/15 px-3 py-2.5 text-[13px] no-print">📍 Ein- und ausstempeln bitte am <b>Salon-Tablet</b>. Vergessene Zeiten trägt die App automatisch laut Dienstplan ein.</div> :
     <div className="mt-5 flex flex-wrap items-center gap-2 no-print">
@@ -3038,6 +3049,13 @@ function Einstellungen({ ctx }) {
             <p className="sm:col-span-2 text-xs text-stone-500">Beispiel Plan 09:00–18:00: gestempelt 08:30 (Kaffee, um pünktlich arbeitsbereit zu sein) → zählt ab 09:00; gestempelt 17:56 oder 18:12 → zählt bis 18:00. Muss jemand ausnahmsweise wirklich früher anfangen, weil schon Kundschaft da ist, ist das Arbeitszeit – dann bitte als Korrektur eintragen.</p>
           </div>}
         </div>
+        <div className="md:col-span-2 rounded-xl border border-stone-200 p-3">
+          <label className="flex items-start gap-3 text-sm"><input type="checkbox" className="mt-1" disabled={!admin} checked={e.pausenErinnerung !== false} onChange={ev => setE("pausenErinnerung", ev.target.checked)} />
+            <span><span className="font-medium">Pausen-Erinnerung „☕ Es wird Zeit für deine Pause“</span><span className="block text-xs text-stone-500">für alle, die eingestempelt sind und noch keine Pause hatten: zur fixen Pausenzeit laut Dienstplan – sonst zu Beginn des Pausenfensters. Erscheint in der 🔔-Glocke, auf der Stempeluhr und am Salon-Tablet.</span></span></label>
+          {e.pausenErinnerung !== false && <div className="mt-3 flex flex-wrap items-center gap-2 text-sm"><span className="font-medium">Pausenfenster (ohne fixe Pause):</span>
+            <input type="time" className={`${inputKlein} py-1`} disabled={!admin} value={e.pausenFensterVon || "11:30"} onChange={ev => setE("pausenFensterVon", ev.target.value)} /><span>–</span>
+            <input type="time" className={`${inputKlein} py-1`} disabled={!admin} value={e.pausenFensterBis || "13:30"} onChange={ev => setE("pausenFensterBis", ev.target.value)} /></div>}
+        </div>
         <Feld label="Automatisch ausstempeln nach (Minuten nach Dienstende)" hilfe="Bleibt jemand ausnahmsweise länger, bitte vorher ausstempeln oder die Zeit danach korrigieren."><input type="number" min="0" className={inputCls} disabled={!admin || !e.autoGehen} value={e.autoGehenNachMin ?? 60} onChange={ev => setE("autoGehenNachMin", Math.max(0, +ev.target.value || 0))} /></Feld>
         <Feld label="Hinweis ab (Minuten über Plan)"><input type="number" className={inputCls} disabled={!admin} value={e.planToleranzMin} onChange={ev => setE("planToleranzMin", +ev.target.value)} /></Feld>
       </div>
@@ -3633,7 +3651,7 @@ function LiveTerminal({ sb, onAbmelden }) {
   useEffect(() => { if (!gruss) return; const t = setTimeout(() => setGruss(null), 7000); return () => clearTimeout(t); }, [gruss]);
   const d = heute(), jetzt = hm2min(nowHM());
   const info = p => p.abwesend ? p.abwesend : p.status === "aus" ? (p.plan_beginn ? `Plan ${hm5(p.plan_beginn)}–${hm5(p.plan_ende)}` : "heute frei")
-    : p.status === "fertig" ? "schon gegangen" : p.status === "pause" ? `Pause seit ${hm5(p.seit)}` : p.plan_beginn && jetzt < hm2min(hm5(p.plan_beginn)) ? `☕ da seit ${hm5(p.seit)} · Beginn ${hm5(p.plan_beginn)}` : `da seit ${hm5(p.seit)}`;
+    : p.status === "fertig" ? "schon gegangen" : p.status === "pause" ? `Pause seit ${hm5(p.seit)}` : p.pause_faellig ? "☕ Pause fällig" : p.plan_beginn && jetzt < hm2min(hm5(p.plan_beginn)) ? `☕ da seit ${hm5(p.seit)} · Beginn ${hm5(p.plan_beginn)}` : `da seit ${hm5(p.seit)}`;
   async function buchen(aktion) {
     const p = wahl; setFehl(null);
     try {
@@ -3748,7 +3766,7 @@ function App() {
 function Rahmen({ db, setDb, user, aendern, logout, login, toastEl, stempeln, live, sb }) {
   const [seite, setSeiteRoh] = useState("dashboard");
   const [navOffen, setNavOffen] = useState(false);
-  const setSeite = s => { setSeiteRoh(s); setNavOffen(false); window.scrollTo(0, 0); };
+  const setSeite = s => { setSeiteRoh(NAV.some(n => n.id === s) ? s : "dashboard"); setNavOffen(false); window.scrollTo(0, 0); };
   const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite, login, stempeln, live: !!live, sb };
   // Mitarbeiter/innen: einfache Ansicht wie im bisherigen System; Chefin/Leitung: volle Ansicht
   if (!istLeitung(user)) return <EinfachApp ctx={ctx} logout={logout} toastEl={toastEl} />;
