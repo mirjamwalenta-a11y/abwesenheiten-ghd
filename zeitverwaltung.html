@@ -287,7 +287,9 @@ const STANDARD_EINSTELLUNGEN = {
 };
 
 // ─── BERECHNUNGEN ─────────────────────────────────────────────────────────────
-function modellVon(db, ma) { return db.modelle.find(m => m.id === ma.modellId) || db.modelle[0]; }
+// Noch gar kein Arbeitszeitmodell angelegt (Ersteinrichtung durch die Chefin fehlt) → leeres Modell statt Absturz
+const KEIN_MODELL = { id: "", name: "noch kein Dienstplan", tage: [0, 0, 0, 0, 0, 0, 0], plan: null };
+function modellVon(db, ma) { return db.modelle.find(m => m.id === ma.modellId) || db.modelle[0] || KEIN_MODELL; }
 function wochenStd(modell) { return modell.tage.reduce((s, h) => s + (+h || 0), 0); }
 function tageProWoche(modell) { return modell.tage.filter(h => +h > 0).length; }
 function beschaeftigt(ma, d) { return (!ma.eintritt || d >= ma.eintritt) && (!ma.austritt || d <= ma.austritt); }
@@ -3304,6 +3306,11 @@ const artTyp = art => art === "urlaub" ? "urlaub" : KRANK_ARTEN.includes(art) ? 
 const AKTION_RPC = { kommen: "kommen", pauseStart: "pause_start", pauseEnde: "pause_ende", gehen: "gehen", nurGehen: "nur_gehen" };
 
 // Alle Daten, die die angemeldete Person sehen darf, ins Format der Oberfläche bringen
+// abw_einstellungen.wert ist eine text-Spalte: JSON kommt als Text zurück (teils doppelt verpackt)
+function einstWert(w) {
+  for (let i = 0; i < 3 && typeof w === "string"; i++) { try { w = JSON.parse(w); } catch (e) { return {}; } }
+  return w && typeof w === "object" && !Array.isArray(w) ? w : {};
+}
 async function liveLaden(sb) {
   const vonJ = `${new Date().getFullYear() - 1}-01-01`, h = heute();
   const [team, profile, modelle, tage, zuo, buch, anfr, korr, abs, prot, verl, nachr, aussen, einst] = await Promise.all([
@@ -3369,7 +3376,7 @@ async function liveLaden(sb) {
     personalLog: verl.map(v => ({ id: String(v.id), am: v.am, von: v.von_person, maId: v.person_id, aktion: v.aktion, details: v.details })),
     nachrichten: nachr.map(x => ({ id: String(x.id), an: x.an_person, am: x.erstellt_am, text: x.text, seite: x.seite, gelesen: !!x.gelesen_am })),
     aussentermine: aussen.map(x => ({ id: `${x.person_id}|${x.datum}`, maId: x.person_id, datum: x.datum, notiz: x.notiz || "" })),
-    einstellungen: { ...STANDARD_EINSTELLUNGEN, ...(einst[0]?.wert || {}) },
+    einstellungen: { ...STANDARD_EINSTELLUNGEN, ...einstWert(einst[0]?.wert) },
   };
   return { db, ohnePlan };
 }
