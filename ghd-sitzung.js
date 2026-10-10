@@ -7,6 +7,9 @@
 // Einbinden im <head> VOR den App-Skripten:
 //   <script src="https://mirjamwalenta-a11y.github.io/abwesenheiten-ghd/ghd-sitzung.js"></script>
 // Ausnahme Stempel-Tablet: window.ghdSitzung.keinAutoAbmelden(true)
+// Apps mit eigener Anmeldung (zusätzlich zu Supabase) geben ihre Speicher-Schlüssel an,
+// die beim Abmelden gelöscht werden (localStorage und sessionStorage):
+//   <script src="…/ghd-sitzung.js" data-schluessel="meine-app-session,meine-app-user"></script>
 // ============================================================
 (function () {
   var MINUTEN = 15;
@@ -14,15 +17,24 @@
   var SB_URL = "https://wrxlaltgtgkdomklgrlj.supabase.co";
   var SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndyeGxhbHRndGdrZG9ta2xncmxqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNDYwMzYsImV4cCI6MjA5OTgyMjAzNn0.Bw8ch-EJb_cLYTwxHdpjUJWgoCjje3Jc32pB0yiBS8g"; // öffentlicher anon-Schlüssel
   var TOKEN = "sb-wrxlaltgtgkdomklgrlj-auth-token";
+  var skript = document.currentScript;
+  var EIGENE = ((skript && skript.getAttribute("data-schluessel")) || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean);
   function ls(k, v) {
     try {
       if (v === undefined) return localStorage.getItem(k);
       if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v);
     } catch (e) { return null; }
   }
+  function eigeneAngemeldet() {
+    for (var i = 0; i < EIGENE.length; i++) {
+      try { if (localStorage.getItem(EIGENE[i]) || sessionStorage.getItem(EIGENE[i])) return true; } catch (e) { /* egal */ }
+    }
+    return false;
+  }
   function abmelden() {
     var roh = ls(TOKEN);
     ls(TOKEN, null); ls(KEY, null);
+    EIGENE.forEach(function (k) { ls(k, null); try { sessionStorage.removeItem(k); } catch (e) { /* egal */ } });
     try { sessionStorage.clear(); } catch (e) { /* egal */ }
     // Sitzung auch am Server beenden (Refresh-Token ungültig machen)
     try {
@@ -34,7 +46,7 @@
   }
   function nutzerId() { try { var t = JSON.parse(ls(TOKEN) || "null"); return (t && t.user && t.user.id) || null; } catch (e) { return null; } }
   function pruefen() {
-    if (!ls(TOKEN)) return;
+    if (!ls(TOKEN) && !eigeneAngemeldet()) return;
     if (ls(AUSNAHME) && ls(AUSNAHME) === nutzerId()) return; // angemeldet ist der Tablet-Zugang
     if (ls(AUSNAHME)) ls(AUSNAHME, null);                   // jemand anderer → Ausnahme gilt nicht mehr
     var letzte = +ls(KEY) || 0;
