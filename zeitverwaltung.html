@@ -5,6 +5,7 @@
   <!-- Prototyp: verbindet sich bewusst mit KEINER Datenbank (connect-src 'self').
        Erst wenn zeitverwaltung_schema_entwurf.sql inkl. RLS steht, wird Supabase angebunden. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; connect-src 'self' https://wrxlaltgtgkdomklgrlj.supabase.co wss://wrxlaltgtgkdomklgrlj.supabase.co; font-src 'self' data: https://fonts.gstatic.com; base-uri 'self'; form-action 'self'"/>
+  <script src="ghd-sitzung.js"></script>  <!-- automatisch abmelden nach 15 min ohne Bedienung -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="theme-color" content="#F8F4EA">
   <title>Zeitverwaltung · Great Hair Day</title>
@@ -3521,7 +3522,7 @@ function LiveApp() {
     document.addEventListener("visibilitychange", sicht);
     return () => { clearInterval(t); document.removeEventListener("visibilitychange", sicht); };
   }, [phase]);
-  async function abmelden() { await sb.auth.signOut(); setDb(null); setIchId(null); setPhase("login"); }
+  async function abmelden() { window.ghdSitzung?.keinAutoAbmelden(false); await sb.auth.signOut(); setDb(null); setIchId(null); setPhase("login"); }
   const toastEl = toast && <div className="no-print fixed bottom-20 sm:bottom-4 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white text-sm px-5 py-3 rounded-full shadow-lg flex items-center gap-2 max-w-[92vw]">{toast}</div>;
   if (phase === "start" || phase === "laden") return <div className="min-h-screen flex items-center justify-center text-stone-500 text-sm">Lade Zeitverwaltung …</div>;
   if (phase === "terminal") return <LiveTerminal sb={sb} onAbmelden={abmelden} />;
@@ -3625,6 +3626,8 @@ function LiveTerminal({ sb, onAbmelden }) {
   const [uhr, setUhr] = useState(nowHM());
   const [ende, setEnde] = useState(false);
   const holen = () => sbq(sb.rpc("zeit_terminal_liste")).then(setListe).catch(e => setFehl(e.message));
+  // Das Stempel-Tablet bleibt angemeldet (kein automatisches Abmelden nach 15 min)
+  useEffect(() => { window.ghdSitzung?.keinAutoAbmelden(true); }, []);
   useEffect(() => { holen(); const t = setInterval(() => { setUhr(nowHM()); holen(); }, 30000); const u = setInterval(() => setUhr(nowHM()), 5000); return () => { clearInterval(t); clearInterval(u); }; }, []);
   useEffect(() => { if (!wahl) return; const t = setTimeout(() => { setWahl(null); setPin(null); }, 45000); return () => clearTimeout(t); }, [wahl]);
   useEffect(() => { if (!gruss) return; const t = setTimeout(() => setGruss(null), 7000); return () => clearTimeout(t); }, [gruss]);
