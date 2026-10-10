@@ -75,10 +75,20 @@ BEGIN
   RETURN n;
 END $$;
 
+-- abw_einstellungen.wert ist eine text-Spalte (die App speichert JSON als Text, teils doppelt
+-- verpackt als JSON-String). to_jsonb() + Auspacken funktioniert für text und jsonb gleich.
 CREATE OR REPLACE FUNCTION zeit_einst(p_key text) RETURNS jsonb
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
-  SELECT wert -> p_key FROM abw_einstellungen WHERE schluessel = 'zeitverwaltung';
-$$;
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE w jsonb; i int := 0;
+BEGIN
+  SELECT to_jsonb(wert) INTO w FROM abw_einstellungen WHERE schluessel = 'zeitverwaltung';
+  WHILE jsonb_typeof(w) = 'string' AND i < 3 LOOP
+    BEGIN w := (w #>> '{}')::jsonb; EXCEPTION WHEN others THEN RETURN NULL; END;
+    i := i + 1;
+  END LOOP;
+  IF jsonb_typeof(w) <> 'object' THEN RETURN NULL; END IF;
+  RETURN w -> p_key;
+END $$;
 REVOKE ALL ON FUNCTION zeit_einst(text) FROM anon, public;
 GRANT EXECUTE ON FUNCTION zeit_einst(text) TO authenticated;
 
