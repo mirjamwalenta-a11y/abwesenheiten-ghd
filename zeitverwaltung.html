@@ -2924,6 +2924,22 @@ function SalonWlan({ ctx }) {
 }
 
 // Außentermine: an diesen Tagen darf die Person überall am Handy stempeln (z. B. Hochzeit)
+// Einstellungen: NFC-Aufkleber / QR-Code an der Tür
+function SchnellStempelnKarte() {
+  const [kopiert, setKopiert] = useState(false);
+  const kopieren = () => navigator.clipboard?.writeText(SCHNELL_URL).then(() => { setKopiert(true); setTimeout(() => setKopiert(false), 2500); });
+  return <div className="mt-5 border-t border-stone-100 pt-4">
+    <div className="text-sm font-semibold">📲 Schnell-Stempeln an der Tür (NFC & QR)</div>
+    <p className="text-xs text-stone-500 mt-0.5">Handy an den NFC-Aufkleber halten oder den QR-Code scannen: Wer noch nicht da ist, wird <b>eingecheckt</b>, wer da ist, <b>ausgecheckt</b>. Es gelten dieselben Regeln wie oben (Salon-WLAN, freie Tage).</p>
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <code className="text-xs bg-stone-100 rounded-lg px-2 py-1.5 break-all">{SCHNELL_URL}</code>
+      <button className="text-xs rounded-full border border-stone-300 px-3 py-1.5 hover:bg-stone-50" onClick={kopieren}>{kopiert ? "✓ kopiert" : "Link kopieren"}</button>
+      <a className="text-xs rounded-full bg-stone-900 text-white px-3 py-1.5" href="stempel-qr.html" target="_blank" rel="noopener">🖨️ QR-Code zum Ausdrucken</a>
+    </div>
+    <p className="text-xs text-stone-500 mt-2"><b>NFC-Aufkleber beschreiben:</b> kostenlose App „NFC Tools“ öffnen → „Schreiben“ → „Datensatz hinzufügen“ → „URL / URI“ → den Link oben einfügen → „Schreiben“ → Handy an den Aufkleber halten. Fertig.</p>
+  </div>;
+}
+
 function AussenTermine({ ctx }) {
   const { db, user, aendern } = ctx;
   const admin = istAdmin(user);
@@ -3023,6 +3039,7 @@ function Einstellungen({ ctx }) {
           <span><span className="font-medium">{t}</span><span className="block text-xs text-stone-500">{h}</span></span></label>)}
       </div>
       {e.stempelOrt === "salon" && ctx.live && <SalonWlan ctx={ctx} />}
+      {admin && <SchnellStempelnKarte />}
       {e.stempelOrt === "salon" && !ctx.live && <div className="mt-4 flex flex-wrap items-end gap-3">
         <div className="text-sm">{e.salonOrt ? <>Salon-Standort gespeichert <span className="text-stone-500">({e.salonOrt.lat.toFixed(4)}, {e.salonOrt.lng.toFixed(4)})</span></> : <span className="text-rose-700 font-medium">Salon-Standort fehlt noch – solange kann am Handy niemand stempeln.</span>}</div>
         {admin && <button className="rounded-full bg-stone-900 text-white text-sm font-semibold px-4 py-2" onClick={() => standortHolen().then(p => aendern(n => { n.einstellungen.salonOrt = { lat: p.lat, lng: p.lng }; }, "Salon-Standort gespeichert")).catch(err => alert(err.message))}>📍 Ich bin im Salon – Standort speichern</button>}
@@ -3527,6 +3544,47 @@ async function liveStempeln(sb, db, ma, aktion) {
   return aktion === "pauseStart" ? `${vn}: Pause ab ${nowHM()}` : `${vn}: Pause beendet`;
 }
 
+// ─── SCHNELL-STEMPELN (NFC-Aufkleber / QR-Code an der Tür) ───────────────────
+// zeitverwaltung.html?stempeln=1 → ist die Person noch nicht da: Kommen, sonst Gehen.
+// Der Server prüft wie immer Salon-WLAN und freien Tag. Liegt das letzte Stempeln
+// keine 10 Minuten zurück, wird nachgefragt (versehentlich zweimal hingehalten).
+const SCHNELL = /[?&]stempeln\b/.test(location.search);
+const SCHNELL_URL = "https://mirjamwalenta-a11y.github.io/abwesenheiten-ghd/zeitverwaltung.html?stempeln=1";
+function SchnellStempeln({ db, user, stempelnRoh, onFertig }) {
+  const d = heute(), z = zeitAm(db, user.id, d), vn = user.name.split(" ")[0];
+  const zustand = !z ? "aus" : z.ende ? "fertig" : "da";
+  const aktion = zustand === "aus" ? "kommen" : "gehen";
+  const seitMin = z ? hm2min(nowHM()) - hm2min(z.roh?.beginn || z.beginn) : 999;
+  const [stand, setStand] = useState(zustand === "fertig" ? "fertig" : zustand === "da" && seitMin < 10 ? "frage" : "laeuft");
+  const [ergebnis, setErgebnis] = useState(null);
+  const lief = useRef(false);
+  async function los() {
+    if (lief.current) return; lief.current = true; setStand("laeuft");
+    try {
+      await stempelnRoh(user.id, aktion);
+      if (aktion === "kommen") { const k = kaffeeText(planTag(db, user, d)); setErgebnis({ em: k ? "☕" : "👋", titel: `${k ? "Guten Morgen" : "Hallo"} ${vn}!`, text: k || `Eingecheckt um ${nowHM()}.` }); }
+      else { const ab = abschied(db, user, d); setErgebnis({ em: ab.em, titel: `Danke ${vn}!`, text: `Ausgecheckt um ${nowHM()}. ${ab.text}` }); }
+      setStand("ok");
+    } catch (e) { setErgebnis({ em: "⚠️", titel: "Nicht gestempelt", text: e.message }); setStand("fehler"); }
+  }
+  useEffect(() => { if (stand === "laeuft") los(); }, []);
+  useEffect(() => { if (stand !== "ok") return; const t = setTimeout(onFertig, 8000); return () => clearTimeout(t); }, [stand]);
+  const knopf = "w-full rounded-full py-4 text-lg font-bold";
+  return <div className="min-h-screen bg-stone-50 flex items-center justify-center p-6"><div className="w-full max-w-sm text-center">
+    {stand === "laeuft" && <><div className="text-5xl">⏱️</div><p className="mt-4 text-stone-600">{aktion === "kommen" ? "Stemple Kommen …" : "Stemple Gehen …"}</p></>}
+    {stand === "frage" && <><div className="text-5xl">🤔</div><h1 className="mt-4 text-xl font-bold">Du hast dich gerade erst eingecheckt</h1>
+      <p className="mt-2 text-stone-600">Seit {z.roh?.beginn || z.beginn} da. Wirklich schon <b>gehen</b>?</p>
+      <div className="mt-6 space-y-3"><button className={`${knopf} bg-gold-500 text-white`} onClick={los}>Ja, Gehen stempeln</button>
+        <button className={`${knopf} bg-white border border-stone-200`} onClick={onFertig}>Nein, zurück</button></div></>}
+    {stand === "fertig" && <><div className="text-5xl">✅</div><h1 className="mt-4 text-xl font-bold">Heute schon ausgestempelt</h1>
+      <p className="mt-2 text-stone-600">{z.beginn}–{z.ende}. Änderungen bitte bei der Chefin.</p>
+      <button className={`${knopf} mt-6 bg-white border border-stone-200`} onClick={onFertig}>Zur Übersicht</button></>}
+    {(stand === "ok" || stand === "fehler") && ergebnis && <><div className="text-6xl">{ergebnis.em}</div><h1 className="mt-4 text-2xl font-bold">{ergebnis.titel}</h1>
+      <p className="mt-2 text-lg text-stone-700">{ergebnis.text}</p>
+      <button className={`${knopf} mt-6 ${stand === "ok" ? "bg-gold-500 text-white" : "bg-white border border-stone-200"}`} onClick={onFertig}>{stand === "ok" ? "Fertig" : "Zur Übersicht"}</button></>}
+  </div></div>;
+}
+
 function LiveApp() {
   const sb = useMemo(() => window.supabase.createClient(SB_URL, SB_KEY), []);
   const [phase, setPhase] = useState("start"); // start | login | laden | app | terminal
@@ -3534,10 +3592,12 @@ function LiveApp() {
   const [ichId, setIchId] = useState(null);
   const [fehler, setFehler] = useState(null);
   const [toast, setToast] = useState(null);
+  const [schnell, setSchnell] = useState(SCHNELL);
   const dbRef = useRef(null); dbRef.current = db;
   const speichert = useRef(0);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 4000); return () => clearTimeout(t); }, [toast]);
   const neuLaden = () => liveLaden(sb).then(r => setDb(r.db));
+  function schnellFertig() { setSchnell(false); try { history.replaceState(null, "", location.pathname); } catch (e) {} neuLaden().catch(() => {}); }
   async function nachAnmeldung() {
     setFehler(null);
     const { data: { session } } = await sb.auth.getSession();
@@ -3580,6 +3640,7 @@ function LiveApp() {
     try { setToast(await liveStempeln(sb, db, ma, aktion)); } finally { neuLaden().catch(() => {}); }
   };
   if (!istAdmin(user) && !zeitFreigegeben(db)) return <StartBald db={db} user={user} onAbmelden={abmelden} />;
+  if (schnell) return <SchnellStempeln db={db} user={user} stempelnRoh={(maId, aktion) => liveStempeln(sb, db, db.mitarbeiter.find(m => m.id === maId), aktion)} onFertig={schnellFertig} />;
   return <Rahmen key={user.id} db={db} setDb={setDb} user={user} aendern={aendern} logout={abmelden} login={() => {}} toastEl={toastEl} stempeln={stempeln} live sb={sb} />;
 }
 
