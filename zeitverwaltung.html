@@ -358,7 +358,11 @@ function jugendlich(ma, d) { return ma.geburtsdatum ? dienstjahre(ma.geburtsdatu
 function pauseFehlt(db, ma, z) {
   const e = db.einstellungen;
   if (!z || !z.ende) return false;
-  return nettoMin(z) > (jugendlich(ma, z.datum) ? e.kjbgPauseAbMin : e.pauseAbMin) && (z.pause || 0) < e.pauseMin;
+  // gesetzlich nötig (§ 11 AZG / § 15 KJBG) …
+  if (nettoMin(z) > (jugendlich(ma, z.datum) ? e.kjbgPauseAbMin : e.pauseAbMin) && (z.pause || 0) < e.pauseMin) return true;
+  // … oder Pause laut Dienstplan nicht (ganz) gestempelt – außer bei sehr kurzen Tagen (unter 3 h, z. B. krank heimgegangen)
+  const plan = planTag(db, ma, z.datum);
+  return (z.pause || 0) < (+plan?.p || 0) && hm2min(z.ende) - hm2min(z.beginn) >= 180;
 }
 function oeffnung(db, d) { return (db.einstellungen.oeffnungszeiten || [])[wd(d)] || null; }
 // Liegt ein Dienstplan-Tag außerhalb der Öffnungszeiten?
