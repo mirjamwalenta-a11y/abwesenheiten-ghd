@@ -111,7 +111,12 @@ function standortHolen() {
   });
 }
 // Außentermin (z. B. Hochzeit): an diesem Tag darf die Person überall am Handy stempeln
-function aussenterminAm(db, maId, d) { return (db.aussentermine || []).find(x => x.maId === maId && x.datum === d); }
+// Freigaben der Chefin für einen Tag: „aussen“ = Außentermin (Handy überall), „einspringen“ = freier Tag freigegeben
+function freigabeAm(db, maId, d) { return (db.aussentermine || []).find(x => x.maId === maId && x.datum === d); }
+function aussenterminAm(db, maId, d) { const f = freigabeAm(db, maId, d); return f && (f.art || "aussen") === "aussen" ? f : undefined; }
+// Freier Tag laut Dienstplan (z. B. So + Mo geschlossen) oder Feiertag – ohne Freigabe kein Einstempeln
+function tagGesperrt(db, ma, d) { return (!planTag(db, ma, d) || !!feiertag(d)) && !freigabeAm(db, ma.id, d); }
+const TEXT_FREI_GESPERRT = "Heute ist laut Dienstplan frei – einstempeln geht nur, wenn die Chefin den Tag freigibt.";
 // Handy-Stempeln erlaubt? Liefert null (ok) oder einen Hinweistext.
 // Im Test nur per GPS (fälschbar) – live entscheidet der Server anhand des Salon-WLANs.
 async function handyStempelnPruefen(e) {
@@ -697,6 +702,7 @@ function automatik(n) {
 function stempelBuchen(n, ma, aktion) {
   const d = heute(), t = nowHM(), plan = planTag(n, ma, d), vn = ma.name.split(" ")[0];
   let x = n.zeiten.find(q => q.maId === ma.id && q.datum === d);
+  if ((aktion === "kommen" || aktion === "nurGehen") && !x && tagGesperrt(n, ma, d)) return `⚠️ ${TEXT_FREI_GESPERRT}`;
   if (aktion === "kommen") {
     const b = aufPlanRunden(n.einstellungen, plan, t, "b");
     n.zeiten.push({ id: uid(), maId: ma.id, datum: d, beginn: b, ende: null, pause: 0, pauseStart: null, quelle: "stempel", ...(b !== t ? { roh: { beginn: t } } : {}) });
@@ -1210,7 +1216,8 @@ function Terminal({ db, aendern, onEnde }) {
   const status = m => {
     const z = zeitAm(db, m.id, d), a = abwAm(db, m.id, d), plan = planTag(db, m, d);
     if (a && !teilTag(a)) return { k: "abw", text: ARTEN[a.art].label, a };
-    if (!z) return { k: "aus", text: plan ? `Plan ${plan.b}–${plan.e}` : "heute frei", plan };
+    if (!z && tagGesperrt(db, m, d)) return { k: "gesperrt", text: "heute frei" };
+    if (!z) return { k: "aus", text: plan ? `Plan ${plan.b}–${plan.e}` : freigabeAm(db, m.id, d) ? "heute freigegeben" : "heute frei", plan };
     if (z.ende) return { k: "fertig", text: `${z.beginn}–${z.ende}` };
     if (z.pauseStart) return { k: "pause", text: `Pause seit ${z.pauseStart}` };
     if (kaffeeText(plan)) return { k: "da", text: `☕ da seit ${z.roh?.beginn || z.beginn} · Beginn ${plan.b}` };
@@ -1228,7 +1235,7 @@ function Terminal({ db, aendern, onEnde }) {
     if (kaffee) setGruss({ em: "☕", titel: `Guten Morgen ${vn}!`, text: kaffee, sub: "Du bist eingecheckt." });
     if (tschuess) setGruss({ em: tschuess.em, titel: `Danke ${vn}!`, text: tschuess.text, sub: "Du bist ausgecheckt." });
   }
-  const farbe = { da: "bg-emerald-400", pause: "bg-amber-400", aus: "bg-stone-500", fertig: "bg-stone-300", abw: "bg-sky-300" };
+  const farbe = { da: "bg-emerald-400", pause: "bg-amber-400", aus: "bg-stone-500", fertig: "bg-stone-300", abw: "bg-sky-300", gesperrt: "bg-stone-300" };
   const gross = "flex-1 min-w-[9rem] rounded-full py-5 text-xl font-bold flex items-center justify-center gap-2";
   const m = wahl && db.mitarbeiter.find(x => x.id === wahl), st = m && status(m);
   return <div className="min-h-screen bg-stone-50 text-stone-900 flex flex-col">
@@ -1266,6 +1273,7 @@ function Terminal({ db, aendern, onEnde }) {
           <PinFeld dunkel onFertig={() => setPinOk(true)} />
           <p className="text-center text-xs text-stone-400 mt-4">Demo: jede 4-stellige PIN. Live prüft der Server – nach 5 falschen PINs 15 Minuten Sperre.</p>
         </div> : <div className="mt-6 flex flex-wrap gap-3">
+          {st.k === "gesperrt" && <p className="text-stone-600">🔒 {TEXT_FREI_GESPERRT}</p>}
           {st.k === "aus" && <button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen(m, "kommen")}><Icon n="play" className="w-6 h-6" />Kommen</button>}
           {st.k === "aus" && st.plan && hm2min(nowHM()) > hm2min(st.plan.b) + 30 && <button className={`${gross} bg-stone-200`} onClick={() => buchen(m, "nurGehen")}>Gehen<span className="text-sm font-normal">(Kommen vergessen)</span></button>}
           {st.k === "da" && <><button className={`${gross} bg-amber-400`} onClick={() => buchen(m, "pauseStart")}><Icon n="pause" className="w-6 h-6" />Pause</button>
@@ -1294,6 +1302,7 @@ function Stempeluhr({ ctx }) {
   const [pruefung, setPruefung] = useState(null); // null | "laeuft" | Hinweistext
   const aussen = aussenterminAm(db, user.id, d);
   const nurTablet = !aussen && (db.einstellungen.stempelOrt || "tablet") === "tablet";
+  const freiGesperrt = zustand === "aus" && tagGesperrt(db, user, d);
   async function stempel(aktion) {
     setPruefung("laeuft");
     let grund = null;
@@ -1318,7 +1327,8 @@ function Stempeluhr({ ctx }) {
     {zustand === "arbeit" && pauseFaellig(db, user, z) && <div className="mt-4 rounded-xl bg-white text-stone-900 px-4 py-3 text-[15px] font-semibold flex items-center gap-3"><span className="text-2xl">☕</span>{pauseFaellig(db, user, z).text}</div>}
     {zustand !== "aus" && zustand !== "fertig" && netto > pauseAb - 30 && pauseBisher < db.einstellungen.pauseMin && !pauseFaellig(db, user, z) &&
       <div className="mt-4 rounded-xl bg-white/15 px-3 py-2.5 text-[13px]">Spätestens nach {fmtH(pauseAb)} h Arbeit sind {db.einstellungen.pauseMin} min Pause Pflicht ({kj ? "§ 15 KJBG" : "§ 11 AZG"}).{autoPauseAktiv(db.einstellungen) ? " Wird keine Pause gestempelt, trägt die App beim Gehen die Pause laut Plan ein." : " Bitte die Pause stempeln."}</div>}
-    {nurTablet && zustand !== "fertig" ? <div className="mt-5 rounded-xl bg-white/15 px-3 py-2.5 text-[13px] no-print">📍 Ein- und ausstempeln bitte am <b>Salon-Tablet</b>. Vergessene Zeiten trägt die App automatisch laut Dienstplan ein.</div> :
+    {freiGesperrt ? <div className="mt-5 rounded-xl bg-white/15 px-3 py-2.5 text-[13px] no-print">🔒 {TEXT_FREI_GESPERRT}</div> :
+    nurTablet && zustand !== "fertig" ? <div className="mt-5 rounded-xl bg-white/15 px-3 py-2.5 text-[13px] no-print">📍 Ein- und ausstempeln bitte am <b>Salon-Tablet</b>. Vergessene Zeiten trägt die App automatisch laut Dienstplan ein.</div> :
     <div className="mt-5 flex flex-wrap items-center gap-2 no-print">
       {laeuft && <span className="text-[13px] opacity-90">📍 Standort wird geprüft …</span>}
       {!laeuft && <>
@@ -1330,8 +1340,9 @@ function Stempeluhr({ ctx }) {
       </>}
     </div>}
     {pruefung && !laeuft && !nurTablet && <div className="mt-3 rounded-xl bg-white text-rose-700 px-3 py-2.5 text-[13px] font-medium" role="alert">{pruefung}</div>}
+    {!aussen && zustand !== "fertig" && freigabeAm(db, user.id, d) && <p className="mt-3 text-[12px] opacity-90 no-print">🙌 Heute als Einspringen freigegeben{freigabeAm(db, user.id, d).notiz ? ` (${freigabeAm(db, user.id, d).notiz})` : ""}.</p>}
     {aussen && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-90 no-print">🚗 Heute Außentermin{aussen.notiz ? ` (${aussen.notiz})` : ""} – Stempeln am Handy freigegeben.</p>}
-    {!aussen && db.einstellungen.stempelOrt === "salon" && !pruefung && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-80 no-print">{ctx.live ? "📍 Stempeln am Handy nur im Salon-WLAN." : "📍 Stempeln am Handy nur im Salon – beim Tippen wird einmal der Standort geprüft."}</p>}
+    {!aussen && !freiGesperrt && db.einstellungen.stempelOrt === "salon" && !pruefung && zustand !== "fertig" && <p className="mt-3 text-[12px] opacity-80 no-print">{ctx.live ? "📍 Stempeln am Handy nur im Salon-WLAN." : "📍 Stempeln am Handy nur im Salon – beim Tippen wird einmal der Standort geprüft."}</p>}
   </section>;
 }
 
@@ -2917,34 +2928,36 @@ function AussenTermine({ ctx }) {
   const { db, user, aendern } = ctx;
   const admin = istAdmin(user);
   const aktive = db.mitarbeiter.filter(m => m.aktiv);
-  const [f, setF] = useState({ maId: aktive[0]?.id || "", datum: heute(), notiz: "" });
+  const [f, setF] = useState({ maId: aktive[0]?.id || "", datum: heute(), notiz: "", art: "aussen" });
   const liste = (db.aussentermine || []).filter(x => x.datum >= addTage(heute(), -30)).sort((a, b) => a.datum.localeCompare(b.datum));
-  const doppelt = !!aussenterminAm(db, f.maId, f.datum);
+  const doppelt = !!freigabeAm(db, f.maId, f.datum);
+  const ART_TXT = { aussen: "Außentermin", einspringen: "Einspringen" };
   function hinzu() {
     aendern(n => {
-      (n.aussentermine = n.aussentermine || []).push({ id: uid(), maId: f.maId, datum: f.datum, notiz: f.notiz.trim(), von: user.id });
-      n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: f.maId, datum: f.datum, aktion: "Außentermin freigegeben", alt: null, neu: null, grund: f.notiz.trim() || "Außentermin" });
-    }, "Außentermin eingetragen");
+      (n.aussentermine = n.aussentermine || []).push({ id: uid(), maId: f.maId, datum: f.datum, notiz: f.notiz.trim(), art: f.art, von: user.id });
+      n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: f.maId, datum: f.datum, aktion: `${ART_TXT[f.art]} freigegeben`, alt: null, neu: null, grund: f.notiz.trim() || ART_TXT[f.art] });
+    }, `${ART_TXT[f.art]} eingetragen`);
     setF({ ...f, notiz: "" });
   }
   function weg(x) {
     aendern(n => {
       n.aussentermine = n.aussentermine.filter(q => q.id !== x.id);
-      n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: x.maId, datum: x.datum, aktion: "Außentermin entfernt", alt: null, neu: null, grund: x.notiz || "Außentermin" });
-    }, "Außentermin entfernt");
+      n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: x.maId, datum: x.datum, aktion: `${ART_TXT[x.art || "aussen"]} entfernt`, alt: null, neu: null, grund: x.notiz || ART_TXT[x.art || "aussen"] });
+    }, "Freigabe entfernt");
   }
   return <div className="mt-5 border-t border-stone-100 pt-4">
-    <div className="text-sm font-semibold">🚗 Außentermine</div>
-    <p className="text-xs text-stone-500 mt-0.5">Für einen einzelnen Tag darf die Person überall am Handy stempeln – z. B. Hochzeit. Alle anderen Tage bleiben wie oben eingestellt.</p>
+    <div className="text-sm font-semibold">🚗 Außentermine & Einspringen</div>
+    <p className="text-xs text-stone-500 mt-0.5">An freien Tagen laut Dienstplan (z. B. So + Mo) und an Feiertagen kann niemand einstempeln. Hier gibst du einzelne Tage frei: <b>Außentermin</b> – die Person darf an dem Tag überall am Handy stempeln (z. B. Hochzeit); <b>Einspringen</b> – nur der freie Tag wird freigegeben, gestempelt wird wie sonst im Salon.</p>
     {liste.length > 0 && <ul className="mt-3 divide-y divide-stone-100 rounded-xl border border-stone-200 text-sm">
       {liste.map(x => <li key={x.id} className="flex items-center gap-3 px-3 py-2">
-        <span className="tabular w-24">{fmtDk(x.datum)}</span><span className="font-medium flex-1 min-w-0 truncate">{nameVon(db, x.maId)}{x.notiz ? <span className="font-normal text-stone-500"> · {x.notiz}</span> : null}</span>
+        <span className="tabular w-24">{fmtDk(x.datum)}</span><span className="font-medium flex-1 min-w-0 truncate">{nameVon(db, x.maId)}<span className="font-normal text-stone-500"> · {ART_TXT[x.art || "aussen"]}</span>{x.notiz ? <span className="font-normal text-stone-500"> · {x.notiz}</span> : null}</span>
         {admin && <button className="text-xs text-rose-700 hover:underline" onClick={() => weg(x)}>entfernen</button>}
       </li>)}
     </ul>}
-    {admin && <div className="mt-3 grid sm:grid-cols-[1fr_auto_1fr_auto] gap-2 items-end">
+    {admin && <div className="mt-3 grid sm:grid-cols-[1fr_auto_auto_1fr_auto] gap-2 items-end">
       <Feld label="Mitarbeiter/in"><select className={inputCls} value={f.maId} onChange={e => setF({ ...f, maId: e.target.value })}>{aktive.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
       <Feld label="Tag"><input type="date" className={inputCls} value={f.datum} onChange={e => setF({ ...f, datum: e.target.value })} /></Feld>
+      <Feld label="Art"><select className={inputCls} value={f.art} onChange={e => setF({ ...f, art: e.target.value })}><option value="aussen">Außentermin (Handy überall)</option><option value="einspringen">Einspringen (freier Tag)</option></select></Feld>
       <Feld label="Wofür (optional)"><input className={inputCls} placeholder="z. B. Hochzeit Brautstyling" value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>
       <Knopf onClick={hinzu} disabled={!f.maId || !f.datum || doppelt}>Freigeben</Knopf>
     </div>}
@@ -3375,7 +3388,7 @@ async function liveLaden(sb) {
     protokoll: prot.map(p => ({ id: String(p.id), am: p.am, von: p.von_person || "system", maId: p.person_id, datum: p.datum, aktion: p.aktion, alt: pz(p.alt), neu: pz(p.neu), grund: p.grund })),
     personalLog: verl.map(v => ({ id: String(v.id), am: v.am, von: v.von_person, maId: v.person_id, aktion: v.aktion, details: v.details })),
     nachrichten: nachr.map(x => ({ id: String(x.id), an: x.an_person, am: x.erstellt_am, text: x.text, seite: x.seite, gelesen: !!x.gelesen_am })),
-    aussentermine: aussen.map(x => ({ id: `${x.person_id}|${x.datum}`, maId: x.person_id, datum: x.datum, notiz: x.notiz || "" })),
+    aussentermine: aussen.map(x => ({ id: `${x.person_id}|${x.datum}`, maId: x.person_id, datum: x.datum, notiz: x.notiz || "", art: x.art || "aussen" })),
     einstellungen: { ...STANDARD_EINSTELLUNGEN, ...einstWert(einst[0]?.wert) },
   };
   return { db, ohnePlan };
@@ -3455,7 +3468,7 @@ async function liveSpeichern(sb, alt, neu, user) {
     await sbq(sb.from("zeit_personal_verlauf").insert({ person_id: l.maId, von_person: ich, aktion: l.aktion, details: l.details || null }));
   // Außentermine (nur Chefin – RLS)
   const aA = nachId(alt.aussentermine), aN = nachId(neu.aussentermine);
-  for (const x of neu.aussentermine || []) if (!aA[x.id]) await sbMuss(sb.from("zeit_aussentermine").insert({ person_id: x.maId, datum: x.datum, notiz: x.notiz || null, angelegt_von: ich }).select("person_id"), "Nur die Chefin darf Außentermine freigeben.");
+  for (const x of neu.aussentermine || []) if (!aA[x.id]) await sbMuss(sb.from("zeit_aussentermine").insert({ person_id: x.maId, datum: x.datum, notiz: x.notiz || null, angelegt_von: ich, ...(x.art && x.art !== "aussen" ? { art: x.art } : {}) }).select("person_id"), "Nur die Chefin darf Außentermine freigeben.");
   for (const x of alt.aussentermine || []) if (!aN[x.id]) await sbMuss(sb.from("zeit_aussentermine").delete().eq("person_id", x.maId).eq("datum", x.datum).select("person_id"), "Nur die Chefin darf Außentermine entfernen.");
   // Korrekturanträge: stellen (Mitarbeiter/in) oder entscheiden (Leitung, Server übernimmt die Zeit)
   const erledigt = new Set(), kA = nachId(alt.korrekturen);
@@ -3657,7 +3670,7 @@ function LiveTerminal({ sb, onAbmelden }) {
   useEffect(() => { if (!wahl) return; const t = setTimeout(() => { setWahl(null); setPin(null); }, 45000); return () => clearTimeout(t); }, [wahl]);
   useEffect(() => { if (!gruss) return; const t = setTimeout(() => setGruss(null), 7000); return () => clearTimeout(t); }, [gruss]);
   const d = heute(), jetzt = hm2min(nowHM());
-  const info = p => p.abwesend ? p.abwesend : p.status === "aus" ? (p.plan_beginn ? `Plan ${hm5(p.plan_beginn)}–${hm5(p.plan_ende)}` : "heute frei")
+  const info = p => p.abwesend ? p.abwesend : p.status === "aus" ? (p.gesperrt ? "heute frei" : p.plan_beginn ? `Plan ${hm5(p.plan_beginn)}–${hm5(p.plan_ende)}` : p.gesperrt === false ? "heute freigegeben" : "heute frei")
     : p.status === "fertig" ? "schon gegangen" : p.status === "pause" ? `Pause seit ${hm5(p.seit)}` : p.pause_faellig ? "☕ Pause fällig" : p.plan_beginn && jetzt < hm2min(hm5(p.plan_beginn)) ? `☕ da seit ${hm5(p.seit)} · Beginn ${hm5(p.plan_beginn)}` : `da seit ${hm5(p.seit)}`;
   async function buchen(aktion) {
     const p = wahl; setFehl(null);
@@ -3702,6 +3715,7 @@ function LiveTerminal({ sb, onAbmelden }) {
         <div className="text-center text-sm text-stone-500 mb-4">{info(wahl)}</div>
         {fehl && <div className="mb-4"><Hinweis ton="fehler">{fehl}</Hinweis></div>}
         {wahl.abwesend ? <p className="text-center text-stone-600">Heute eingetragen: {wahl.abwesend}.</p>
+        : wahl.status === "aus" && wahl.gesperrt ? <p className="text-center text-stone-600">🔒 {TEXT_FREI_GESPERRT}</p>
         : !pin ? <PinFeld onFertig={setPin} />
         : <div className="flex flex-wrap gap-3">
           {wahl.status === "aus" && <button className={`${gross} bg-emerald-600 text-white`} onClick={() => buchen("kommen")}>▶ Kommen</button>}
