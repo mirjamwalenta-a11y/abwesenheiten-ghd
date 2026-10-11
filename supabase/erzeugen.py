@@ -6,8 +6,8 @@ R = pathlib.Path(__file__).resolve().parent.parent
 src = (R / "zeitverwaltung_schema_entwurf.sql").read_text()
 zeilen = src.split("\n")
 def ab(marke): return [i for i, l in enumerate(zeilen) if marke in l][0] - 1
-iB, iC, iD, iE, iF = ab("URLAUBSSPERRE JE GRUPPE + NACHRICHTEN"), ab("SCHRITT 3 – ANBINDUNG DER APP"), ab("SCHRITT 4 – TESTEN BIS ZUM START"), ab("SCHRITT 5 – PAUSEN-ERINNERUNG"), ab("SCHRITT 6 – FREIE TAGE GESPERRT")
-teilA, teilB, teilC, teilD, teilE, teilF = "\n".join(zeilen[:iB]), "\n".join(zeilen[iB:iC]), "\n".join(zeilen[iC:iD]), "\n".join(zeilen[iD:iE]), "\n".join(zeilen[iE:iF]), "\n".join(zeilen[iF:])
+iB, iC, iD, iE, iF, iG = ab("URLAUBSSPERRE JE GRUPPE + NACHRICHTEN"), ab("SCHRITT 3 – ANBINDUNG DER APP"), ab("SCHRITT 4 – TESTEN BIS ZUM START"), ab("SCHRITT 5 – PAUSEN-ERINNERUNG"), ab("SCHRITT 6 – FREIE TAGE GESPERRT"), ab("SCHRITT 7 – PAUSE LAUT DIENSTPLAN IMMER ABZIEHEN")
+teilA, teilB, teilC, teilD, teilE, teilF, teilG = "\n".join(zeilen[:iB]), "\n".join(zeilen[iB:iC]), "\n".join(zeilen[iC:iD]), "\n".join(zeilen[iD:iE]), "\n".join(zeilen[iE:iF]), "\n".join(zeilen[iF:iG]), "\n".join(zeilen[iG:])
 # Teil C braucht die aktuelle Automatik-Funktion (offene Krankenstände) – aus Teil A übernehmen
 m = re.search(r"DROP FUNCTION IF EXISTS zeit_automatik\(date, boolean, boolean, boolean\);.*?END \$\$;\n", teilA, re.S)
 automatik = m.group(0)
@@ -59,6 +59,10 @@ F = kopf("SCHRITT 6 · TEIL F – Freie Tage gesperrt", "--  Einstempeln am frei
 SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'zeit_freier_tag') THEN 'Freie Tage gesperrt – eingerichtet'
             ELSE 'FEHLT – Teil F nochmal ausführen' END AS freie_tage;
 """
-for n, t in [("zeitverwaltung_schritt6_teilF.sql", F), ("zeitverwaltung_schritt5_teilE.sql", E), ("zeitverwaltung_schritt2_teilA.sql", A), ("zeitverwaltung_schritt2_teilB.sql", B), ("zeitverwaltung_schritt3_teilC.sql", C), ("zeitverwaltung_schritt4_teilD.sql", D)]:
+G = kopf("SCHRITT 7 · TEIL G – Pause laut Dienstplan immer abziehen", "--  Mit Pausen-Vereinbarung wird die Pause laut Plan immer eingetragen,\n--  wenn keine gestempelt wurde (außer bei Tagen unter 3 h). Erst NACH Teil F.") + teilG + "\n\nCOMMIT;\n" + """
+SELECT CASE WHEN pg_get_functiondef('public.zeit_pause_noetig(text, zeit_buchungen)'::regprocedure) LIKE '%180%'
+            THEN 'Pause laut Dienstplan – eingerichtet' ELSE 'FEHLT – Teil G nochmal ausführen' END AS pause_laut_plan;
+"""
+for n, t in [("zeitverwaltung_schritt7_teilG.sql", G), ("zeitverwaltung_schritt6_teilF.sql", F), ("zeitverwaltung_schritt5_teilE.sql", E), ("zeitverwaltung_schritt2_teilA.sql", A), ("zeitverwaltung_schritt2_teilB.sql", B), ("zeitverwaltung_schritt3_teilC.sql", C), ("zeitverwaltung_schritt4_teilD.sql", D)]:
     (R / "supabase" / n).write_text(t)
 print("ok")
