@@ -1476,7 +1476,10 @@ function ZeitDialog({ ctx, ma, datum, onClose }) {
   const z = zeitAm(db, ma.id, datum);
   const direkt = darfVerwalten(user, ma) || (istAdmin(user) && ma.id === user.id);
   const plan = planTag(db, ma, datum);
-  const [f, setF] = useState({ beginn: z?.beginn || plan?.b || "09:00", ende: z?.ende || plan?.e || "", pause: z?.pause ?? plan?.p ?? 30, notiz: z?.notiz || "", grund: "" });
+  // Pause vorbelegen: laut Dienstplan, wenn keine (oder eine kürzere) gestempelt ist und die App Pausen automatisch einträgt
+  const planPause = +plan?.p || 0, autoP = autoPauseAktiv(db.einstellungen);
+  const pauseVor = z ? (autoP && (z.pause || 0) < planPause ? planPause : (z.pause || 0)) : (plan ? planPause : 30);
+  const [f, setF] = useState({ beginn: z?.beginn || plan?.b || "09:00", ende: z?.ende || plan?.e || "", pause: pauseVor, notiz: z?.notiz || "", grund: "" });
   const [loeschen, setLoeschen] = useState(false);
   const netto = f.beginn && f.ende ? hm2min(f.ende) - hm2min(f.beginn) - (+f.pause || 0) : 0;
   const fehler = loeschen ? null
