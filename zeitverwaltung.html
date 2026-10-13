@@ -35,6 +35,7 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://mirjamwalenta-a11y.github.io/abwesenheiten-ghd/ghd-offline.js"></script>  <!-- offline nutzbar: Service Worker, gemerkte Daten, Nachsync -->
   <style>
     * { -webkit-tap-highlight-color: transparent; }
     body { background: #F8F4EA; color: #211D17; font-family: "Poppins", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
@@ -3643,7 +3644,10 @@ function LiveApp() {
     setFehler(null);
     const { data: { session } } = await sb.auth.getSession();
     if (!session) { setPhase("login"); return; }
-    if (await sbq(sb.rpc("zeit_ist_terminal"))) { setPhase("terminal"); return; }
+    // Ohne Netz ist die Terminal-Prüfung (RPC) nicht möglich – dann normal mit den gemerkten Daten starten
+    let istTerminal = false;
+    try { istTerminal = await sbq(sb.rpc("zeit_ist_terminal")); } catch (e) { if (navigator.onLine) throw e; }
+    if (istTerminal) { setPhase("terminal"); return; }
     setPhase("laden");
     let r = await liveLaden(sb);
     const me = r.db.mitarbeiter.find(m => abwEmail(m.name) === session.user.email);
