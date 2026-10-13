@@ -1351,6 +1351,28 @@ function Stempeluhr({ ctx }) {
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
+// Erinnerung am Jahresende: Beschäftigungsstand an den Steuerberater
+function BsErinnerung({ ctx, jahr }) {
+  const { db, aendern } = ctx;
+  const [laedt, setLaedt] = useState(false);
+  const erledigt = () => aendern(n => { n.einstellungen.bsErledigt = { ...(n.einstellungen.bsErledigt || {}), [jahr]: heute() }; }, "Erledigt – bis zum nächsten Jahresende.");
+  async function laden() {
+    setLaedt(true);
+    try { await beschaeftigungsstandExcel(db, jahr); erledigt(); } catch (e) { alert("Excel konnte nicht geladen werden (keine Internetverbindung?)."); }
+    setLaedt(false);
+  }
+  return <section className="now-card rounded-[14px] text-white p-5 no-print">
+    <div className="text-[11px] tracking-[.14em] font-bold opacity-90 uppercase">📒 Jahresende {jahr}</div>
+    <div className="mt-2 text-[19px] font-bold">Beschäftigungsstand {jahr} für den Steuerberater ist fertig</div>
+    <p className="mt-1 text-[13px] opacity-90">Mitarbeiter/innen mit Eintritt/Austritt, Arbeitstage ohne Urlaub, Urlaubsanspruch, offener Urlaub am 31.12. und alle Krankenstände – im Aufbau deiner bisherigen Liste.{heute() <= `${jahr}-12-31` ? " Heute eingetragener Urlaub/Krankenstand zählt noch mit – am besten ab dem 1.1. herunterladen." : ""}</p>
+    <div className="mt-4 flex flex-wrap gap-2">
+      <button onClick={laden} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">{laedt ? "Wird erstellt …" : "⬇️ Excel herunterladen"}</button>
+      <button onClick={erledigt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25">Schon erledigt</button>
+    </div>
+    <p className="mt-3 text-xs opacity-80">Danach die Datei per E-Mail an den Steuerberater schicken. Jederzeit wieder abrufbar unter Auswertungen → Jahr → „Beschäftigungsstand“.</p>
+  </section>;
+}
+
 function Dashboard({ ctx }) {
   const { db, user, sichtbar, setSeite } = ctx;
   const h = heute(), jahr = new Date().getFullYear(), mk = monatKey(h);
@@ -1375,6 +1397,7 @@ function Dashboard({ ctx }) {
 
   return <div className="space-y-5">
     <Seitenkopf titel={`Hallo ${user.name.split(" ")[0]}`} sub={`${WT_LANG[wd(h)]}, ${fmtD(h)} · ${ROLLEN[user.rolle].label}`} />
+    {istAdmin(user) && bsErinnerungJahr(db) && <BsErinnerung ctx={ctx} jahr={bsErinnerungJahr(db)} />}
     {ctx.live && istAdmin(user) && (() => {
       const fehlt = db.mitarbeiter.filter(m => m.aktiv).map(m => ({ m, was: [!m.eintritt && "Eintrittsdatum", !urlaubBekannt(db, m) && "offener Urlaub (Startbestand)"].filter(Boolean) })).filter(x => x.was.length);
       return fehlt.length > 0 && <Karte titel="Noch einzutragen" aktion={<button className="text-xs font-semibold text-gold-700 hover:underline" onClick={() => setSeite("mitarbeiter")}>Zu den Mitarbeiter/innen →</button>}>
@@ -2488,6 +2511,33 @@ function Kalender({ ctx }) {
 }
 
 // ─── AUSWERTUNGEN ─────────────────────────────────────────────────────────────
+// Beschäftigungsstand für den Steuerberater (Aufbau wie die bisherige Liste des Salons)
+async function beschaeftigungsstandExcel(db, jahr) {
+  const X = await ladeXlsx();
+  const jd = jahresDaten(db, jahr), tageJahr = tageZw(jd.von, jd.bis).length;
+  const rows = [[], ["BESCHÄFTIGUNGSSTAND:", "", "", "Wochen: 52", `Tage: ${tageJahr}`], [jahr], ["Angestellte: ", "AT:", "UT:", "Resttage", "Krankstandstage:"], ["", "ohne UT", "", "Urlaub"], [], []];
+  jd.zeilen.forEach(z => {
+    const kt = z.faelle.slice().sort((a, b) => a.von.localeCompare(b.von)).map(a => {
+      const v = a.von < jd.von ? jd.von : a.von, b = (a.bis || heute()) > z.stichtag ? z.stichtag : (a.bis || heute());
+      return fmtZrKurz(v, b) + (a.art === "unfall" ? " (Arbeitsunfall)" : "");
+    });
+    const ktText = kt.length ? `${kt.join(", ")}  (gesamt ${z.krankKT + z.unfallKT} KT)` : 0;
+    rows.push([z.m.name, z.arbeitstageOhneUrlaub, `${fmtTage(z.aliquot ? z.anspruch : z.anspruchJahr)} UT`, `UT ${fmtTage(z.offen)}${z.ausgetreten && z.offen > 0 ? " (Ersatzleistung)" : ""}`, ktText]);
+    rows.push([z.ausgetreten ? `${fmtD(z.m.eintritt)} - ${fmtD(z.m.austritt)}` : fmtD(z.m.eintritt)]);
+    rows.push([], []);
+  });
+  if (jd.vorlaeufig) rows.push([`VORLÄUFIG – Stand ${fmtD(heute())}, genehmigter Urlaub bis 31.12. eingerechnet`]);
+  const wb = X.utils.book_new(), ws = X.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [38, 18.7, 13.6, 16.7, 81].map(w => ({ wch: w }));
+  X.utils.book_append_sheet(wb, ws, "Tabelle1");
+  X.writeFile(wb, `Beschaeftigungsstand_${jahr}.xlsx`);
+}
+// Erinnerung an den Beschäftigungsstand: vom 31.12. bis Ende Jänner, bis er heruntergeladen wurde
+function bsErinnerungJahr(db, h = heute()) {
+  const y = +h.slice(0, 4), j = h >= `${y}-12-31` ? y : h.slice(5, 7) === "01" ? y - 1 : null;
+  return j && !(db.einstellungen.bsErledigt || {})[j] ? j : null;
+}
+
 function Auswertungen({ ctx }) {
   const { db, user, sichtbar } = ctx;
   const [ansicht, setAnsicht] = useState("monat");
@@ -2647,25 +2697,7 @@ function Auswertungen({ ctx }) {
   // Beschäftigungsstand im Format, das der Steuerberater bisher bekommt
   async function beschaeftigungsstand() {
     setLaedt(true);
-    let X;
-    try { X = await ladeXlsx(); } catch (e) { setLaedt(false); alert("Excel konnte nicht geladen werden (keine Internetverbindung?)."); return; }
-    const jd = jahresDaten(db, jahr), tageJahr = tageZw(jd.von, jd.bis).length;
-    const rows = [[], ["BESCHÄFTIGUNGSSTAND:", "", "", "Wochen: 52", `Tage: ${tageJahr}`], [jahr], ["Angestellte: ", "AT:", "UT:", "Resttage", "Krankstandstage:"], ["", "ohne UT", "", "Urlaub"], [], []];
-    jd.zeilen.forEach(z => {
-      const kt = z.faelle.slice().sort((a, b) => a.von.localeCompare(b.von)).map(a => {
-        const v = a.von < jd.von ? jd.von : a.von, b = (a.bis || heute()) > z.stichtag ? z.stichtag : (a.bis || heute());
-        return fmtZrKurz(v, b) + (a.art === "unfall" ? " (Arbeitsunfall)" : "");
-      });
-      const ktText = kt.length ? `${kt.join(", ")}  (gesamt ${z.krankKT + z.unfallKT} KT)` : 0;
-      rows.push([z.m.name, z.arbeitstageOhneUrlaub, `${fmtTage(z.aliquot ? z.anspruch : z.anspruchJahr)} UT`, `UT ${fmtTage(z.offen)}${z.ausgetreten && z.offen > 0 ? " (Ersatzleistung)" : ""}`, ktText]);
-      rows.push([z.ausgetreten ? `${fmtD(z.m.eintritt)} - ${fmtD(z.m.austritt)}` : fmtD(z.m.eintritt)]);
-      rows.push([], []);
-    });
-    if (jd.vorlaeufig) rows.push([`VORLÄUFIG – Stand ${fmtD(heute())}, genehmigter Urlaub bis 31.12. eingerechnet`]);
-    const wb = X.utils.book_new(), ws = X.utils.aoa_to_sheet(rows);
-    ws["!cols"] = [38, 18.7, 13.6, 16.7, 81].map(w => ({ wch: w }));
-    X.utils.book_append_sheet(wb, ws, "Tabelle1");
-    X.writeFile(wb, `Beschaeftigungsstand_${jahr}.xlsx`);
+    try { await beschaeftigungsstandExcel(db, jahr); } catch (e) { alert("Excel konnte nicht geladen werden (keine Internetverbindung?)."); }
     setLaedt(false);
   }
   const mitUS = db.einstellungen.ueberstunden;
