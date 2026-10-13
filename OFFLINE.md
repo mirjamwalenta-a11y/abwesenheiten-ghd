@@ -60,3 +60,39 @@ Apps ganz normal weiter, nur eben noch nicht offline.
 - Ist niemand mehr angemeldet, löscht die App die gemerkten Daten vom Gerät.
   Noch nicht gesendete eigene Eingaben bleiben erhalten.
 - Neue Dateien oder Seiten einer App in deren `sw.js` bei `vorab` eintragen.
+
+## Anleitung für Samsung / Android
+
+### Einrichten (einmal pro App)
+
+1. Die App **mit Netz** öffnen, schließen und noch einmal öffnen. Erst dann
+   sind ihre Daten im Handy gemerkt.
+2. Die App auf den Startbildschirm holen:
+   - **Chrome:** oben rechts **⋮** → **App installieren** oder
+     **Zum Startbildschirm hinzufügen**
+   - **Samsung Internet:** unten rechts **☰** → **Seite hinzufügen zu** →
+     **Startbildschirm**. Manchmal erscheint stattdessen direkt in der
+     Adressleiste ein Symbol zum Installieren.
+3. Ab jetzt die App über das Symbol auf dem Startbildschirm öffnen. Sie läuft
+   dann ohne Browserleiste, wie eine echte App.
+
+### Testen
+
+1. **Flugmodus** einschalten (von oben wischen → Flugzeug-Symbol).
+2. Die App öffnen. Unten erscheint die Leiste „Offline – …“.
+3. Etwas ändern, dann den Flugmodus ausschalten. Nach ein paar Sekunden
+   verschwindet die Leiste, und die Änderung ist hochgeladen.
+
+### Gut zu wissen auf Samsung
+
+- **Hochladen im Hintergrund:** Offline gespeicherte Änderungen werden
+  hochgeladen, sobald wieder Netz da ist, auch wenn die App gerade
+  geschlossen ist.
+- **Energiesparmodus und „Schlafende Apps“:** Samsung legt selten genutzte
+  Apps gern schlafen. Dann klappt das Hochladen im Hintergrund nicht, und die
+  Änderungen werden erst beim nächsten Öffnen der App hochgeladen.
+- **Browserdaten löschen:** Wer in Chrome oder Samsung Internet die
+  Browserdaten löscht, löscht auch die gemerkten Daten. Noch nicht
+  hochgeladene Änderungen gehen dabei verloren. Vorher prüfen, dass unten
+  keine Leiste „… Änderungen warten“ mehr steht.
+- Gelöscht wird der Speicher sonst nur, wenn das Handy fast voll ist.
