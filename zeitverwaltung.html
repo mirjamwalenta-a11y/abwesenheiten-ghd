@@ -2929,7 +2929,7 @@ function StartKarte({ ctx }) {
   }
   return <Karte titel="Start der Zeitverwaltung">
     <div className="grid md:grid-cols-2 gap-4 items-start">
-      <Feld label="Starttag" hilfe="Ab diesem Tag zählen Zeitkonto und Automatik (vergessenes Gehen, vergessene Tage). Vorher ist alles Testbetrieb.">
+      <Feld label="Starttag" hilfe="Ab diesem Tag zählt das Zeitkonto und vergessene ganze Tage werden laut Dienstplan eingetragen. Vergessenes Ausstempeln wird schon jetzt automatisch ergänzt. Vorher ist alles Testbetrieb.">
         <input type="date" className={inputCls} disabled={!admin} value={e.kontoStart || ""} onChange={ev => aendern(n => { n.einstellungen.kontoStart = ev.target.value || null; })} />
         {!e.kontoStart && <p className="mt-1 text-xs text-amber-700">Noch kein Starttag festgelegt – z. B. 01.01.2027.</p>}
       </Feld>
