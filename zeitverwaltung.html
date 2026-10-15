@@ -1602,6 +1602,7 @@ function Zeiterfassung({ ctx }) {
   const [monat, setMonat] = useState(monatKey(heute()));
   const [dialog, setDialog] = useState(null);
   const [abwDialog, setAbwDialog] = useState(null);
+  const [abwBestand, setAbwBestand] = useState(null);   // eingetragene Abwesenheit ändern / löschen
   const [protokollOffen, setProtokollOffen] = useState(false);
   const ma = db.mitarbeiter.find(m => m.id === maId) || user;
   const tage = tageImMonat(monat);
@@ -1670,6 +1671,7 @@ function Zeiterfassung({ ctx }) {
               </td>
               <td className="px-2 py-1.5 text-right no-print">
                 <div className="flex justify-end gap-0.5">
+                  {direkt && !istGesperrt && t.a && <button onClick={() => setAbwBestand(t.a)} className="p-1.5 rounded-full text-stone-400 hover:bg-white hover:text-gold-700" title={`${ARTEN[t.a.art].label} ändern oder löschen`}>🌴</button>}
                   {direkt && !istGesperrt && beschaeftigt(ma, d) && !t.a && t.soll > 0 && <button onClick={() => setAbwDialog(d)} className="p-1.5 rounded-full text-stone-400 hover:bg-white hover:text-gold-700" title="Urlaub / Krankenstand nachtragen">🌴</button>}
                   {darfAktion && <button onClick={() => setDialog(d)} className="p-1.5 rounded-full text-stone-500 hover:bg-white hover:text-gold-700" title={direkt ? "Zeiten & Pause bearbeiten" : "Korrektur beantragen"}><Icon n="stift" className="w-4 h-4" /></button>}
                 </div>
@@ -1709,6 +1711,7 @@ function Zeiterfassung({ ctx }) {
     </div>
     {dialog && <ZeitDialog ctx={ctx} ma={ma} datum={dialog} onClose={() => setDialog(null)} />}
     {abwDialog && <AbwDialog ctx={ctx} modus="alle" vorMa={ma.id} vorDatum={abwDialog} onClose={() => setAbwDialog(null)} />}
+    {abwBestand && <AbwDialog ctx={ctx} modus="alle" bestand={abwBestand} onClose={() => setAbwBestand(null)} />}
   </div>;
 }
 
@@ -1767,10 +1770,10 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
     }, bestand ? "Abwesenheit geändert" : status === "beantragt" ? "Antrag gesendet" : "Eintrag gespeichert");
     onClose();
   }
-  function loeschen() { aendern(n => { Object.assign(n.abwesenheiten.find(a => a.id === bestand.id), { status: "storniert", geaendertVon: user.id, geaendertAm: heute() }); }, "Eintrag storniert"); onClose(); }
+  function loeschen() { aendern(n => { Object.assign(n.abwesenheiten.find(a => a.id === bestand.id), { status: "storniert", geaendertVon: user.id, geaendertAm: heute() }); }, "Eintrag gelöscht"); onClose(); }
   const titel = bestand ? "Abwesenheit bearbeiten" : modus === "alle" ? "Urlaub / Krankenstand nachtragen" : modus === "urlaub" ? (fuerAndere ? "Urlaub eintragen" : "Urlaub beantragen") : "Krankmeldung / Abwesenheit erfassen";
   return <Modal titel={titel} onClose={onClose}
-    fuss={<>{bestand && <Knopf art="rot" onClick={loeschen}>Stornieren</Knopf>}<span className="flex-1" /><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler || speichert}>{bestand ? "Speichern" : status === "beantragt" ? "Antrag senden" : status === "gemeldet" ? "Melden" : "Eintragen"}</Knopf></>}>
+    fuss={<>{bestand && <Knopf art="rot" onClick={loeschen}>Löschen</Knopf>}<span className="flex-1" /><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler || speichert}>{bestand ? "Speichern" : status === "beantragt" ? "Antrag senden" : status === "gemeldet" ? "Melden" : "Eintragen"}</Knopf></>}>
     <div className="grid sm:grid-cols-2 gap-4">
       {auswahl.length > 1 && <Feld label="Mitarbeiter/in" breit><select className={inputCls} value={f.maId} onChange={e => setF({ ...f, maId: e.target.value })}>{auswahl.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>}
       {arten.length > 1 && <Feld label="Art der Abwesenheit" breit><select className={inputCls} value={f.art} onChange={e => setF({ ...f, art: e.target.value })}>{arten.map(a => <option key={a} value={a}>{ARTEN[a].label}</option>)}</select></Feld>}
