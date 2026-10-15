@@ -6,8 +6,8 @@ R = pathlib.Path(__file__).resolve().parent.parent
 src = (R / "zeitverwaltung_schema_entwurf.sql").read_text()
 zeilen = src.split("\n")
 def ab(marke): return [i for i, l in enumerate(zeilen) if marke in l][0] - 1
-iB, iC, iD, iE, iF, iG = ab("URLAUBSSPERRE JE GRUPPE + NACHRICHTEN"), ab("SCHRITT 3 – ANBINDUNG DER APP"), ab("SCHRITT 4 – TESTEN BIS ZUM START"), ab("SCHRITT 5 – PAUSEN-ERINNERUNG"), ab("SCHRITT 6 – FREIE TAGE GESPERRT"), ab("SCHRITT 7 – PAUSE LAUT DIENSTPLAN IMMER ABZIEHEN")
-teilA, teilB, teilC, teilD, teilE, teilF, teilG = "\n".join(zeilen[:iB]), "\n".join(zeilen[iB:iC]), "\n".join(zeilen[iC:iD]), "\n".join(zeilen[iD:iE]), "\n".join(zeilen[iE:iF]), "\n".join(zeilen[iF:iG]), "\n".join(zeilen[iG:])
+iB, iC, iD, iE, iF, iG, iH = ab("URLAUBSSPERRE JE GRUPPE + NACHRICHTEN"), ab("SCHRITT 3 – ANBINDUNG DER APP"), ab("SCHRITT 4 – TESTEN BIS ZUM START"), ab("SCHRITT 5 – PAUSEN-ERINNERUNG"), ab("SCHRITT 6 – FREIE TAGE GESPERRT"), ab("SCHRITT 7 – PAUSE LAUT DIENSTPLAN IMMER ABZIEHEN"), ab("SCHRITT 8 – VERGESSENES AUSSTEMPELN SCHON IN DER TESTPHASE")
+teilA, teilB, teilC, teilD, teilE, teilF, teilG, teilH = "\n".join(zeilen[:iB]), "\n".join(zeilen[iB:iC]), "\n".join(zeilen[iC:iD]), "\n".join(zeilen[iD:iE]), "\n".join(zeilen[iE:iF]), "\n".join(zeilen[iF:iG]), "\n".join(zeilen[iG:iH]), "\n".join(zeilen[iH:])
 # Teil C braucht die aktuelle Automatik-Funktion (offene Krankenstände) – aus Teil A übernehmen
 m = re.search(r"DROP FUNCTION IF EXISTS zeit_automatik\(date, boolean, boolean, boolean\);.*?END \$\$;\n", teilA, re.S)
 automatik = m.group(0)
@@ -63,6 +63,10 @@ G = kopf("SCHRITT 7 · TEIL G – Pause laut Dienstplan immer abziehen", "--  Mi
 SELECT CASE WHEN pg_get_functiondef('public.zeit_pause_noetig(text, zeit_buchungen)'::regprocedure) LIKE '%180%'
             THEN 'Pause laut Dienstplan – eingerichtet' ELSE 'FEHLT – Teil G nochmal ausführen' END AS pause_laut_plan;
 """
-for n, t in [("zeitverwaltung_schritt7_teilG.sql", G), ("zeitverwaltung_schritt6_teilF.sql", F), ("zeitverwaltung_schritt5_teilE.sql", E), ("zeitverwaltung_schritt2_teilA.sql", A), ("zeitverwaltung_schritt2_teilB.sql", B), ("zeitverwaltung_schritt3_teilC.sql", C), ("zeitverwaltung_schritt4_teilD.sql", D)]:
+H = kopf("SCHRITT 8 · TEIL H – Vergessenes Ausstempeln schon in der Testphase", "--  Vor dem Starttag wird vergessenes Gehen (und die Pause) automatisch\n--  ergänzt; ganze vergessene Tage erst ab dem Starttag. Erst NACH Teil G.") + teilH + "\n\nCOMMIT;\n" + """
+SELECT CASE WHEN pg_get_functiondef('public.zeit_automatik_lauf()'::regprocedure) LIKE '%v_test%'
+            THEN 'Automatik in der Testphase – eingerichtet' ELSE 'FEHLT – Teil H nochmal ausführen' END AS automatik_testphase;
+"""
+for n, t in [("zeitverwaltung_schritt8_teilH.sql", H), ("zeitverwaltung_schritt7_teilG.sql", G), ("zeitverwaltung_schritt6_teilF.sql", F), ("zeitverwaltung_schritt5_teilE.sql", E), ("zeitverwaltung_schritt2_teilA.sql", A), ("zeitverwaltung_schritt2_teilB.sql", B), ("zeitverwaltung_schritt3_teilC.sql", C), ("zeitverwaltung_schritt4_teilD.sql", D)]:
     (R / "supabase" / n).write_text(t)
 print("ok")
