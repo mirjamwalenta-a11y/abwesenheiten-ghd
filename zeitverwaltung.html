@@ -1480,11 +1480,13 @@ function ZeitDialog({ ctx, ma, datum, onClose }) {
   // Pause vorbelegen: laut Dienstplan, wenn keine (oder eine kürzere) gestempelt ist und die App Pausen automatisch einträgt
   const planPause = +plan?.p || 0, autoP = autoPauseAktiv(db.einstellungen);
   const pauseVor = z ? (autoP && (z.pause || 0) < planPause ? planPause : (z.pause || 0)) : (plan ? planPause : 30);
-  const [f, setF] = useState({ beginn: z?.beginn || plan?.b || "09:00", ende: z?.ende || plan?.e || "", pause: pauseVor, notiz: z?.notiz || "", grund: "" });
+  // Ende vorbelegen nur, wenn der Dienst laut Plan schon vorbei ist – sonst würde „Speichern“ einen laufenden Tag versehentlich beenden
+  const planVorbei = !plan || datum < heute() || hm2min(nowHM()) >= hm2min(plan.e);
+  const [f, setF] = useState({ beginn: z?.beginn || plan?.b || "09:00", ende: z?.ende || (planVorbei ? plan?.e || "" : ""), pause: pauseVor, notiz: z?.notiz || "", grund: "" });
   const [loeschen, setLoeschen] = useState(false);
   const netto = f.beginn && f.ende ? hm2min(f.ende) - hm2min(f.beginn) - (+f.pause || 0) : 0;
   const fehler = loeschen ? null
-    : !f.beginn || !f.ende ? "Beginn und Ende angeben." : hm2min(f.ende) <= hm2min(f.beginn) ? "Ende muss nach Beginn liegen." : netto < 0 ? "Pause länger als Anwesenheit." : null;
+    : !f.beginn || !f.ende ? (z && !z.ende ? "Dienst läuft noch – Ende nur eintragen, wenn du den Tag jetzt beenden willst." : "Beginn und Ende angeben.") : hm2min(f.ende) <= hm2min(f.beginn) ? "Ende muss nach Beginn liegen." : netto < 0 ? "Pause länger als Anwesenheit." : null;
   // Grund ist freiwillig – leer bleibt nachvollziehbar: Wer, wann, alt → neu steht immer im Protokoll
   const grund = f.grund.trim() || (direkt ? `${loeschen ? "gelöscht" : z ? "korrigiert" : "nachgetragen"} von ${user.name.split(" ")[0]}` : "Korrektur beantragt");
 
