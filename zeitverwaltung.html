@@ -78,7 +78,7 @@ const SESS_KEY = "ghd-zeitverwaltung-demo-user";
 
 // ─── DATUM & ZEIT ─────────────────────────────────────────────────────────────
 const pad = n => String(n).padStart(2, "0");
-function datStr(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function datStr(d) { return `${String(d.getFullYear()).padStart(4, "0")}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
 function parseD(s) { return new Date(s + "T00:00:00"); }
 function heute() { return datStr(new Date()); }
 function addTage(s, n) { const d = parseD(s); d.setDate(d.getDate() + n); return datStr(d); }
@@ -494,7 +494,7 @@ function vorschlagUrlaubstage(db, ma) {
 }
 // Urlaubsjahr = Arbeitsjahr: beginnt jedes Jahr am Jahrestag des Eintritts (§ 2 UrlG)
 function istSchaltjahr(y) { return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }
-function jahrestag(y, md) { return md === "02-29" && !istSchaltjahr(y) ? `${y}-02-28` : `${y}-${md}`; }
+function jahrestag(y, md) { const j = String(y).padStart(4, "0"); return md === "02-29" && !istSchaltjahr(y) ? `${j}-02-28` : `${j}-${md}`; }
 function addMonate(s, n) { const d = parseD(s); d.setMonth(d.getMonth() + n); return datStr(d); }
 function ujBeginn(ma, d) {
   if (!ma.eintritt) return `${d.slice(0, 4)}-01-01`;
@@ -967,6 +967,16 @@ function Feld({ label, children, hilfe, breit }) {
     {children}
     {hilfe && <span className="block text-xs text-stone-500 mt-1">{hilfe}</span>}
   </label>;
+}
+// Datumsfeld: Beim Eintippen meldet der Browser Zwischenstände wie Jahr „0002“ oder „0020“.
+// Damit rechnet die App sonst über Jahrhunderte und der Tab stürzt ab („Nicht genügend Speicher“).
+// Weitergegeben wird deshalb nur ein leeres Feld oder ein vollständiges Datum zwischen 1900 und 2100.
+function datumPlausibel(v) { return /^\d{4}-\d{2}-\d{2}$/.test(v) && v >= "1900-01-01" && v <= "2100-12-31"; }
+function DatumInput({ value, onChange, ...rest }) {
+  const [roh, setRoh] = useState(value || "");
+  useEffect(() => { if ((value || "") !== roh && (datumPlausibel(roh) || !roh)) setRoh(value || ""); }, [value]);
+  return <input type="date" {...rest} value={roh} onChange={e => { const v = e.target.value; setRoh(v); if (!v || datumPlausibel(v)) onChange(e); }}
+    onBlur={() => { if (roh && !datumPlausibel(roh)) setRoh(value || ""); }} />;
 }
 const inputCls = "w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gold-500/20 focus:border-gold-500 disabled:bg-stone-100 disabled:text-stone-500";
 const inputKlein = inputCls.replace("w-full ", "");
@@ -1779,11 +1789,11 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
     <div className="grid sm:grid-cols-2 gap-4">
       {auswahl.length > 1 && <Feld label="Mitarbeiter/in" breit><select className={inputCls} value={f.maId} onChange={e => setF({ ...f, maId: e.target.value })}>{auswahl.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>}
       {arten.length > 1 && <Feld label="Art der Abwesenheit" breit><select className={inputCls} value={f.art} onChange={e => setF({ ...f, art: e.target.value })}>{arten.map(a => <option key={a} value={a}>{ARTEN[a].label}</option>)}</select></Feld>}
-      <Feld label="Von"><input type="date" className={inputCls} value={f.von} onChange={e => setF({ ...f, von: e.target.value, bis: f.bis < e.target.value ? e.target.value : f.bis })} /></Feld>
+      <Feld label="Von"><DatumInput className={inputCls} value={f.von} onChange={e => setF({ ...f, von: e.target.value, bis: f.bis < e.target.value ? e.target.value : f.bis })} /></Feld>
       {art.stunden ? <Feld label="Dauer (Stunden)" hilfe="inkl. Weg; der Rest des Tages wird gearbeitet und gestempelt">
         <input type="number" min="0.5" max="12" step="0.5" className={inputCls} value={f.stunden} onChange={e => setF({ ...f, stunden: e.target.value })} />
       </Feld> : <Feld label="Bis">
-        <input type="date" className={inputCls} value={f.offen ? "" : f.bis} disabled={f.offen} min={f.von} onChange={e => setF({ ...f, bis: e.target.value })} />
+        <DatumInput className={inputCls} value={f.offen ? "" : f.bis} disabled={f.offen} min={f.von} onChange={e => setF({ ...f, bis: e.target.value })} />
         {art.offen && <label className="flex items-center gap-2 mt-1.5 text-xs text-stone-600"><input type="checkbox" checked={f.offen} onChange={e => setF({ ...f, offen: e.target.checked })} />Ende noch offen</label>}
         {halbMoeglich && <label className="flex items-center gap-2 mt-1.5 text-xs text-stone-600"><input type="checkbox" checked={f.halb} onChange={e => setF({ ...f, halb: e.target.checked })} />nur halber Tag</label>}
       </Feld>}
@@ -2108,8 +2118,8 @@ function BsPlaner({ ctx, lehrlinge, onClose }) {
     <div className="grid sm:grid-cols-2 gap-4">
       <Feld label="Lehrling" breit><select className={inputCls} value={maId} onChange={e => { setMaId(e.target.value); const m = db.mitarbeiter.find(x => x.id === e.target.value); setPlan(bsWochentage(db, m)); }}>
         {lehrlinge.map(m => <option key={m.id} value={m.id}>{m.name} · {lehrjahr(m, h) || "–"}. Lehrjahr</option>)}</select></Feld>
-      <Feld label="Von"><input type="date" className={inputCls} value={von} onChange={e => setVon(e.target.value)} /></Feld>
-      <Feld label="Bis" hilfe="Standard: Ende des Schuljahres"><input type="date" className={inputCls} value={bis} min={von} onChange={e => setBis(e.target.value)} /></Feld>
+      <Feld label="Von"><DatumInput className={inputCls} value={von} onChange={e => setVon(e.target.value)} /></Feld>
+      <Feld label="Bis" hilfe="Standard: Ende des Schuljahres"><DatumInput className={inputCls} value={bis} min={von} onChange={e => setBis(e.target.value)} /></Feld>
       {tagWahl("tag1", "Schultag (ganzer Tag)")}
       {tagWahl("tag2", "Zusätzlicher halber Tag (1. Lehrjahr)")}
       <p className="text-xs text-stone-500 sm:col-span-2 -mt-2">Die gewählten Tage werden beim Lehrling als fixe Schultage gespeichert.</p>
@@ -2132,7 +2142,7 @@ function GesundForm({ a, onOk, onAbbruch }) {
   const [bis, setBis] = useState(addTage(heute(), -1) < a.von ? a.von : addTage(heute(), -1));
   return <div className="flex flex-wrap items-center gap-2 text-xs">
     <span>Letzter Abwesenheitstag:</span>
-    <input type="date" className={`${inputKlein} py-1`} value={bis} min={a.von} onChange={e => setBis(e.target.value)} />
+    <DatumInput className={`${inputKlein} py-1`} value={bis} min={a.von} onChange={e => setBis(e.target.value)} />
     <Knopf klein onClick={() => onOk(bis)}>Speichern</Knopf><Knopf klein art="geist" onClick={onAbbruch}>Abbrechen</Knopf>
   </div>;
 }
@@ -2189,7 +2199,7 @@ function MaDialog({ ctx, ma, onClose }) {
     if (planDlg.kopie) set("modellId", m.id);
     setPlanDlg(null);
   }
-  const fehler = !f.name.trim() ? "Name fehlt." : db.mitarbeiter.some(m => m.id !== f.id && m.personalnr === f.personalnr) ? "Personalnummer bereits vergeben."
+  const fehler = !f.name.trim() ? "Name fehlt." : f.personalnr && db.mitarbeiter.some(m => m.id !== f.id && m.personalnr === f.personalnr) ? "Personalnummer bereits vergeben."
     : f.austritt && f.eintritt && f.austritt < f.eintritt ? "Austritt liegt vor dem Eintritt." : f.austritt && !f.austrittArt ? "Bitte die Art der Beendigung wählen." : null;
   function speichern() {
     aendern(n => {
@@ -2218,13 +2228,13 @@ function MaDialog({ ctx, ma, onClose }) {
       {istAdmin(user) && !ctx.live && <ChefinTausch ctx={ctx} ma={ma} onClose={onClose} />}</div>}
     <div className="grid sm:grid-cols-2 gap-4">
       <Feld label="Name" hilfe={ctx.live ? "Namen ändern in der Abwesenheiten-App (Teil der Anmeldung)" : null}><input className={inputCls} value={f.name} disabled={ctx.live} onChange={e => set("name", e.target.value)} /></Feld>
-      <Feld label="Personalnummer"><input className={inputCls} value={f.personalnr} onChange={e => set("personalnr", e.target.value)} /></Feld>
+      <Feld label="Personalnummer"><input className={inputCls} value={f.personalnr || ""} onChange={e => set("personalnr", e.target.value)} /></Feld>
       <Feld label="Bereich (optional)" hilfe="Nur zum Sortieren und Filtern – kann leer bleiben.">
         <input className={inputCls} value={f.abteilung || ""} placeholder="z. B. Salon" onChange={e => set("abteilung", e.target.value)} />
         <div className="mt-1.5 flex flex-wrap gap-1.5">{[...new Set(["Salon", "Rezeption", "Ausbildung", ...db.mitarbeiter.map(m => m.abteilung).filter(Boolean)])].map(a =>
           <button key={a} type="button" onClick={() => set("abteilung", a)} className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${f.abteilung === a ? "bg-gold-500 text-white ring-gold-500" : "bg-white text-stone-600 ring-stone-200 hover:ring-gold-500"}`}>{a}</button>)}</div></Feld>
-      <Feld label="Funktion"><input className={inputCls} value={f.funktion} onChange={e => set("funktion", e.target.value)} /></Feld>
-      <Feld label="Eintrittsdatum"><input type="date" className={inputCls} value={f.eintritt || ""} onChange={e => set("eintritt", e.target.value)} /></Feld>
+      <Feld label="Funktion"><input className={inputCls} value={f.funktion || ""} onChange={e => set("funktion", e.target.value)} /></Feld>
+      <Feld label="Eintrittsdatum"><DatumInput className={inputCls} value={f.eintritt || ""} onChange={e => set("eintritt", e.target.value)} /></Feld>
       <Feld label="Dienstplan" breit hilfe={`${fmtTage(wochenStd(modellVon(db, f)))} Wochenstunden · ${WT.map((t, i) => { const x = planAusModell(modellVon(db, f), i); return x ? `${t} ${x.b}–${x.e}${x.p ? ` (${pauseTxt(x)})` : ""}` : null; }).filter(Boolean).join(" · ")}`}>
         <select className={inputCls} value={f.modellId} onChange={e => set("modellId", e.target.value)}>{db.modelle.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
         <div className="mt-2 flex flex-wrap gap-2">
@@ -2237,7 +2247,7 @@ function MaDialog({ ctx, ma, onClose }) {
       {(!f.eintritt || f.eintritt < (f.urlaubStartAm || heute())) ? <Feld label="Offener Urlaub (Startbestand)" hilfe={`alle noch offenen Tage am Stichtag, inkl. Anspruch des laufenden Urlaubsjahres · Urlaubsjahr ab ${f.eintritt ? fmtD(ujBeginn(f, heute())).slice(0, 6) : "Eintritt"}`}>
         <div className="flex gap-2">
           <input type="number" step="0.5" className={inputCls} value={f.urlaubStart ?? ""} placeholder="Tage" onChange={e => setF({ ...f, urlaubStart: e.target.value, urlaubStartAm: f.urlaubStartAm || db.einstellungen.kontoStart || heute() })} />
-          <input type="date" className={inputCls} value={f.urlaubStartAm || ""} title="Stand am" onChange={e => set("urlaubStartAm", e.target.value || undefined)} />
+          <DatumInput className={inputCls} value={f.urlaubStartAm || ""} title="Stand am" onChange={e => set("urlaubStartAm", e.target.value || undefined)} />
         </div></Feld> : <div />}
       <div className="text-sm self-end pb-2">{f.eintritt && (() => { const k = urlaubsKonto(db, { ...f, urlaubstage: +f.urlaubstage || 0, urlaubStart: +f.urlaubStart || 0 }, heute()); return <>Urlaubsjahr {fmtD(k.von)} – {fmtD(k.bis)} · heute offen: <b>{fmtTage(k.rest)} Tage</b></>; })()}</div>
       {f.rolle === "admin" ? <Feld label="Genehmigt Urlaub & Korrekturen"><div className="text-sm text-stone-600 py-2">– als Chefin genehmigst du selbst</div></Feld>
@@ -2252,9 +2262,9 @@ function MaDialog({ ctx, ma, onClose }) {
         </select></Feld>
       {!ctx.live && <Feld label="Rolle"><select className={inputCls} value={f.rolle} disabled={!istAdmin(user) || (f.id === user.id && !db.mitarbeiter.some(m => m.id !== user.id && m.aktiv && m.rolle === "admin"))} onChange={e => set("rolle", e.target.value)}>{Object.entries(ROLLEN).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select></Feld>}
       <Feld label="Geburtsdatum" hilfe={f.geburtsdatum ? (jugendlich(f, heute()) ? `Unter 18 – KJBG-Regeln gelten bis ${fmtD(`${parseInt(f.geburtsdatum) + 18}${f.geburtsdatum.slice(4)}`)}, danach automatisch AZG` : "Volljährig – es gilt das AZG") : "Für Lehrlinge wichtig: bis 18 gelten automatisch die strengeren KJBG-Regeln"}>
-        <input type="date" className={inputCls} value={f.geburtsdatum || ""} onChange={e => set("geburtsdatum", e.target.value || undefined)} /></Feld>
+        <DatumInput className={inputCls} value={f.geburtsdatum || ""} onChange={e => set("geburtsdatum", e.target.value || undefined)} /></Feld>
       {f.lehrbeginn && <Feld label="Lehrbeginn" hilfe={`Derzeit ${lehrjahr(f, heute()) || "–"}. Lehrjahr · Berufsschule ${fmtTage(bsTageProWoche(db, f, heute()))} Tag(e)/Woche`}>
-        <input type="date" className={inputCls} value={f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.value || undefined)} /></Feld>}
+        <DatumInput className={inputCls} value={f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.value || undefined)} /></Feld>}
       {f.lehrbeginn && <Feld label="Fixe Berufsschultage" hilfe="Ganzer Tag · halber Tag (nur im 1. Lehrjahr)">
         <div className="flex gap-2">
           <select className={inputCls} value={bsWochentage(db, f).tag1} onChange={e => set("bsTag1", +e.target.value)}>{WT_LANG.map((t, i) => <option key={i} value={i}>{t}</option>)}</select>
@@ -2273,7 +2283,7 @@ function MaDialog({ ctx, ma, onClose }) {
       </div>}
       {f.austritt && <div className="space-y-3">
         <div className="grid sm:grid-cols-2 gap-3">
-          <Feld label="Letzter Arbeitstag"><input type="date" className={inputCls} value={f.austritt} min={f.eintritt} onChange={e => set("austritt", e.target.value || heute())} /></Feld>
+          <Feld label="Letzter Arbeitstag"><DatumInput className={inputCls} value={f.austritt} min={f.eintritt} onChange={e => set("austritt", e.target.value || heute())} /></Feld>
           <Feld label="Art der Beendigung"><select className={inputCls} value={f.austrittArt || ""} onChange={e => set("austrittArt", e.target.value)}>
             <option value="">– bitte wählen –</option>{BEENDIGUNG.map(b => <option key={b}>{b}</option>)}</select></Feld>
           <Feld label="Notiz (optional)" breit><input className={inputCls} value={f.austrittNotiz || ""} placeholder="z. B. Kündigung erhalten am …, Kündigungsfrist" onChange={e => set("austrittNotiz", e.target.value)} /></Feld>
@@ -2935,7 +2945,7 @@ function StartKarte({ ctx }) {
   return <Karte titel="Start der Zeitverwaltung">
     <div className="grid md:grid-cols-2 gap-4 items-start">
       <Feld label="Starttag" hilfe="Ab diesem Tag zählt das Zeitkonto und vergessene ganze Tage werden laut Dienstplan eingetragen. Vergessenes Ausstempeln wird schon jetzt automatisch ergänzt. Vorher ist alles Testbetrieb.">
-        <input type="date" className={inputCls} disabled={!admin} value={e.kontoStart || ""} onChange={ev => aendern(n => { n.einstellungen.kontoStart = ev.target.value || null; })} />
+        <DatumInput className={inputCls} disabled={!admin} value={e.kontoStart || ""} onChange={ev => aendern(n => { n.einstellungen.kontoStart = ev.target.value || null; })} />
         {!e.kontoStart && <p className="mt-1 text-xs text-amber-700">Noch kein Starttag festgelegt – z. B. 01.01.2027.</p>}
       </Feld>
       <label className="flex items-start gap-3 text-sm mt-6">
@@ -3019,7 +3029,7 @@ function AussenTermine({ ctx }) {
     </ul>}
     {admin && <div className="mt-3 grid sm:grid-cols-[1fr_auto_auto_1fr_auto] gap-2 items-end">
       <Feld label="Mitarbeiter/in"><select className={inputCls} value={f.maId} onChange={e => setF({ ...f, maId: e.target.value })}>{aktive.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Feld>
-      <Feld label="Tag"><input type="date" className={inputCls} value={f.datum} onChange={e => setF({ ...f, datum: e.target.value })} /></Feld>
+      <Feld label="Tag"><DatumInput className={inputCls} value={f.datum} onChange={e => setF({ ...f, datum: e.target.value })} /></Feld>
       <Feld label="Art"><select className={inputCls} value={f.art} onChange={e => setF({ ...f, art: e.target.value })}><option value="aussen">Außentermin (Handy überall)</option><option value="einspringen">Einspringen (freier Tag)</option></select></Feld>
       <Feld label="Wofür (optional)"><input className={inputCls} placeholder="z. B. Hochzeit Brautstyling" value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>
       <Knopf onClick={hinzu} disabled={!f.maId || !f.datum || doppelt}>Freigeben</Knopf>
@@ -3244,7 +3254,7 @@ function ModellDialog({ db, modell, oz, neu, onSave, onClose }) {
     <div className="space-y-4">
       <div className="grid sm:grid-cols-2 gap-4">
         <Feld label="Bezeichnung"><input className={inputCls} value={m.name} onChange={e => setM({ ...m, name: e.target.value })} /></Feld>
-        {!neu && <Feld label="Gültig ab" hilfe="Tage davor bleiben beim alten Plan"><input type="date" className={inputCls} value={ab} onChange={e => setAb(e.target.value)} /></Feld>}
+        {!neu && <Feld label="Gültig ab" hilfe="Tage davor bleiben beim alten Plan"><DatumInput className={inputCls} value={ab} onChange={e => setAb(e.target.value)} /></Feld>}
       </div>
       <div className="space-y-1.5">
         {WT_LANG.map((t, i) => { const p = m.plan[i]; return <div key={i} className="flex flex-wrap items-center gap-2">
