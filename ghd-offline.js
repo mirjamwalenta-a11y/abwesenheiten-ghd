@@ -19,7 +19,9 @@
 //    Daten, die diese Person auf diesem Gerät schon geladen hatte),
 //  - reicht frische Anmelde-Token an den Service Worker weiter, damit er
 //    gespeicherte Änderungen später im Namen derselben Person nachschickt,
-//  - zeigt unten an: offline / „3 Änderungen warten“ / Konflikte.
+//  - zeigt unten an: offline / „3 Änderungen warten“ / Konflikte,
+//  - schlägt Alarm, wenn plötzlich Einträge fehlen (Datenverlust-Wächter
+//    in ghd-offline-sw.js), mit Wiederherstellen / Als Datei speichern.
 // ============================================================
 (function () {
   'use strict';
@@ -31,7 +33,7 @@
   var SW_PFAD = attr('data-sw') || 'sw.js';
   var SB_TOKEN = 'sb-wrxlaltgtgkdomklgrlj-auth-token';
   var swDa = 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
-  var stand = { wartend: 0, konflikte: [] };
+  var stand = { wartend: 0, konflikte: [], verluste: [] };
 
   // ---------- supabase-js: ohne Netz gespeicherte Anmeldung verwenden ----------
   function gespeicherteSitzung() {
@@ -130,6 +132,10 @@
     });
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (e.data && e.data.typ === 'ghd-offline-status') { stand = e.data; anzeigen(); }
+      if (e.data && e.data.typ === 'ghd-verlust-ergebnis') {
+        alert(e.data.text);
+        if (e.data.ok) setTimeout(function () { location.reload(); }, 300);
+      }
     });
     navigator.serviceWorker.ready.then(function () {
       if (!OEFFENTLICH && !jemandAngemeldet()) senden({ typ: 'abgemeldet' });
@@ -149,8 +155,10 @@
     if (!document.body) { document.addEventListener('DOMContentLoaded', anzeigen, { once: true }); return; }
     var leiste = document.getElementById('ghd-offline-leiste');
     var k = (stand.konflikte || []).length, w = stand.wartend || 0, off = !navigator.onLine;
+    var vl = stand.verluste || [], vn = vl.reduce(function (s, v) { return s + (v.zeilen || []).length; }, 0);
     var text = '', farbe = '#2E5D4B';
-    if (k) { text = '⚠️ ' + k + (k === 1 ? ' Änderung wurde' : ' Änderungen wurden') + ' nicht übernommen – tippen zum Ansehen'; farbe = '#9a3412'; }
+    if (vl.length) { text = '🛟 Achtung: ' + vn + ' Einträge sind plötzlich verschwunden – gesichert, tippen zum Wiederherstellen'; farbe = '#b91c1c'; }
+    else if (k) { text = '⚠️ ' + k + (k === 1 ? ' Änderung wurde' : ' Änderungen wurden') + ' nicht übernommen – tippen zum Ansehen'; farbe = '#9a3412'; }
     else if (w && off) text = 'Offline – ' + w + (w === 1 ? ' Änderung wartet' : ' Änderungen warten') + ' im Handy und ' + (w === 1 ? 'wird' : 'werden') + ' automatisch hochgeladen';
     else if (w) text = '⏳ ' + w + (w === 1 ? ' Änderung wird' : ' Änderungen werden') + ' hochgeladen …';
     else if (off) text = 'Offline – gezeigt wird der zuletzt geladene Stand';
@@ -160,11 +168,14 @@
         + 'border:0;border-radius:999px;padding:8px 16px;color:#fff;max-width:94vw;box-shadow:0 4px 16px rgba(0,0,0,.2);' + SCHRIFT);
       leiste.id = 'ghd-offline-leiste';
       leiste.type = 'button';
-      leiste.addEventListener('click', function () { if ((stand.konflikte || []).length) konflikteZeigen(); });
+      leiste.addEventListener('click', function () {
+        if ((stand.verluste || []).length) verlusteZeigen();
+        else if ((stand.konflikte || []).length) konflikteZeigen();
+      });
       document.body.appendChild(leiste);
     }
     leiste.style.background = farbe;
-    leiste.style.cursor = k ? 'pointer' : 'default';
+    leiste.style.cursor = (k || vl.length) ? 'pointer' : 'default';
     leiste.textContent = text;
   }
   function wertText(v) {
@@ -243,6 +254,62 @@
     huelle.addEventListener('click', function (e) { if (e.target === huelle) huelle.remove(); });
     document.body.appendChild(huelle);
   }
+  function knopf(text, dunkel) {
+    var b = el('button', (dunkel ? 'border:0;background:#1c1917;color:#fff;' : 'border:1px solid #d6d3d1;background:#fff;')
+      + 'border-radius:999px;padding:8px 14px;cursor:pointer;' + SCHRIFT, text);
+    b.type = 'button';
+    return b;
+  }
+  function alsDatei(v) {
+    var name = 'sicherung-' + (v.tabelle || 'daten') + '-' + new Date(v.zeit).toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.json';
+    var blob = new Blob([JSON.stringify({ app: v.app, tabelle: v.tabelle, gesichert: new Date(v.zeit).toISOString(), eintraege: v.zeilen }, null, 2)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+  function kurz(z) {
+    var t = z.titel || z.name || z.text || z.bezeichnung || z.anlass || z.beschreibung;
+    if (!t) { for (var f in z) { if (typeof z[f] === 'string' && z[f].length > 2 && !/^[0-9a-f-]{20,}$/i.test(z[f]) && !/^\d{4}-\d\d-\d\d/.test(z[f])) { t = z[f]; break; } } }
+    t = String(t || ('Eintrag ' + z.id));
+    return t.length > 80 ? t.slice(0, 80) + ' …' : t;
+  }
+  function verlusteZeigen() {
+    var alt = document.getElementById('ghd-offline-dialog');
+    if (alt) alt.remove();
+    var huelle = el('div', 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center;');
+    huelle.id = 'ghd-offline-dialog';
+    var box = el('div', 'background:#fff;color:#1c1917;width:100%;max-width:520px;max-height:85vh;overflow:auto;border-radius:16px 16px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom));' + SCHRIFT);
+    box.appendChild(el('div', 'font-weight:700;font-size:16px;margin-bottom:4px', '🛟 Verschwundene Einträge'));
+    box.appendChild(el('div', 'color:#57534e;margin-bottom:12px', 'Diese Einträge waren vorher da und sind jetzt am Server nicht mehr zu finden. Dieses Gerät hat sie gesichert. Bitte zuerst „Als Datei speichern“, dann „Wiederherstellen“.'));
+    (stand.verluste || []).forEach(function (v) {
+      var karte = el('div', 'border:1px solid #fecaca;border-radius:12px;padding:12px;margin-bottom:10px');
+      karte.appendChild(el('div', 'font-weight:600', v.zeilen.length + ' von ' + v.vorher + ' Einträgen · ' + v.tabelle + ' · ' + new Date(v.zeit).toLocaleString('de-AT')));
+      var liste = el('div', 'background:#f5f5f4;border-radius:8px;padding:6px 8px;margin:6px 0;font-size:12px;max-height:160px;overflow:auto');
+      v.zeilen.forEach(function (z) { liste.appendChild(el('div', 'padding:2px 0', '• ' + kurz(z))); });
+      karte.appendChild(liste);
+      var knoepfe = el('div', 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px');
+      var datei = knopf('💾 Als Datei speichern');
+      datei.onclick = function () { alsDatei(v); };
+      var zurueck = knopf('↺ Wiederherstellen', true);
+      zurueck.onclick = function () { zurueck.disabled = true; zurueck.textContent = '… wird wiederhergestellt'; senden({ typ: 'verlust-wiederherstellen', nr: v.nr }); };
+      var ok = knopf('War Absicht – ausblenden');
+      ok.onclick = function () {
+        if (!confirm('Wurden diese ' + v.zeilen.length + ' Einträge absichtlich gelöscht? Die Sicherung auf diesem Gerät wird dann entfernt (der Server-Papierkorb behält sie trotzdem 180 Tage).')) return;
+        senden({ typ: 'verlust-erledigt', nr: v.nr }); karte.remove();
+      };
+      knoepfe.appendChild(datei); knoepfe.appendChild(zurueck); knoepfe.appendChild(ok);
+      karte.appendChild(knoepfe);
+      box.appendChild(karte);
+    });
+    var zu = knopf('Schließen');
+    zu.style.width = '100%'; zu.style.marginTop = '4px';
+    zu.onclick = function () { huelle.remove(); };
+    box.appendChild(zu);
+    huelle.appendChild(box);
+    huelle.addEventListener('click', function (e) { if (e.target === huelle) huelle.remove(); });
+    document.body.appendChild(huelle);
+  }
   window.addEventListener('online', anzeigen);
   window.addEventListener('offline', anzeigen);
   document.addEventListener('DOMContentLoaded', anzeigen);
@@ -251,6 +318,7 @@
     gespeicherteSitzung: gespeicherteSitzung,
     jetztAbgleichen: abgleichen,
     konflikteZeigen: konflikteZeigen,
+    verlusteZeigen: verlusteZeigen,
     stand: function () { return stand; }
   };
 })();

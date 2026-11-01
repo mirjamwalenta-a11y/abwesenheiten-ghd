@@ -25,6 +25,13 @@
 //    wird NICHT überschrieben, sondern die Änderung als Konflikt angezeigt
 //    (ghd-offline.js), und die Person entscheidet selbst.
 //
+// Datenverlust-Wächter (2026-11-01): Für jede Tabelle merkt sich das Handy
+// die zuletzt gesehenen Einträge. Fehlen plötzlich mindestens 3 davon
+// komplett (nicht nur weggefiltert und nicht von dieser App selbst gelöscht),
+// wird das als „Daten fehlen“ gemeldet (ghd-offline.js) — mit den Knöpfen
+// Wiederherstellen / Als Datei speichern. Gemeldete Verluste bleiben auch
+// nach dem Abmelden erhalten, bis sie erledigt sind.
+//
 // Bewusst NIE zwischengespeichert oder nachgeschickt:
 //  - Anmeldung (/auth/v1), Edge Functions (/functions/v1), RPC-Funktionen
 //    (/rest/v1/rpc/…). RPCs prüfen serverseitig Rechte, Zeit oder Ort
@@ -113,15 +120,18 @@
   var dbPromise = null;
   function db() {
     if (!dbPromise) dbPromise = new Promise(function (ok, nein) {
-      var r = indexedDB.open(DB_NAME, 1);
+      var r = indexedDB.open(DB_NAME, 2);
       r.onupgradeneeded = function () {
         var d = r.result;
-        d.createObjectStore('antworten');
-        d.createObjectStore('warteschlange', { keyPath: 'nr', autoIncrement: true });
-        d.createObjectStore('konflikte', { keyPath: 'nr', autoIncrement: true });
-        d.createObjectStore('tokens');
+        var da = function (n) { return d.objectStoreNames.contains(n); };
+        if (!da('antworten')) d.createObjectStore('antworten');
+        if (!da('warteschlange')) d.createObjectStore('warteschlange', { keyPath: 'nr', autoIncrement: true });
+        if (!da('konflikte')) d.createObjectStore('konflikte', { keyPath: 'nr', autoIncrement: true });
+        if (!da('tokens')) d.createObjectStore('tokens');
+        if (!da('gesehen')) d.createObjectStore('gesehen');                                    // ident|tabelle → { zeilen: {schluessel: zeile} }
+        if (!da('verluste')) d.createObjectStore('verluste', { keyPath: 'nr', autoIncrement: true });
       };
-      r.onsuccess = function () { ok(r.result); };
+      r.onsuccess = function () { r.result.onversionchange = function () { r.result.close(); dbPromise = null; }; ok(r.result); };
       r.onerror = function () { dbPromise = null; nein(r.error); };
     });
     return dbPromise;
@@ -226,6 +236,100 @@
     return (await netz) || Response.error();
   }
 
+  // ---------- Datenverlust-Wächter ----------
+  var GESEHEN_MAX = 3000;      // Zeilen pro Tabelle, die gemerkt werden
+  var VERLUST_AB = 3;          // so viele Einträge müssen auf einmal verschwinden
+  function idText(v) { return typeof v === 'object' ? JSON.stringify(v) : String(v); }
+  async function waechter(req, url, text) {
+    var tabelle = tabelleVon(url);
+    if (!tabelle) return;
+    if (url.searchParams.has('limit') || url.searchParams.has('offset')) return; // Seitenweise → Fehlen ist normal
+    if (/range|offset/i.test(req.headers.get('range') || '')) return;
+    var daten;
+    try { daten = JSON.parse(text); } catch (e) { return; }
+    if (!Array.isArray(daten)) return;
+    var mitId = daten.filter(function (z) { return z && typeof z === 'object' && z.id !== undefined && z.id !== null; });
+    if (mitId.length !== daten.length) return;  // ohne id lässt sich nichts sicher vergleichen
+    var ident = await identitaet(req.headers);
+    var key = ident + '|' + tabelle;
+    var g = await idbGet('gesehen', key).catch(function () { return null; }) || { zeilen: {} };
+    var filter = filterVon(url);
+    var jetzt = {};
+    mitId.forEach(function (z) { jetzt[schluesselVon(z)] = 1; });
+    // Kandidaten: früher gesehen, passen sicher zu dieser Abfrage, fehlen jetzt
+    var kandidaten = Object.keys(g.zeilen).filter(function (k) {
+      return !jetzt[k] && zeilePasst(g.zeilen[k], filter, null);
+    });
+    if (kandidaten.length >= VERLUST_AB) {
+      // Gegenprobe: gibt es diese Einträge am Server überhaupt noch (evtl. nur geändert/weggefiltert)?
+      var ids = kandidaten.map(function (k) { return g.zeilen[k].id; });
+      var pu = new URL(url.origin + url.pathname);
+      pu.searchParams.set('select', 'id');
+      pu.searchParams.set('id', 'in.(' + ids.map(function (i) { return '"' + String(idText(i)).replace(/"/g, '\\"') + '"'; }).join(',') + ')');
+      var noch = null;
+      try {
+        var r = await mitTimeout(fetch(pu.toString(), { headers: { apikey: req.headers.get('apikey') || '', authorization: req.headers.get('authorization') || '', accept: 'application/json' } }), 8000);
+        if (r.ok) noch = await r.json();
+      } catch (e) { noch = null; }
+      if (Array.isArray(noch)) {
+        var da = {};
+        noch.forEach(function (z) { da['id:' + JSON.stringify(z.id)] = 1; });
+        var weg = kandidaten.filter(function (k) { return !da[k]; });
+        if (weg.length >= VERLUST_AB) {
+          await idbPut('verluste', {
+            zeit: Date.now(), app: APP, tabelle: tabelle, ident: ident,
+            zeilen: weg.map(function (k) { return g.zeilen[k]; }),
+            vorher: Object.keys(g.zeilen).length,
+            apikey: req.headers.get('apikey') || '', authorization: req.headers.get('authorization') || '',
+            basis: url.origin + url.pathname
+          }).catch(function () {});
+          statusMelden();
+        }
+        weg.forEach(function (k) { delete g.zeilen[k]; }); // nicht doppelt melden
+      }
+    }
+    mitId.forEach(function (z) { g.zeilen[schluesselVon(z)] = z; });
+    var alle = Object.keys(g.zeilen);
+    if (alle.length > GESEHEN_MAX) alle.slice(0, alle.length - GESEHEN_MAX).forEach(function (k) { delete g.zeilen[k]; });
+    await idbPut('gesehen', g, key).catch(function () {});
+  }
+  // Von dieser App selbst gelöscht → kein Verlust, aus „gesehen“ austragen
+  async function selbstGeloescht(req) {
+    var url = new URL(req.url), tabelle = tabelleVon(url);
+    if (!tabelle) return;
+    var key = (await identitaet(req.headers)) + '|' + tabelle;
+    var g = await idbGet('gesehen', key).catch(function () { return null; });
+    if (!g) return;
+    var filter = filterVon(url);
+    if (!filter.length) { g.zeilen = {}; }
+    else Object.keys(g.zeilen).forEach(function (k) { if (zeilePasst(g.zeilen[k], filter, null)) delete g.zeilen[k]; });
+    await idbPut('gesehen', g, key).catch(function () {});
+  }
+  async function verlustWiederherstellen(nr) {
+    var v = await idbGet('verluste', nr);
+    if (!v) return { ok: false, text: 'Nicht mehr vorhanden.' };
+    var auth = v.authorization;
+    if (v.ident.indexOf('u:') === 0) {
+      var t = await frischerToken(v.ident);
+      if (t) auth = 'Bearer ' + t;
+    }
+    var spalten = {};
+    v.zeilen.forEach(function (z) { Object.keys(z).forEach(function (k) { spalten[k] = 1; }); });
+    var koerper = v.zeilen.map(function (z) { var o = {}; Object.keys(spalten).forEach(function (k) { o[k] = z[k] === undefined ? null : z[k]; }); return o; });
+    try {
+      var r = await fetch(v.basis, { method: 'POST', body: JSON.stringify(koerper), headers: {
+        apikey: v.apikey, authorization: auth, 'content-type': 'application/json',
+        prefer: 'resolution=ignore-duplicates,return=minimal'
+      } });
+      if (!r.ok) {
+        var txt = ''; try { txt = (await r.text()).slice(0, 200); } catch (e) { /* egal */ }
+        return { ok: false, text: 'Der Server hat abgelehnt (HTTP ' + r.status + (txt ? ': ' + txt : '') + '). Die Einträge sind zusätzlich im Server-Papierkorb (sicherung.verlauf).' };
+      }
+    } catch (e) { return { ok: false, text: 'Kein Netz – bitte später nochmal.' }; }
+    await idbDel('verluste', nr);
+    return { ok: true, text: v.zeilen.length + ' Einträge wiederhergestellt.' };
+  }
+
   // ---------- Supabase: Lesen ----------
   async function datenLesen(req) {
     var url = new URL(req.url);
@@ -237,6 +341,7 @@
     } catch (e) { res = null; }
     if (res && res.ok) {
       var text = await res.clone().text();
+      try { await waechter(req, url, text); } catch (e) { /* Wächter darf nie stören */ }
       try {
         await idbPut('antworten', { text: text, status: res.status, typ: res.headers.get('content-type'), bereich: res.headers.get('content-range'), zeit: Date.now(), url: req.url, ident: ident }, key);
       } catch (e) { /* Speicher voll o. ä. – App funktioniert trotzdem */ }
@@ -324,6 +429,7 @@
     } catch (e) {
       return einreihen(kopie, art);
     }
+    if (res.ok && req.method === 'DELETE') { try { await selbstGeloescht(req); } catch (e) { /* egal */ } }
     if (res.ok && fuerCache) event.waitUntil(nachSchreiben(fuerCache).catch(function () {}));
     return res;
   }
@@ -521,6 +627,7 @@
     } catch (e) { return 'warten'; }
     if (res.ok) {
       await idbDel('warteschlange', w.nr);
+      if (w.methode === 'DELETE') { try { await selbstGeloescht(new Request(w.url, { headers: headers })); } catch (e) { /* egal */ } }
       if (w.art !== 'datei') {
         try { await nachSchreiben(new Request(w.url, { method: w.methode, headers: headers, body: w.koerper === '' ? undefined : w.koerper })); } catch (e) { /* egal */ }
       }
@@ -545,8 +652,11 @@
   async function status() {
     var w = await idbAlleSchluessel('warteschlange').catch(function () { return []; });
     var k = await idbAlle('konflikte').catch(function () { return []; });
+    var v = await idbAlle('verluste').catch(function () { return []; });
     return { typ: 'ghd-offline-status', wartend: w.length, konflikte: k.map(function (x) {
       return { nr: x.nr, zeit: x.zeit, tabelle: x.tabelle, art: x.art, filter: x.filter, meine: x.meine, vorher: x.vorher, server: x.server, grund: x.grund };
+    }), verluste: v.map(function (x) {
+      return { nr: x.nr, zeit: x.zeit, app: x.app, tabelle: x.tabelle, vorher: x.vorher, zeilen: x.zeilen };
     }) };
   }
   async function statusMelden() {
@@ -566,7 +676,13 @@
       } else if (d.typ === 'abgemeldet') {
         // Niemand mehr angemeldet → gelesene Daten vom Gerät entfernen.
         // Die Warteschlange (eigene, noch nicht gesendete Eingaben) bleibt.
-        await idbLeeren('antworten'); await idbLeeren('tokens'); tokens = {};
+        // Gemeldete Datenverluste (verluste) bleiben, bis sie erledigt sind.
+        await idbLeeren('antworten'); await idbLeeren('tokens'); await idbLeeren('gesehen'); tokens = {};
+      } else if (d.typ === 'verlust-wiederherstellen') {
+        var erg = await verlustWiederherstellen(d.nr);
+        if (event.source) event.source.postMessage({ typ: 'ghd-verlust-ergebnis', nr: d.nr, ok: erg.ok, text: erg.text });
+      } else if (d.typ === 'verlust-erledigt') {
+        await idbDel('verluste', d.nr);
       } else if (d.typ === 'konflikt-verwerfen') {
         await idbDel('konflikte', d.nr);
       } else if (d.typ === 'konflikt-trotzdem') {
