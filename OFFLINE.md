@@ -27,6 +27,24 @@ Apps ganz normal weiter, nur eben noch nicht offline.
   die App die eigenen Eingaben schon an. Unten erscheint eine Leiste, z. B.
   „Offline – 3 Änderungen warten“.
 
+## Datenverlust-Wächter (seit 2026-11-01, gilt für alle Apps)
+
+- Das Handy merkt sich pro Tabelle die zuletzt gesehenen Einträge.
+- Sind plötzlich **mindestens 3** davon am Server komplett weg (nicht nur
+  weggefiltert, z. B. erledigt, und nicht von dieser App selbst gelöscht),
+  erscheint unten eine rote Leiste „🛟 Achtung: … Einträge sind plötzlich
+  verschwunden“.
+- Ein Tipp darauf zeigt die Einträge mit drei Knöpfen:
+  *Als Datei speichern* (JSON-Sicherung), *Wiederherstellen* (spielt sie mit
+  den ursprünglichen IDs zurück, Vorhandenes bleibt unberührt) und
+  *War Absicht – ausblenden*.
+- Gemeldete Verluste bleiben auch nach dem automatischen Abmelden auf dem
+  Gerät, bis sie erledigt sind.
+- Zusätzlich gibt es am Server den **Papierkorb** für alle Tabellen
+  (`index.greathairday/supabase/migrations/20261101120000_datensicherung_papierkorb.sql`):
+  jede gelöschte/geänderte Zeile wird 180 Tage aufbewahrt,
+  Massenlöschungen über die App sind gesperrt.
+
 ## Konfliktregel: nichts überschreiben
 
 - Neue Einträge und Uploads werden immer gespeichert.
