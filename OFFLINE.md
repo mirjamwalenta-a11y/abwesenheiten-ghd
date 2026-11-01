@@ -61,6 +61,35 @@ Apps ganz normal weiter, nur eben noch nicht offline.
   Inventur-Zählungen) wird genauso geprüft. Hat inzwischen jemand anderer
   denselben Eintrag angelegt, wird nicht überschrieben.
 
+## Offline mit PIN (seit 2026-11-01)
+
+Bisher ging offline praktisch nie: Nach 15 Minuten ohne Bedienung meldet
+`ghd-sitzung.js` ab, dabei wurden alle gemerkten Daten gelöscht, und eine
+neue Anmeldung braucht Netz. Jetzt:
+
+- **Einmal festlegen:** Nach der Anmeldung (mit Netz) erscheint unten rechts
+  „📴 Offline-PIN festlegen“ (4–8 Ziffern, pro Person, „Später“ blendet ihn
+  7 Tage aus).
+- **Automatisch abgemeldet:** Die Anmeldung wird nicht weggeworfen, sondern
+  **verschlüsselt** im Gerät abgelegt („Tresor“). Die gemerkten Daten bleiben.
+  Am Server wird trotzdem abgemeldet.
+- **Ohne Netz öffnen:** Es erscheint „📴 Offline – mit PIN entsperren“. Mit der
+  richtigen PIN ist man wieder angemeldet und sieht den zuletzt geladenen
+  Stand. Änderungen warten in der Warteschlange und werden nach der nächsten
+  Anmeldung mit Netz hochgeladen.
+- **Mit Netz** gilt wie bisher die normale Anmeldung.
+- **Schutz:** 5 falsche PINs → Tresor und alle Offline-Daten werden vom Gerät
+  gelöscht. „PIN vergessen“ löscht ebenfalls alles (am Server geht nichts
+  verloren). Bewusstes Abmelden in einer App (ohne Tresor) löscht wie bisher.
+- **Technik:** RSA-OAEP-Schlüsselpaar pro Person; der private Schlüssel ist
+  mit einem PIN-Schlüssel (PBKDF2-SHA-256, 310 000 Runden, AES-GCM)
+  verschlüsselt. So kann beim Abmelden ohne PIN verschlossen, aber nur mit PIN
+  geöffnet werden.
+- **Grenze:** Die PIN schützt die Anmeldung. Die gemerkten Daten selbst liegen
+  wie bisher unverschlüsselt im Browser-Speicher des Geräts.
+- Apps mit eigener Abmelde-Zeit (Schaltzentrale) rufen `ghdSitzung.sperren()`
+  auf, damit auch dort der Tresor angelegt wird.
+
 ## Was bewusst Netz braucht
 
 - **Anmelden:** Ein neuer Login, Mitarbeiter-PIN und Token-Erneuerung brauchen
@@ -70,7 +99,7 @@ Apps ganz normal weiter, nur eben noch nicht offline.
   (Wörni/KI): Sie prüfen serverseitig Zeit, Ort oder Rechte. Ein späteres
   Nachschicken würde diese Prüfung verfälschen.
 - Die **automatische Abmeldung nach 15 Minuten** (`ghd-sitzung.js`) gilt auch
-  offline. Danach ist eine neue Anmeldung nötig, und die braucht Netz.
+  offline. Danach entsperrt man ohne Netz mit der Offline-PIN (siehe oben).
 
 ## Gut zu wissen
 
@@ -78,7 +107,8 @@ Apps ganz normal weiter, nur eben noch nicht offline.
 - iPhone/Safari kann den Speicher löschen, wenn eine App wochenlang nicht
   benutzt wurde. Noch nicht hochgeladene Änderungen gingen dann verloren.
   Deshalb die Leiste beachten und bei Netz kurz öffnen.
-- Ist niemand mehr angemeldet, löscht die App die gemerkten Daten vom Gerät.
+- Ist niemand mehr angemeldet und es gibt keinen Offline-Tresor, löscht die App
+  die gemerkten Daten vom Gerät.
   Noch nicht gesendete eigene Eingaben bleiben erhalten.
 - Neue Dateien oder Seiten einer App in deren `sw.js` bei `vorab` eintragen.
 

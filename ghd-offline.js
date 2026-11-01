@@ -138,7 +138,11 @@
       }
     });
     navigator.serviceWorker.ready.then(function () {
-      if (!OEFFENTLICH && !jemandAngemeldet()) senden({ typ: 'abgemeldet' });
+      // Gemerkte Daten nur löschen, wenn es keinen verschlüsselten Offline-Tresor gibt
+      // (ghd-sitzung.js: automatisch abgemeldet, aber mit Offline-PIN entsperrbar).
+      var tresor = false;
+      try { tresor = (JSON.parse(localStorage.getItem('ghd-tresor') || '[]') || []).length > 0; } catch (e) { tresor = false; }
+      if (!OEFFENTLICH && !jemandAngemeldet() && !tresor) senden({ typ: 'abgemeldet' });
       abgleichen();
       senden({ typ: 'status' });
     });
