@@ -46,6 +46,9 @@
   var CACHE = CACHE_PREFIX + (CFG.version || '1');
   var DB_NAME = 'ghd-offline-' + APP;
   var SB_HOST = 'wrxlaltgtgkdomklgrlj.supabase.co';
+  // Weitere Supabase-Projekte, die NUR vom Datenverlust-Wächter beobachtet
+  // werden (kein Offline-Speicher, keine Warteschlange): Belege-App.
+  var NUR_WAECHTER = ['lpuxvvfrrcnbuzafscyk.supabase.co'];
   var GEMEINSAM = 'https://mirjamwalenta-a11y.github.io/abwesenheiten-ghd/';
   var START = CFG.start || './';
   var VORAB = (CFG.vorab || []).concat([
@@ -251,7 +254,7 @@
     var mitId = daten.filter(function (z) { return z && typeof z === 'object' && z.id !== undefined && z.id !== null; });
     if (mitId.length !== daten.length) return;  // ohne id lässt sich nichts sicher vergleichen
     var ident = await identitaet(req.headers);
-    var key = ident + '|' + tabelle;
+    var key = ident + '|' + url.hostname + '|' + tabelle;
     var g = await idbGet('gesehen', key).catch(function () { return null; }) || { zeilen: {} };
     var filter = filterVon(url);
     var jetzt = {};
@@ -297,7 +300,7 @@
   async function selbstGeloescht(req) {
     var url = new URL(req.url), tabelle = tabelleVon(url);
     if (!tabelle) return;
-    var key = (await identitaet(req.headers)) + '|' + tabelle;
+    var key = (await identitaet(req.headers)) + '|' + url.hostname + '|' + tabelle;
     var g = await idbGet('gesehen', key).catch(function () { return null; });
     if (!g) return;
     var filter = filterVon(url);
@@ -328,6 +331,22 @@
     } catch (e) { return { ok: false, text: 'Kein Netz – bitte später nochmal.' }; }
     await idbDel('verluste', nr);
     return { ok: true, text: v.zeilen.length + ' Einträge wiederhergestellt.' };
+  }
+
+  // Nur beobachten (andere Supabase-Projekte): Anfrage unverändert durchreichen
+  async function nurBeobachten(req, event) {
+    var kopie = req.method === 'DELETE' ? req.clone() : null;
+    var res = await fetch(req);
+    if (res.ok) {
+      var url = new URL(req.url);
+      if (req.method === 'GET') {
+        var r2 = res.clone();
+        event.waitUntil(r2.text().then(function (t) { return waechter(req, url, t); }).catch(function () {}));
+      } else if (kopie) {
+        try { await selbstGeloescht(kopie); } catch (e) { /* egal */ }
+      }
+    }
+    return res;
   }
 
   // ---------- Supabase: Lesen ----------
@@ -709,6 +728,13 @@
     var req = event.request;
     var url = new URL(req.url);
 
+    if (NUR_WAECHTER.indexOf(url.hostname) >= 0) {
+      if (url.pathname.indexOf('/rest/v1/') === 0 && url.pathname.indexOf('/rest/v1/rpc/') !== 0 && tabelleVon(url)
+          && (req.method === 'GET' || req.method === 'DELETE')) {
+        event.respondWith(nurBeobachten(req, event));
+      }
+      return;
+    }
     if (url.hostname === SB_HOST) {
       if (url.pathname.indexOf('/rest/v1/') === 0 && url.pathname.indexOf('/rest/v1/rpc/') !== 0 && tabelleVon(url)) {
         if (req.method === 'GET') { event.respondWith(datenLesen(req)); return; }
