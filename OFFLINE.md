@@ -38,10 +38,13 @@ Apps ganz normal weiter, nur eben noch nicht offline.
   *Als Datei speichern* (JSON-Sicherung), *Wiederherstellen* (spielt sie mit
   den ursprünglichen IDs zurück, Vorhandenes bleibt unberührt) und
   *War Absicht – ausblenden*.
+- Gilt auch für die Belege-App (eigenes Supabase-Projekt `lpuxvvfrrcnbuzafscyk`);
+  dort wird nur beobachtet, ohne Offline-Speicher und Warteschlange.
 - Gemeldete Verluste bleiben auch nach dem automatischen Abmelden auf dem
   Gerät, bis sie erledigt sind.
 - Zusätzlich gibt es am Server den **Papierkorb** für alle Tabellen
-  (`index.greathairday/supabase/migrations/20261101120000_datensicherung_papierkorb.sql`):
+  (`index.greathairday/supabase/migrations/20261101120000_datensicherung_papierkorb.sql`,
+  für die Belege-App `belege.greathairday/supabase/migrations/20261101120000_datensicherung_papierkorb.sql`):
   jede gelöschte/geänderte Zeile wird 180 Tage aufbewahrt,
   Massenlöschungen über die App sind gesperrt.
 
