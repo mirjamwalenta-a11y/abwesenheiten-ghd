@@ -5,7 +5,7 @@
   <!-- Echter Betrieb: verbindet sich nur mit der gemeinsamen Supabase-Datenbank (connect-src).
        zeitverwaltung.html?test = Testversion mit Beispieldaten, nur im Browser. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; connect-src 'self' https://wrxlaltgtgkdomklgrlj.supabase.co wss://wrxlaltgtgkdomklgrlj.supabase.co; font-src 'self' data: https://fonts.gstatic.com; base-uri 'self'; form-action 'self'"/>
-  <script src="ghd-sitzung.js"></script>  <!-- automatisch abmelden nach 15 min ohne Bedienung -->
+  <script src="ghd-sitzung.js" data-token="sb-wrxlaltgtgkdomklgrlj-pin-auth-token"></script>  <!-- automatisch abmelden nach 15 min; PIN-Anmeldung im eigenen Fach -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="theme-color" content="#F8F4EA">
   <title>Zeitverwaltung · Great Hair Day</title>
@@ -3863,7 +3863,8 @@ function SchnellStempeln({ db, user, stempelnRoh, onFertig }) {
 }
 
 function LiveApp() {
-  const sb = useMemo(() => window.supabase.createClient(SB_URL, SB_KEY), []);
+  // PIN-Anmeldung im eigenen Fach – verdrängt nicht die E-Mail-Anmeldung der anderen Apps (gleich wie abwesenheiten.html)
+  const sb = useMemo(() => window.supabase.createClient(SB_URL, SB_KEY, { auth: { storageKey: "sb-wrxlaltgtgkdomklgrlj-pin-auth-token" } }), []);
   const [phase, setPhase] = useState("start"); // start | login | laden | app | terminal
   const [db, setDb] = useState(null);
   const [ichId, setIchId] = useState(null);
