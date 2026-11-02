@@ -36,18 +36,19 @@
   var stand = { wartend: 0, konflikte: [], verluste: [] };
 
   // ---------- supabase-js: ohne Netz gespeicherte Anmeldung verwenden ----------
-  function gespeicherteSitzung() {
+  function gespeicherteSitzung(fach) {
     try {
-      var s = JSON.parse(localStorage.getItem(SB_TOKEN) || 'null');
+      var s = JSON.parse(localStorage.getItem(fach || SB_TOKEN) || 'null');
       if (s && s.currentSession) s = s.currentSession;
       return s && s.access_token && s.refresh_token ? s : null;
     } catch (e) { return null; }
   }
-  function getSessionAbsichern(auth) {
+  // fach: Speicher-Schlüssel der Anmeldung (auth.storageKey der App, z. B. das PIN-Fach)
+  function getSessionAbsichern(auth, fach) {
     if (!auth || auth.__ghdOffline || typeof auth.getSession !== 'function') return;
     var original = auth.getSession.bind(auth);
     auth.getSession = function () {
-      var s = gespeicherteSitzung();
+      var s = gespeicherteSitzung(fach);
       if (s && !navigator.onLine) return Promise.resolve({ data: { session: s }, error: null });
       if (!s) return original();
       // Schwaches Netz: nicht ewig auf die Token-Erneuerung warten
@@ -56,7 +57,7 @@
         new Promise(function (ok) { setTimeout(function () { ok(null); }, 6000); })
       ]).then(function (r) {
         if (r && r.data && r.data.session) return r;
-        var s2 = gespeicherteSitzung();
+        var s2 = gespeicherteSitzung(fach);
         if (s2 && (r === null || (r && r.error && !navigator.onLine) || (r && r.error && /fetch|network/i.test(String(r.error.message || r.error.name))))) {
           return { data: { session: s2 }, error: null };
         }
@@ -71,7 +72,8 @@
     var original = sb.createClient;
     var neu = function () {
       var client = original.apply(this, arguments);
-      try { getSessionAbsichern(client.auth); } catch (e) { /* egal */ }
+      var opt = arguments[2], fach = opt && opt.auth && opt.auth.storageKey;
+      try { getSessionAbsichern(client.auth, fach); } catch (e) { /* egal */ }
       return client;
     };
     neu.__ghdOffline = true;

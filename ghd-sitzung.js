@@ -27,14 +27,37 @@
   var KEY = "ghd-letzte-aktivitaet", AUSNAHME = "ghd-kein-auto-abmelden";
   var SB_URL = "https://wrxlaltgtgkdomklgrlj.supabase.co";
   var SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndyeGxhbHRndGdrZG9ta2xncmxqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNDYwMzYsImV4cCI6MjA5OTgyMjAzNn0.Bw8ch-EJb_cLYTwxHdpjUJWgoCjje3Jc32pB0yiBS8g"; // öffentlicher anon-Schlüssel
-  var TOKEN = "sb-wrxlaltgtgkdomklgrlj-auth-token";
+  // Zwei Anmelde-Fächer: E-Mail-Apps (Startseite, Team, Wörni …) im gemeinsamen Fach,
+  // PIN-Apps (Abwesenheiten, Zeitverwaltung) im eigenen – sonst verdrängt die eine Anmeldung
+  // beim Wechsel die andere. Eine Seite wählt ihr Fach mit data-token="…".
+  var STANDARD_TOKEN = "sb-wrxlaltgtgkdomklgrlj-auth-token";
+  var PIN_TOKEN = "sb-wrxlaltgtgkdomklgrlj-pin-auth-token";
+  var ALLE_TOKEN = [STANDARD_TOKEN, PIN_TOKEN];
   var skript = document.currentScript;
+  var TOKEN = (skript && skript.getAttribute("data-token")) || STANDARD_TOKEN;
   var EIGENE = ((skript && skript.getAttribute("data-schluessel")) || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean);
   function ls(k, v) {
     try {
       if (v === undefined) return localStorage.getItem(k);
       if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v);
     } catch (e) { return null; }
+  }
+  function irgendeinToken() { for (var i = 0; i < ALLE_TOKEN.length; i++) if (ls(ALLE_TOKEN[i])) return true; return false; }
+  // Einmaliger Umzug: Eine PIN-Anmeldung (oder das Stempel-Tablet) von früher liegt noch im
+  // gemeinsamen Fach → ins eigene Fach dieser Seite verschieben, ohne neue Anmeldung.
+  function umziehen() {
+    if (TOKEN === STANDARD_TOKEN) return;
+    var roh = ls(STANDARD_TOKEN);
+    if (!roh) return;
+    try {
+      var t = JSON.parse(roh);
+      var u = t && (t.user || (t.currentSession && t.currentSession.user));
+      var mail = String((u && u.email) || "").toLowerCase();
+      var pinKonto = /\.abwesenheit@greathairday\.at$/.test(mail) || (u && u.id && ls(AUSNAHME) === u.id);
+      if (!pinKonto) return;
+      if (!ls(TOKEN)) ls(TOKEN, roh);
+      ls(STANDARD_TOKEN, null);
+    } catch (e) { /* kein JSON – nichts tun */ }
   }
   function eigeneAngemeldet() {
     for (var i = 0; i < EIGENE.length; i++) {
@@ -43,16 +66,17 @@
     return false;
   }
   function abmelden() {
-    var roh = ls(TOKEN);
+    var rohAlle = ALLE_TOKEN.map(function (k) { return ls(k); });
     // Erst merken, was verschlossen werden soll (synchron, bevor die App es liest) …
     var fuerTresor = schnappschuss();
-    ls(TOKEN, null); ls(KEY, null);
+    // Abmelden gilt für alle Apps: beide Anmelde-Fächer leeren
+    ALLE_TOKEN.forEach(function (k) { ls(k, null); }); ls(KEY, null);
     // Anmelde-Schlüssel ALLER Apps löschen, nicht nur die dieser Seite (siehe ALLE_KEY)
     alleSchluessel().forEach(function (k) { ls(k, null); try { sessionStorage.removeItem(k); } catch (e) { /* egal */ } });
     try { sessionStorage.clear(); } catch (e) { /* egal */ }
     // … dann (asynchron) verschlüsselt ablegen, Server-Abmeldung, neu laden
     var fertig = false;
-    var weiter = function () { if (fertig) return; fertig = true; serverAbmelden(roh); location.reload(); };
+    var weiter = function () { if (fertig) return; fertig = true; rohAlle.forEach(serverAbmelden); location.reload(); };
     setTimeout(weiter, 4000);
     tresorVerschliessen(fuerTresor).then(weiter, weiter);
   }
@@ -297,13 +321,14 @@
 
   function nutzerId() { try { var t = JSON.parse(ls(TOKEN) || "null"); return (t && t.user && t.user.id) || null; } catch (e) { return null; } }
   function pruefen() {
-    if (!ls(TOKEN) && !eigeneAngemeldet()) return;
+    if (!irgendeinToken() && !eigeneAngemeldet()) return;
     if (ls(AUSNAHME) && ls(AUSNAHME) === nutzerId()) return; // angemeldet ist der Tablet-Zugang
     if (ls(AUSNAHME)) ls(AUSNAHME, null);                   // jemand anderer → Ausnahme gilt nicht mehr
     var letzte = +ls(KEY) || 0;
     if (!letzte) { ls(KEY, String(Date.now())); return; }
     if (Date.now() - letzte > MINUTEN * 60000) abmelden();
   }
+  umziehen(); // vor allem anderen: alte PIN-Anmeldung ins eigene Fach
   pruefen(); // gleich beim Öffnen – bevor die App die Anmeldung liest
   setTimeout(offlineStart, 0);
   var zuletzt = 0;

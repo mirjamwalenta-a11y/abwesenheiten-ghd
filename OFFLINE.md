@@ -160,3 +160,19 @@ neue Anmeldung braucht Netz. Jetzt:
   hochgeladene Änderungen gehen dabei verloren. Vorher prüfen, dass unten
   keine Leiste „… Änderungen warten“ mehr steht.
 - Gelöscht wird der Speicher sonst nur, wenn das Handy fast voll ist.
+
+## Zwei Anmelde-Fächer (seit 2026-11-02)
+
+Alle Apps liegen unter derselben Adresse und teilen sich den Speicher. Es gibt aber zwei Arten
+der Anmeldung: **E-Mail + Passwort** (Startseite, Team-App, Wörni, Bewerbungen …) und
+**Name + PIN** (Abwesenheiten, Zeitverwaltung). Früher lagen beide im selben Fach
+(`sb-wrxlaltgtgkdomklgrlj-auth-token`) und haben sich beim Wechsel gegenseitig verdrängt
+(„Für diesen Zugang gibt es kein aktives Profil“).
+
+- PIN-Apps speichern ihre Anmeldung jetzt in `sb-wrxlaltgtgkdomklgrlj-pin-auth-token`
+  (`createClient(…, { auth: { storageKey } })` und `ghd-sitzung.js` mit `data-token="…"`).
+- `ghd-sitzung.js` zieht eine PIN-Anmeldung (oder das Stempel-Tablet) von früher beim ersten
+  Öffnen einer PIN-App einmalig ins eigene Fach – ohne neue Anmeldung.
+- Abmelden nach 15 Minuten und `ghdSitzung.sperren()` leeren **beide** Fächer
+  (einmal abgemeldet = überall abgemeldet, wie bisher).
+- `ghd-offline.js` liest ohne Netz die Anmeldung aus dem Fach, das die App bei `createClient` angibt.

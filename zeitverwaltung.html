@@ -5,7 +5,7 @@
   <!-- Echter Betrieb: verbindet sich nur mit der gemeinsamen Supabase-Datenbank (connect-src).
        zeitverwaltung.html?test = Testversion mit Beispieldaten, nur im Browser. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; connect-src 'self' https://wrxlaltgtgkdomklgrlj.supabase.co wss://wrxlaltgtgkdomklgrlj.supabase.co; font-src 'self' data: https://fonts.gstatic.com; base-uri 'self'; form-action 'self'"/>
-  <script src="ghd-sitzung.js"></script>  <!-- automatisch abmelden nach 15 min ohne Bedienung -->
+  <script src="ghd-sitzung.js" data-token="sb-wrxlaltgtgkdomklgrlj-pin-auth-token"></script>  <!-- automatisch abmelden nach 15 min; PIN-Anmeldung im eigenen Fach -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="theme-color" content="#F8F4EA">
   <title>Zeitverwaltung · Great Hair Day</title>
@@ -602,10 +602,12 @@ function bsTageProWoche(db, ma, d) {
   return +(r[lj] ?? r[Math.max(...Object.keys(r).map(Number))] ?? 1);
 }
 // Vorschlag: erster und zweiter Arbeitstag des Modells (bei Di–Sa also Di ganz, Mi ggf. halb)
+// Jeder der beiden Tage wird einzeln übernommen – auch wenn erst der zweite gewählt wurde
 function bsWochentage(db, ma) {
-  if (ma.bsTag1 != null) { const t2 = modellVon(db, ma).tage.map((h, i) => +h > 0 ? i : null).filter(i => i !== null && i !== ma.bsTag1)[0]; return { tag1: ma.bsTag1, tag2: ma.bsTag2 ?? t2 ?? 2 }; }
   const t = modellVon(db, ma).tage.map((h, i) => +h > 0 ? i : null).filter(i => i !== null);
-  return { tag1: t[0] ?? 1, tag2: t[1] ?? 2 };
+  const tag1 = ma.bsTag1 ?? t[0] ?? 1;
+  const tag2 = ma.bsTag2 ?? t.filter(i => i !== tag1)[0] ?? 2;
+  return { tag1, tag2 };
 }
 // Termine im Zeitraum; das Lehrjahr wird pro Datum bestimmt, ein Wechsel (z. B. 1. → 2. Lj.) greift automatisch
 function bsTermine(db, ma, von, bis, plan, ohneFerien) {
@@ -2462,7 +2464,10 @@ function MaDialog({ ctx, ma, onClose }) {
           <select className={inputCls} value={bsWochentage(db, f).tag1} onChange={e => set("bsTag1", +e.target.value)}>{WT_LANG.map((t, i) => <option key={i} value={i}>{t}</option>)}</select>
           <select className={inputCls} value={bsWochentage(db, f).tag2} onChange={e => set("bsTag2", +e.target.value)}>{WT_LANG.map((t, i) => <option key={i} value={i}>{t}</option>)}</select>
         </div>
-        {gespeichert?.lehrbeginn && istLeitung(user) && darfVerwalten(user, gespeichert) && <div className="mt-2"><Knopf art="sekundaer" klein icon="kalender" onClick={() => setBsPlaner(true)}>Berufsschule planen</Knopf></div>}</Feld>}
+        {gespeichert?.lehrbeginn && istLeitung(user) && darfVerwalten(user, gespeichert)
+          ? <div className="mt-2"><Knopf art="sekundaer" klein icon="kalender" onClick={() => setBsPlaner(true)}>Berufsschule planen</Knopf>
+              <p className="mt-1 text-xs text-stone-500">Hier trägst du die Schulzeiten ein: Unterrichtsstunden am ganzen Tag, Schule von – bis am halben Tag.</p></div>
+          : <p className="mt-2 text-xs text-amber-700">Erst „Speichern“, dann diese Person wieder öffnen – hier erscheint „Berufsschule planen“ für die Schulzeiten.</p>}</Feld>}
       <Feld label="Zeitkonto-Übertrag (Minuten)" hilfe="Saldo aus dem alten System beim Start"><input type="number" className={inputCls} value={f.saldoStart} onChange={e => set("saldoStart", e.target.value)} /></Feld>
       <div className="space-y-2 pt-5">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.checked ? (f.eintritt || heute()) : undefined)} />Lehrling</label>
@@ -3863,7 +3868,8 @@ function SchnellStempeln({ db, user, stempelnRoh, onFertig }) {
 }
 
 function LiveApp() {
-  const sb = useMemo(() => window.supabase.createClient(SB_URL, SB_KEY), []);
+  // PIN-Anmeldung im eigenen Fach – verdrängt nicht die E-Mail-Anmeldung der anderen Apps (gleich wie abwesenheiten.html)
+  const sb = useMemo(() => window.supabase.createClient(SB_URL, SB_KEY, { auth: { storageKey: "sb-wrxlaltgtgkdomklgrlj-pin-auth-token" } }), []);
   const [phase, setPhase] = useState("start"); // start | login | laden | app | terminal
   const [db, setDb] = useState(null);
   const [ichId, setIchId] = useState(null);
