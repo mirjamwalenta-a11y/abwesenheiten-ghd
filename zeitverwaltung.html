@@ -3793,7 +3793,14 @@ function LiveApp() {
     document.addEventListener("visibilitychange", sicht);
     return () => { clearInterval(t); document.removeEventListener("visibilitychange", sicht); };
   }, [phase]);
-  async function abmelden() { window.ghdSitzung?.keinAutoAbmelden(false); await sb.auth.signOut(); setDb(null); setIchId(null); setPhase("login"); }
+  async function abmelden() {
+    window.ghdSitzung?.keinAutoAbmelden(false);
+    // Personen-Abmeldung über ghd-sitzung.js: mit festgelegter Offline-PIN wird die Anmeldung
+    // verschlüsselt im Gerät abgelegt (ohne Netz mit der PIN wieder zu öffnen); beendet auch die
+    // Server-Sitzung und lädt neu. Das Stempel-Tablet meldet sich bewusst ganz ab.
+    if (phase !== "terminal" && window.ghdSitzung?.sperren) { window.ghdSitzung.sperren(); return; }
+    await sb.auth.signOut(); setDb(null); setIchId(null); setPhase("login");
+  }
   const toastEl = toast && <div className="no-print fixed bottom-20 sm:bottom-4 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white text-sm px-5 py-3 rounded-full shadow-lg flex items-center gap-2 max-w-[92vw]">{toast}</div>;
   if (phase === "start" || phase === "laden") return <div className="min-h-screen flex items-center justify-center text-stone-500 text-sm">Lade Zeitverwaltung …</div>;
   if (phase === "terminal") return <LiveTerminal sb={sb} onAbmelden={abmelden} />;
@@ -3842,6 +3849,11 @@ function LiveLogin({ sb, fehler, onAngemeldet }) {
     setLaeuft(true); setFehl(null);
     const { error } = await sb.auth.signInWithPassword({ email: abwEmail(wahl.name), password: p + "-ghd" });
     setLaeuft(false);
+    if (error && (!navigator.onLine || error.name === "AuthRetryableFetchError" || error.status === 0 || /fetch|network|load failed/i.test(String(error.message || "")))) {
+      // Kein Netz: – falls vorhanden – mit der Offline-PIN entsperren (ghd-sitzung.js)
+      setFehl(window.ghdSitzung?.offlineEntsperren?.() ? "Kein Internet – bitte mit deiner Offline-PIN entsperren." : "Kein Internet – Anmelden geht erst wieder mit Netz.");
+      return;
+    }
     if (error) { setFehl(/invalid/i.test(error.message) ? "PIN falsch." : error.message); return; }
     onAngemeldet();
   }

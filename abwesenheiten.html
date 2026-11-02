@@ -265,6 +265,12 @@ function Login({team, onLogin}) {
     if (n.length===4) {
       const { error } = await sbAuth.auth.signInWithPassword({ email: abwEmail(sel.name), password: n+"-ghd" });
       if (!error) { setTimeout(()=>onLogin(sel),150); }
+      else if (!navigator.onLine || error.name==="AuthRetryableFetchError" || error.status===0 || /fetch|network|load failed/i.test(String(error.message||""))) {
+        // Kein Netz: nicht „PIN falsch“ zeigen, sondern – falls vorhanden – mit der Offline-PIN entsperren
+        setPin("");
+        if (!(window.ghdSitzung && window.ghdSitzung.offlineEntsperren && window.ghdSitzung.offlineEntsperren()))
+          alert("Kein Internet – Anmelden geht erst wieder mit Netz.");
+      }
       else { setTimeout(()=>{ setPin(""); setErr(true); },400); }
     }
   }
@@ -1597,6 +1603,10 @@ function App() {
         <div className="flex items-center gap-2">
           {isOwner&&<button onClick={()=>setScreen("einstellungen")} className="text-xs text-stone-400 hover:text-stone-700 px-2 py-1">⚙ Einstellungen</button>}
           <button onClick={async()=>{
+            // Gemeinsame Abmeldung (ghd-sitzung.js): mit festgelegter Offline-PIN wird die
+            // Anmeldung verschlüsselt im Gerät abgelegt und lässt sich ohne Netz mit der PIN
+            // wieder öffnen. Beendet die Sitzung auch am Server und lädt neu.
+            if (window.ghdSitzung && window.ghdSitzung.sperren) { window.ghdSitzung.sperren(); return; }
             await sbAuth.auth.signOut();
             setUser(null);setScreen("home");
           }} className="text-xs text-stone-400 hover:text-stone-600 px-2 py-1">Abmelden</button>
