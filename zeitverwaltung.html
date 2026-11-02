@@ -3550,7 +3550,7 @@ function MeineZeiten({ ctx }) {
 
 function EinfachApp({ ctx, logout, toastEl }) {
   const { db, user } = ctx;
-  const [tab, setTab] = useState("heute");
+  const [tab, setTab] = useState(() => START_SEITE === "zeit" ? "zeiten" : START_SEITE === "urlaub" || START_SEITE === "krank" ? "urlaub" : "heute");
   const zuTab = s => { setTab(s === "zeit" ? "zeiten" : s === "urlaub" || s === "krank" ? "urlaub" : "heute"); window.scrollTo(0, 0); };
   const c = { ...ctx, setSeite: zuTab };
   const [dlg, setDlg] = useState(null);
@@ -4137,8 +4137,10 @@ function App() {
 }
 
 // Oberfläche nach dem Anmelden – gleich für Testversion und echten Betrieb (live)
+// Direktsprung, z. B. aus der Team-Übersicht: zeitverwaltung.html?seite=urlaub
+const START_SEITE = (/[?&]seite=([a-z]+)/.exec(location.search) || [])[1] || "dashboard";
 function Rahmen({ db, setDb, user, aendern, logout, login, toastEl, stempeln, live, sb }) {
-  const [seite, setSeiteRoh] = useState("dashboard");
+  const [seite, setSeiteRoh] = useState(() => NAV.some(n => n.id === START_SEITE) ? START_SEITE : "dashboard");
   const [navOffen, setNavOffen] = useState(false);
   const setSeite = s => { setSeiteRoh(NAV.some(n => n.id === s) ? s : "dashboard"); setNavOffen(false); window.scrollTo(0, 0); };
   const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite, login, stempeln, live: !!live, sb };
