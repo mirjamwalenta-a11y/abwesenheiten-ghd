@@ -82,7 +82,8 @@ neue Anmeldung braucht Netz. Jetzt:
   gelöscht. „PIN vergessen“ löscht ebenfalls alles (am Server geht nichts
   verloren).
 - **Bewusst abmelden:** Apps, deren Abmelde-Knopf `ghdSitzung.sperren()`
-  aufruft (Apps-Übersicht, Schaltzentrale), legen den Tresor genauso an wie
+  aufruft (Apps-Übersicht, Schaltzentrale, Abwesenheiten, Zeitverwaltung –
+  dort nicht beim Stempel-Tablet), legen den Tresor genauso an wie
   das automatische Abmelden. Apps, die nur `signOut()` aufrufen, löschen wie
   bisher alles.
 - **Abmelden gilt für alle Apps:** Jede App meldet ihre Anmelde-Schlüssel
