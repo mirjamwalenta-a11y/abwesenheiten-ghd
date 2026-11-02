@@ -80,7 +80,19 @@ neue Anmeldung braucht Netz. Jetzt:
 - **Mit Netz** gilt wie bisher die normale Anmeldung.
 - **Schutz:** 5 falsche PINs → Tresor und alle Offline-Daten werden vom Gerät
   gelöscht. „PIN vergessen“ löscht ebenfalls alles (am Server geht nichts
-  verloren). Bewusstes Abmelden in einer App (ohne Tresor) löscht wie bisher.
+  verloren).
+- **Bewusst abmelden:** Apps, deren Abmelde-Knopf `ghdSitzung.sperren()`
+  aufruft (Apps-Übersicht, Schaltzentrale), legen den Tresor genauso an wie
+  das automatische Abmelden. Apps, die nur `signOut()` aufrufen, löschen wie
+  bisher alles.
+- **Abmelden gilt für alle Apps:** Jede App meldet ihre Anmelde-Schlüssel
+  (`data-schluessel`) in `ghd-sitzung-schluessel` an; beim Abmelden werden
+  die Schlüssel aller Apps gelöscht. Sonst hielt eine App einen
+  liegengebliebenen Eintrag einer anderen App für eine gültige Anmeldung und
+  bot ohne Netz „PIN festlegen“ statt „Mit PIN entsperren“ an.
+- **Anmeldung ohne Netz gescheitert:** Apps rufen
+  `ghdSitzung.offlineEntsperren()` auf. Gibt es einen Tresor, öffnet sich der
+  PIN-Dialog (Rückgabe `true`), sonst `false`.
 - **Technik:** RSA-OAEP-Schlüsselpaar pro Person; der private Schlüssel ist
   mit einem PIN-Schlüssel (PBKDF2-SHA-256, 310 000 Runden, AES-GCM)
   verschlüsselt. So kann beim Abmelden ohne PIN verschlossen, aber nur mit PIN

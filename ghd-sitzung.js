@@ -47,7 +47,8 @@
     // Erst merken, was verschlossen werden soll (synchron, bevor die App es liest) …
     var fuerTresor = schnappschuss();
     ls(TOKEN, null); ls(KEY, null);
-    EIGENE.forEach(function (k) { ls(k, null); try { sessionStorage.removeItem(k); } catch (e) { /* egal */ } });
+    // Anmelde-Schlüssel ALLER Apps löschen, nicht nur die dieser Seite (siehe ALLE_KEY)
+    alleSchluessel().forEach(function (k) { ls(k, null); try { sessionStorage.removeItem(k); } catch (e) { /* egal */ } });
     try { sessionStorage.clear(); } catch (e) { /* egal */ }
     // … dann (asynchron) verschlüsselt ablegen, Server-Abmeldung, neu laden
     var fertig = false;
@@ -70,6 +71,20 @@
   var SPAETER_KEY = 'ghd-offline-pin-spaeter';
   var ENTSPERRT = 'ghd-offline-entsperrt';    // sessionStorage: in dieser Sitzung offline entsperrt
   var RUNDEN = 310000, MAX_FEHL = 5;
+  // Alle Apps unter dieser Adresse teilen sich den Speicher. Jede App meldet hier ihre
+  // eigenen Anmelde-Schlüssel an, damit das Abmelden in IRGENDEINER App auch die der
+  // anderen löscht. Sonst bleibt z. B. „ghd_session“ der Apps-Übersicht liegen, wenn in der
+  // Abwesenheiten-App abgemeldet wird – und beim nächsten Öffnen hält dieses Skript die
+  // Person für angemeldet: Statt „Mit PIN entsperren“ erscheint dann „PIN festlegen“.
+  var ALLE_KEY = 'ghd-sitzung-schluessel';
+  function alleSchluessel() {
+    var liste = jget(ALLE_KEY, []);
+    if (!Array.isArray(liste)) liste = [];
+    liste = liste.filter(function (k) { return typeof k === 'string' && k; });
+    EIGENE.forEach(function (k) { if (liste.indexOf(k) < 0) liste.push(k); });
+    return liste.slice(-30);
+  }
+  if (EIGENE.length) jset(ALLE_KEY, alleSchluessel());
   var cs = window.crypto && window.crypto.subtle;
   function jget(k, d) { try { var v = JSON.parse(ls(k) || 'null'); return v === null ? d : v; } catch (e) { return d; } }
   function jset(k, v) { ls(k, v === null ? null : JSON.stringify(v)); }
@@ -272,6 +287,13 @@
     }
   }
   addEventListener('offline', function () { if (!ls(TOKEN) && !eigeneAngemeldet() && tresorDa()) entsperrenZeigen(); });
+  // Für Apps: PIN-Dialog direkt öffnen (z. B. wenn die Anmeldung mangels Netz scheitert).
+  // Liefert true, wenn es einen Tresor gibt und der Dialog angezeigt wird.
+  function offlineEntsperren() {
+    if (!cs || !tresorDa()) return false;
+    if (document.body) entsperrenZeigen(); else document.addEventListener('DOMContentLoaded', entsperrenZeigen);
+    return true;
+  }
 
   function nutzerId() { try { var t = JSON.parse(ls(TOKEN) || "null"); return (t && t.user && t.user.id) || null; } catch (e) { return null; } }
   function pruefen() {
@@ -318,6 +340,7 @@
     // Abmelden wie nach 15 min (mit Offline-Tresor, falls PIN festgelegt) – für Apps mit eigener Abmelde-Zeit
     sperren: abmelden,
     offlinePinFestlegen: pinEinrichtenZeigen,
+    offlineEntsperren: offlineEntsperren,
     offlineEntsperrt: function () { try { return sessionStorage.getItem(ENTSPERRT) === '1'; } catch (e) { return false; } },
     tresorVorhanden: tresorDa,
     keinAutoAbmelden: function (an) { var id = nutzerId(); ls(AUSNAHME, an && id ? id : null); if (!an) ls(KEY, String(Date.now())); },
