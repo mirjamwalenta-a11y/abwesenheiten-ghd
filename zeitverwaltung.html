@@ -2,8 +2,8 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8"/>
-  <!-- Prototyp: verbindet sich bewusst mit KEINER Datenbank (connect-src 'self').
-       Erst wenn zeitverwaltung_schema_entwurf.sql inkl. RLS steht, wird Supabase angebunden. -->
+  <!-- Echter Betrieb: verbindet sich nur mit der gemeinsamen Supabase-Datenbank (connect-src).
+       zeitverwaltung.html?test = Testversion mit Beispieldaten, nur im Browser. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; connect-src 'self' https://wrxlaltgtgkdomklgrlj.supabase.co wss://wrxlaltgtgkdomklgrlj.supabase.co; font-src 'self' data: https://fonts.gstatic.com; base-uri 'self'; form-action 'self'"/>
   <script src="ghd-sitzung.js"></script>  <!-- automatisch abmelden nach 15 min ohne Bedienung -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
@@ -67,10 +67,12 @@
 const { useState, useEffect, useMemo, useRef } = React;
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  ZEITVERWALTUNG · PROTOTYP
-//  Alle Daten sind erfundene Demo-Daten und liegen nur im Browser (localStorage).
+//  ZEITVERWALTUNG
+//  Echter Betrieb (zeitverwaltung.html): LiveApp mit der gemeinsamen Datenbank.
+//  Testversion (zeitverwaltung.html?test): App mit erfundenen Beispieldaten, die
+//  nur im Browser liegen (localStorage).
 //  Die Rollenprüfungen hier blenden nur Oberfläche ein/aus — die echte Absicherung
-//  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
+//  passiert serverseitig (RLS / SECURITY DEFINER, siehe
 //  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
 // ═════════════════════════════════════════════════════════════════════════════
 const LS_KEY = "ghd-zeitverwaltung-demo-v9";
@@ -438,7 +440,7 @@ function pruefeTag(db, ma, d) {
   const kj = jugendlich(ma, d), pause = z.pause || 0;
   const abwTag = abwAm(db, ma.id, d);
   // Berufsschulzeit wird auf die Arbeitszeit angerechnet (halber Schultag + Salon)
-  const netto = nettoMin(z) + (abwTag && abwTag.art === "berufsschule" ? Math.round(modellSollMin(db, ma, d) * anteil(abwTag)) : 0);
+  const netto = nettoMin(z) + (abwTag && abwTag.art === "berufsschule" ? gutMin(abwTag, modellSollMin(db, ma, d)) : 0);
   const pauseAb = kj ? e.kjbgPauseAbMin : e.pauseAbMin;
   // Pausenpflicht hängt am durchgehenden Arbeitsblock im Salon, nicht an Schule + Salon
   const imSalon = nettoMin(z);
@@ -557,9 +559,35 @@ function abwKalendertage(db, ma, arten, von, bis) {
 // Halbe Tage: Abwesenheiten können anteil 0.5 haben (z. B. Berufsschule am Vormittag)
 function anteil(a) { return a && a.anteil ? +a.anteil : 1; }
 // Teil eines Tages abwesend (halber Schultag, Arztbesuch in Stunden) – der Rest wird gearbeitet
-function teilTag(a) { return !!a && (anteil(a) < 1 || !!a.minuten); }
+// Ein ganzer Berufsschultag mit Unterrichtsstunden (minuten) bleibt ein ganzer Tag – kein Rest im Betrieb
+function teilTag(a) { return !!a && (anteil(a) < 1 || (!!a.minuten && a.art !== "berufsschule")); }
 function gutMin(a, soll) { return a.minuten ? Math.min(+a.minuten, soll) : Math.round(soll * anteil(a)); }
-function abwZusatz(a) { return a.minuten ? `${fmtH(a.minuten)} h` : anteil(a) < 1 ? "½ Tag" : ""; }
+function abwZusatz(a) { return a.minuten ? `${anteil(a) < 1 ? "½ Tag · " : ""}${fmtH(a.minuten)} h` : anteil(a) < 1 ? "½ Tag" : ""; }
+// Berufsschule mit echter Schulzeit: ganzer Tag = Unterrichtsstunden × 50 min (die Mittagspause zählt nicht),
+// halber Tag = Schulzeit von–bis. Ohne Angabe gilt wie bisher die Pauschale (ganzer bzw. halber Tag laut Dienstplan).
+// Gespeichert in den bestehenden Spalten anteil / minuten / notiz von abw_anfragen – keine neue Spalte.
+const BS_STUNDE_MIN = 50;
+function bsSchulzeit(a) {
+  if (!a || a.art !== "berufsschule") return {};
+  const zr = /(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})/.exec(a.notiz || ""), st = /(\d+)\s*Unterrichtsstunden/.exec(a.notiz || "");
+  if (anteil(a) < 1) return zr ? { von: zr[1].padStart(5, "0"), bis: zr[2].padStart(5, "0") } : {};
+  return st ? { stunden: +st[1] } : a.minuten ? { stunden: Math.round(a.minuten / BS_STUNDE_MIN) } : {};
+}
+function bsEintragFelder(halb, sz) {
+  if (halb) {
+    const min = sz.von && sz.bis ? hm2min(sz.bis) - hm2min(sz.von) : 0;
+    return { anteil: 0.5, minuten: min > 0 ? min : undefined, notiz: min > 0 ? `halber Schultag ${sz.von}–${sz.bis}` : "halber Schultag" };
+  }
+  const st = +sz.stunden || 0;
+  return { anteil: undefined, minuten: st > 0 ? st * BS_STUNDE_MIN : undefined, notiz: st > 0 ? `ganzer Schultag · ${st} Unterrichtsstunden à ${BS_STUNDE_MIN} min` : "" };
+}
+// zuletzt verwendete Schulzeit als Vorschlag (ganzer Tag: Stunden, halber Tag: von–bis)
+function bsVorschlag(db, maId) {
+  const letzte = halb => db.abwesenheiten.filter(a => a.maId === maId && a.art === "berufsschule" && a.status !== "storniert" && (anteil(a) < 1) === halb)
+    .sort((x, y) => y.von.localeCompare(x.von)).map(bsSchulzeit).find(z => z.stunden || z.von) || {};
+  const g = letzte(false), h = letzte(true);
+  return { stunden: g.stunden || "", von: h.von || "", bis: h.bis || "" };
+}
 function lehrjahr(ma, d) {
   if (!ma.lehrbeginn) return null;
   const e = parseD(ma.lehrbeginn), s = parseD(d || heute());
@@ -1030,8 +1058,8 @@ function Tabelle({ kopf, children, fuss }) {
 }
 
 // ─── BELEGE (Krankenstands-/Arztbestätigungen) ────────────────────────────────
-// Prototyp: Dateien liegen in IndexedDB dieses Browsers. Live: privater Storage-Bucket,
-// lesbar nur für die Person selbst und die Leitung (siehe Schema-Entwurf).
+// Testversion: Dateien liegen in IndexedDB dieses Browsers. Echter Betrieb: privater
+// Storage-Bucket, lesbar nur für die Person selbst und die Leitung (siehe Schema-Entwurf).
 const BelegSpeicher = {
   _db: null,
   oeffnen() {
@@ -1150,7 +1178,7 @@ function csvExport(dateiname, zeilen) {
 }
 
 // ─── PIN-EINGABE (wie Abwesenheiten-App) ─────────────────────────────────────
-// Prototyp: jede 4-stellige PIN wird angenommen. Live prüft ausschließlich der
+// Testversion: jede 4-stellige PIN wird angenommen. Im echten Betrieb prüft ausschließlich der
 // Server (Supabase-Login bzw. zeit_terminal_stempeln) – nie der Browser.
 function PinFeld({ onFertig, dunkel }) {
   const [pin, setPin] = useState("");
@@ -1487,33 +1515,68 @@ function Dashboard({ ctx }) {
 // ─── ZEITERFASSUNG ────────────────────────────────────────────────────────────
 function ZeitDialog({ ctx, ma, datum, onClose }) {
   const { db, user, aendern } = ctx;
+  const ein = db.einstellungen;
   const z = zeitAm(db, ma.id, datum);
   const direkt = darfVerwalten(user, ma) || (istAdmin(user) && ma.id === user.id);
   const plan = planTag(db, ma, datum);
+  // Lehrlinge: Schulzeit und Arbeitszeit im Betrieb an einem Tag getrennt eintragen
+  const lehrling = !!ma.lehrbeginn;
+  const bs = lehrling ? db.abwesenheiten.find(a => a.maId === ma.id && a.art === "berufsschule" && a.status !== "storniert" && a.von <= datum && (a.bis || a.von) >= datum) : null;
+  const bsEinTag = !bs || (a => a.von === (a.bis || a.von))(bs);   // mehrtägige Einträge nur unter Krankenstand ändern
+  const schulStart = bs ? { art: anteil(bs) < 1 ? "halb" : "ganz", ...bsSchulzeit(bs) } : { art: "keine" };
+  const [sch, setSch] = useState(() => ({ ...bsVorschlag(db, ma.id), ...schulStart }));
+  const schulTag = schulStart.art !== "keine";
   // Pause vorbelegen: laut Dienstplan, wenn keine (oder eine kürzere) gestempelt ist und die App Pausen automatisch einträgt
   const planPause = +plan?.p || 0, autoP = autoPauseAktiv(db.einstellungen);
-  const pauseVor = z ? (autoP && (z.pause || 0) < planPause ? planPause : (z.pause || 0)) : (plan ? planPause : 30);
+  const pauseVor = z ? (autoP && (z.pause || 0) < planPause ? planPause : (z.pause || 0)) : schulTag ? 0 : (plan ? planPause : 30);
   // Ende vorbelegen nur, wenn der Dienst laut Plan schon vorbei ist – sonst würde „Speichern“ einen laufenden Tag versehentlich beenden
   const planVorbei = !plan || datum < heute() || hm2min(nowHM()) >= hm2min(plan.e);
-  const [f, setF] = useState({ beginn: z?.beginn || plan?.b || "09:00", ende: z?.ende || (planVorbei ? plan?.e || "" : ""), pause: pauseVor, notiz: z?.notiz || "", grund: "" });
+  const [f, setF] = useState({ beginn: z?.beginn || (schulTag ? "" : plan?.b || "09:00"), ende: z?.ende || (schulTag || !planVorbei ? "" : plan?.e || ""), pause: pauseVor, notiz: z?.notiz || "", grund: "" });
   const [loeschen, setLoeschen] = useState(false);
   const netto = f.beginn && f.ende ? hm2min(f.ende) - hm2min(f.beginn) - (+f.pause || 0) : 0;
-  const fehler = loeschen ? null
+  // Ganzer Schultag ohne Arbeit im Betrieb: nur die Schulzeit speichern, kein Zeiteintrag nötig
+  const ohneBetrieb = direkt && !z && sch.art !== "keine" && !f.beginn && !f.ende;
+  const schulBearbeitbar = lehrling && direkt && bsEinTag;
+  const sollTag = modellSollMin(db, ma, datum);
+  const halbMin = sch.von && sch.bis ? hm2min(sch.bis) - hm2min(sch.von) : 0;
+  const schulMin = sch.art === "ganz" ? Math.min(+sch.stunden > 0 ? +sch.stunden * BS_STUNDE_MIN : sollTag, sollTag || Infinity)
+    : sch.art === "halb" ? Math.min(halbMin > 0 ? halbMin : Math.round(sollTag * 0.5), sollTag || Infinity) : 0;
+  const schulFehler = sch.art !== "halb" ? null : (!!sch.von !== !!sch.bis) ? "Schule: Beginn und Ende angeben – oder beide leer lassen (dann halber Arbeitstag laut Dienstplan)."
+    : sch.von && halbMin <= 0 ? "Schule: Ende muss nach Beginn liegen." : sch.bis && f.beginn && hm2min(f.beginn) < hm2min(sch.bis) ? "Arbeit im Betrieb beginnt vor Schulende." : null;
+  const fehler = loeschen ? null : schulBearbeitbar && schulFehler ? schulFehler : ohneBetrieb ? null
     : !f.beginn || !f.ende ? (z && !z.ende ? "Dienst läuft noch – Ende nur eintragen, wenn du den Tag jetzt beenden willst." : "Beginn und Ende angeben.") : hm2min(f.ende) <= hm2min(f.beginn) ? "Ende muss nach Beginn liegen." : netto < 0 ? "Pause länger als Anwesenheit." : null;
   // Grund ist freiwillig – leer bleibt nachvollziehbar: Wer, wann, alt → neu steht immer im Protokoll
   const grund = f.grund.trim() || (direkt ? `${loeschen ? "gelöscht" : z ? "korrigiert" : "nachgetragen"} von ${user.name.split(" ")[0]}` : "Korrektur beantragt");
+  const schulKey = s => s.art === "keine" ? "keine" : s.art === "ganz" ? `ganz|${+s.stunden || 0}` : `halb|${s.von || ""}|${s.bis || ""}`;
+  const schulGeaendert = schulBearbeitbar && schulKey(sch) !== schulKey(schulStart);
+  // Prüfung nach KJBG / AZG: Schule + Betrieb zusammen, Pause hängt am Block im Betrieb
+  const kj = jugendlich(ma, datum);
+  const gesamt = schulMin + Math.max(0, netto);
+  const tagMax = kj ? ein.kjbgTagMaxMin : ein.tagMaxMin;
+  const pauseFehlt = netto > (kj ? ein.kjbgPauseAbMin : ein.pauseAbMin) && (+f.pause || 0) < ein.pauseMin;
 
   function speichern() {
     const neu = loeschen ? null : { beginn: f.beginn, ende: f.ende, pause: +f.pause || 0 };
     const alt = z ? { beginn: z.beginn, ende: z.ende, pause: z.pause } : null;
     if (direkt) {
       aendern(n => {
-        const i = n.zeiten.findIndex(q => q.id === z?.id);
-        if (loeschen) n.zeiten.splice(i, 1);
-        else if (i >= 0) { Object.assign(n.zeiten[i], neu, { notiz: f.notiz, quelle: "korrektur", pauseStart: null }); delete n.zeiten[i].roh; }
-        else n.zeiten.push({ id: uid(), maId: ma.id, datum, ...neu, notiz: f.notiz, quelle: "manuell" });
-        n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: ma.id, datum, aktion: loeschen ? "gelöscht" : z ? "korrigiert" : "nachgetragen", alt, neu, grund });
-      }, "Zeiteintrag gespeichert und protokolliert");
+        if (!ohneBetrieb || loeschen) {
+          const i = n.zeiten.findIndex(q => q.id === z?.id);
+          if (loeschen) n.zeiten.splice(i, 1);
+          else if (i >= 0) { Object.assign(n.zeiten[i], neu, { notiz: f.notiz, quelle: "korrektur", pauseStart: null }); delete n.zeiten[i].roh; }
+          else n.zeiten.push({ id: uid(), maId: ma.id, datum, ...neu, notiz: f.notiz, quelle: "manuell" });
+          n.protokoll.push({ id: uid(), am: new Date().toISOString(), von: user.id, maId: ma.id, datum, aktion: loeschen ? "gelöscht" : z ? "korrigiert" : "nachgetragen", alt, neu, grund });
+        }
+        if (schulGeaendert && !loeschen) {
+          const i = n.abwesenheiten.findIndex(q => q.id === bs?.id);
+          if (sch.art === "keine") { if (i >= 0) n.abwesenheiten[i].status = "storniert"; }
+          else {
+            const felder = bsEintragFelder(sch.art === "halb", sch);
+            if (i >= 0) { const x = n.abwesenheiten[i]; Object.assign(x, felder, { geaendertVon: user.id, geaendertAm: heute() }); if (felder.anteil === undefined) delete x.anteil; if (felder.minuten === undefined) delete x.minuten; }
+            else n.abwesenheiten.push({ id: uid(), maId: ma.id, art: "berufsschule", von: datum, bis: datum, status: "genehmigt", ...felder, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: user.id });
+          }
+        }
+      }, ohneBetrieb && !loeschen ? "Schulzeit gespeichert" : "Zeiteintrag gespeichert und protokolliert");
     } else {
       aendern(n => {
         n.korrekturen.push({ id: uid(), maId: ma.id, datum, zeitId: z?.id || null, alt, neu, grund, status: "offen", von: user.id, am: heute() });
@@ -1521,16 +1584,43 @@ function ZeitDialog({ ctx, ma, datum, onClose }) {
     }
     onClose();
   }
+  const zeitFelder = <div className="grid grid-cols-3 gap-3">
+    <Feld label="Beginn"><input type="time" className={inputCls} value={f.beginn} onChange={e => setF({ ...f, beginn: e.target.value })} /></Feld>
+    <Feld label="Ende"><input type="time" className={inputCls} value={f.ende} onChange={e => setF({ ...f, ende: e.target.value })} /></Feld>
+    <Feld label="Pause (min)"><input type="number" min="0" step="5" className={inputCls} value={f.pause} onChange={e => setF({ ...f, pause: e.target.value })} /></Feld>
+  </div>;
   return <Modal titel={`${direkt ? (z ? "Zeiteintrag bearbeiten" : "Zeit nachtragen") : "Korrektur beantragen"} · ${fmtDk(datum)}`} onClose={onClose}
     fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>{direkt ? "Speichern" : "Antrag senden"}</Knopf></>}>
     <div className="space-y-4">
       <div className="text-sm text-stone-600">{ma.name} · Soll an diesem Tag: <b>{fmtH(sollMin(db, ma, datum))} h</b></div>
-      {!loeschen && <div className="grid grid-cols-3 gap-3">
-        <Feld label="Beginn"><input type="time" className={inputCls} value={f.beginn} onChange={e => setF({ ...f, beginn: e.target.value })} /></Feld>
-        <Feld label="Ende"><input type="time" className={inputCls} value={f.ende} onChange={e => setF({ ...f, ende: e.target.value })} /></Feld>
-        <Feld label="Pause (min)"><input type="number" min="0" step="5" className={inputCls} value={f.pause} onChange={e => setF({ ...f, pause: e.target.value })} /></Feld>
+      {lehrling && !loeschen && <div className="rounded-[14px] bg-indigo-50 ring-1 ring-inset ring-indigo-100 p-3 space-y-3">
+        <div className="text-sm font-semibold text-indigo-900">Berufsschule an diesem Tag</div>
+        {schulBearbeitbar ? <>
+          <select className={inputCls} value={sch.art} onChange={e => setSch({ ...sch, art: e.target.value })}>
+            <option value="keine">Kein Schultag</option>
+            <option value="ganz">Ganzer Schultag (Unterrichtsstunden × {BS_STUNDE_MIN} min)</option>
+            <option value="halb">Halber Schultag (Schule von – bis, danach Betrieb)</option>
+          </select>
+          {sch.art === "ganz" && <Feld label="Unterrichtsstunden" hilfe={`Je ${BS_STUNDE_MIN} min, die Mittagspause zählt nicht. Leer = ganzer Arbeitstag laut Dienstplan.`}>
+            <input type="number" min="1" max="12" className={inputCls} value={sch.stunden} onChange={e => setSch({ ...sch, stunden: e.target.value })} /></Feld>}
+          {sch.art === "halb" && <div className="grid grid-cols-2 gap-3">
+            <Feld label="Schule von"><input type="time" className={inputCls} value={sch.von} onChange={e => setSch({ ...sch, von: e.target.value })} /></Feld>
+            <Feld label="Schule bis"><input type="time" className={inputCls} value={sch.bis} onChange={e => setSch({ ...sch, bis: e.target.value })} /></Feld>
+          </div>}
+        </> : <div className="text-sm text-indigo-900">{bs ? `${ARTEN.berufsschule.label}${teilTag(bs) || bs.minuten ? ` (${abwZusatz(bs)})` : ""}${bsEinTag ? "" : " – mehrtägiger Eintrag, änderbar unter Krankenstand"}` : "Kein Schultag eingetragen"}</div>}
+        {sch.art !== "keine" && <div className="text-xs text-indigo-900">Schulzeit angerechnet: <b className="tabular">{fmtH(schulMin)} h</b></div>}
       </div>}
-      {!loeschen && f.ende && <div className="text-sm">Arbeitszeit netto: <b className="tabular">{fmtH(Math.max(0, netto))} h</b></div>}
+      {!loeschen && <div>
+        {lehrling && sch.art !== "keine" && <div className="text-sm font-semibold text-stone-800 mb-2">Arbeit im Betrieb{sch.art === "ganz" ? " (leer lassen, wenn sie nur in der Schule war)" : ""}</div>}
+        {zeitFelder}
+      </div>}
+      {!loeschen && (f.ende || (lehrling && sch.art !== "keine")) && <div className="text-sm space-y-1">
+        {lehrling && sch.art !== "keine"
+          ? <div>Schule <b className="tabular">{fmtH(schulMin)} h</b> + Betrieb <b className="tabular">{fmtH(Math.max(0, netto))} h</b> = <b className="tabular">{fmtH(gesamt)} h</b></div>
+          : <div>Arbeitszeit netto: <b className="tabular">{fmtH(Math.max(0, netto))} h</b></div>}
+        {gesamt > tagMax && <div className="text-xs text-rose-700">Über der Tagesgrenze von {fmtH(tagMax)} h ({kj ? "§ 11 KJBG" : "§ 9 AZG"}).</div>}
+        {pauseFehlt && <div className="text-xs text-rose-700">Pause zu kurz: bei mehr als {fmtH(kj ? ein.kjbgPauseAbMin : ein.pauseAbMin)} h im Betrieb mind. {ein.pauseMin} min ({kj ? "§ 15 KJBG" : "§ 11 AZG"}).</div>}
+      </div>}
       {!loeschen && <Feld label="Notiz (optional)"><input className={inputCls} value={f.notiz} onChange={e => setF({ ...f, notiz: e.target.value })} /></Feld>}
       <Feld label="Grund (optional)" hilfe="Kann leer bleiben – wer wann was geändert hat, wird immer automatisch protokolliert.">
         <textarea rows="2" className={inputCls} value={f.grund} onChange={e => setF({ ...f, grund: e.target.value })} />
@@ -1631,11 +1721,14 @@ function Zeiterfassung({ ctx }) {
   const offeneKorr = db.korrekturen.filter(k => k.status === "offen" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === k.maId)));
   const meineKorr = db.korrekturen.filter(k => k.maId === ma.id && monatKey(k.datum) === monat);
   const protokoll = db.protokoll.filter(p => p.maId === ma.id && monatKey(p.datum) === monat);
+  const [bsPlaner, setBsPlaner] = useState(false);
+  const bsLehrlinge = sichtbar.filter(m => m.aktiv && m.lehrbeginn && darfVerwalten(user, m));
 
   return <div className="space-y-5">
     <Seitenkopf titel="Zeiterfassung" sub="Arbeitsbeginn, -ende und Pausen · Aufzeichnungspflicht nach § 26 AZG">
       {sichtbar.length > 1 && <MaWahl liste={sichtbar} wert={maId} setWert={setMaId} />}
       <MonatWahl monat={monat} setMonat={setMonat} />
+      {istLeitung(user) && bsLehrlinge.length > 0 && <Knopf art="sekundaer" icon="kalender" onClick={() => setBsPlaner(true)}>Berufsschule planen</Knopf>}
       <Knopf art="sekundaer" icon="drucker" onClick={() => window.print()}>Nachweis drucken</Knopf>
       <Knopf art="sekundaer" icon="download" onClick={() => setExportOffen(true)}>Herunterladen</Knopf>
     </Seitenkopf>
@@ -1730,6 +1823,7 @@ function Zeiterfassung({ ctx }) {
     {abwDialog && <AbwDialog ctx={ctx} modus="alle" vorMa={ma.id} vorDatum={abwDialog} onClose={() => setAbwDialog(null)} />}
     {abwBestand && <AbwDialog ctx={ctx} modus="alle" bestand={abwBestand} onClose={() => setAbwBestand(null)} />}
     {exportOffen && <ZeitExportDialog ctx={ctx} monatStart={monat} vorMa={ma.id} onClose={() => setExportOffen(false)} />}
+    {bsPlaner && <BsPlaner ctx={ctx} lehrlinge={bsLehrlinge} startMaId={ma.id} onClose={() => setBsPlaner(false)} />}
   </div>;
 }
 
@@ -1856,7 +1950,7 @@ function AbwDialog({ ctx, modus, onClose, vorMa, vorDatum, bestand }) {
       try { metas = await belegeSpeichern(neueDateien, user.id); } catch (e) { alert(e.message || "Hochladen fehlgeschlagen."); setSpeichert(false); return; }
     }
     aendern(n => {
-      const daten = { maId: f.maId, art: f.art, von: f.von, bis, status, dateien: [...(bestand?.dateien || []), ...metas], anteil: halbMoeglich && f.halb ? 0.5 : undefined, minuten: art.stunden ? Math.round(+f.stunden * 60) : undefined, au: art.au ? (f.au || metas.length > 0) : undefined, notiz: f.notiz };
+      const daten = { maId: f.maId, art: f.art, von: f.von, bis, status, dateien: [...(bestand?.dateien || []), ...metas], anteil: halbMoeglich && f.halb ? 0.5 : undefined, minuten: art.stunden ? Math.round(+f.stunden * 60) : f.art === "berufsschule" && bestand?.art === "berufsschule" && (anteil(bestand) < 1) === !!(halbMoeglich && f.halb) ? bestand.minuten : undefined, au: art.au ? (f.au || metas.length > 0) : undefined, notiz: f.notiz };
       if (bestand) Object.assign(n.abwesenheiten.find(a => a.id === bestand.id), daten, { geaendertVon: user.id, geaendertAm: heute() });
       else n.abwesenheiten.push({ id: uid(), ...daten, beantragtAm: heute(), erfasstVon: user.id, entschiedenVon: status === "genehmigt" ? user.id : undefined });
       if (!bestand && status === "beantragt") nachricht(n, genehmigerVon(n, ma), `${ma.name} hat ${ARTEN[f.art].label} beantragt: ${fmtZr(f.von, bis)}${f.art === "urlaub" ? ` (${tage} UT)` : ""}`, "urlaub");
@@ -2074,7 +2168,6 @@ function Krankenstand({ ctx }) {
   const laufend = alle.filter(a => wirksam(a) && a.von <= h && (!a.bis || a.bis >= h));
   const offen = alle.filter(a => a.status === "beantragt" && darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId)));
   const liste = alle.filter(a => (!filterArt || a.art === filterArt) && a.art !== "berufsschule" || (filterArt === "berufsschule" && a.art === "berufsschule")).sort((a, b) => b.von.localeCompare(a.von));
-  const [bsPlaner, setBsPlaner] = useState(false);
   const [bearbeiten, setBearbeiten] = useState(null);
   const lehrlinge = sichtbar.filter(m => m.aktiv && m.lehrbeginn);
   const darfBearbeiten = a => a.maId === user.id || darfVerwalten(user, db.mitarbeiter.find(m => m.id === a.maId));
@@ -2085,7 +2178,6 @@ function Krankenstand({ ctx }) {
 
   return <div className="space-y-5">
     <Seitenkopf titel="Krankenstand & Abwesenheiten" sub="Krankmeldungen, Pflegefreistellung, Zeitausgleich, Berufsschule und mehr">
-      {leitung && lehrlinge.length > 0 && <Knopf art="sekundaer" icon="kalender" onClick={() => setBsPlaner(true)}>Berufsschule planen</Knopf>}
       <Knopf icon="plus" onClick={() => setDialog(true)}>{leitung ? "Krankenstand / Urlaub eintragen" : "Krankmeldung / Abwesenheit"}</Knopf>
     </Seitenkopf>
     <div className="grid lg:grid-cols-2 gap-5">
@@ -2131,7 +2223,7 @@ function Krankenstand({ ctx }) {
           </tr>;
         })}
       </Tabelle>
-      <p className="px-5 py-3 text-xs text-stone-500">Berufsschulzeit gilt als Arbeitszeit und wird im Zeitkonto voll angerechnet, ein halber Schultag zur Hälfte – den Rest des Tages arbeitet der Lehrling im Salon.</p>
+      <p className="px-5 py-3 text-xs text-stone-500">Berufsschulzeit gilt als Arbeitszeit. Ganzer Schultag: Unterrichtsstunden × 50 min (ohne Mittagspause), halber Schultag: die eingetragene Schulzeit – ohne Angabe wie bisher der ganze bzw. halbe Arbeitstag laut Dienstplan. Den Rest des Tages arbeitet der Lehrling im Salon. Planen unter „Zeiterfassung → Berufsschule planen“.</p>
     </Karte>}
 
     {leitung && <Karte titel={`Krankenstandstage ${jahr}`} innen="p-0">
@@ -2170,16 +2262,19 @@ function Krankenstand({ ctx }) {
     </Karte>
     {dialog && <AbwDialog ctx={ctx} modus={leitung ? "alle" : "abw"} onClose={() => setDialog(false)} />}
     {bearbeiten && <AbwDialog ctx={ctx} bestand={bearbeiten} onClose={() => setBearbeiten(null)} />}
-    {bsPlaner && <BsPlaner ctx={ctx} lehrlinge={lehrlinge.filter(m => darfVerwalten(user, m))} onClose={() => setBsPlaner(false)} />}
   </div>;
 }
-function BsPlaner({ ctx, lehrlinge, onClose }) {
+function BsPlaner({ ctx, lehrlinge, startMaId, onClose }) {
   const { db, user, aendern } = ctx;
   const h = heute();
   const schuljahrEnde = `${+h.slice(5, 7) >= 7 ? parseInt(h) + 1 : parseInt(h)}-06-30`;
-  const [maId, setMaId] = useState(lehrlinge[0]?.id || "");
+  const [maId, setMaId] = useState((lehrlinge.some(m => m.id === startMaId) ? startMaId : lehrlinge[0]?.id) || "");
   const ma = db.mitarbeiter.find(m => m.id === maId);
   const [plan, setPlan] = useState(() => ma ? bsWochentage(db, ma) : { tag1: 1, tag2: 2 });
+  const [sz, setSz] = useState(() => bsVorschlag(db, maId));   // Unterrichtsstunden (ganzer Tag), Schule von–bis (halber Tag)
+  const halbMin = sz.von && sz.bis ? hm2min(sz.bis) - hm2min(sz.von) : 0;
+  const szFehler = (!!sz.von !== !!sz.bis) ? "Beim halben Tag bitte Beginn und Ende der Schule angeben – oder beide leer lassen."
+    : sz.von && halbMin <= 0 ? "Halber Tag: Schulende muss nach Schulbeginn liegen." : null;
   const [von, setVon] = useState(h);
   const [bis, setBis] = useState(schuljahrEnde);
   const [ohneSommer, setOhneSommer] = useState(true); // = alle Wiener Schulferien auslassen
@@ -2194,22 +2289,30 @@ function BsPlaner({ ctx, lehrlinge, onClose }) {
     aendern(n => {
       if (ersetzen) { const ids = new Set(bestehend.map(a => a.id)); n.abwesenheiten = n.abwesenheiten.filter(a => !ids.has(a.id)); }
       Object.assign(n.mitarbeiter.find(m => m.id === ma.id), { bsTag1: +plan.tag1, bsTag2: +plan.tag2 }); // fixe Schultage merken
-      neu.forEach(t => n.abwesenheiten.push({ id: uid(), maId: ma.id, art: "berufsschule", von: t.d, bis: t.d, status: "genehmigt", anteil: t.anteil < 1 ? t.anteil : undefined, notiz: t.anteil < 1 ? "halber Schultag" : "", beantragtAm: h, erfasstVon: user.id, entschiedenVon: user.id }));
+      neu.forEach(t => n.abwesenheiten.push({ id: uid(), maId: ma.id, art: "berufsschule", von: t.d, bis: t.d, status: "genehmigt", ...bsEintragFelder(t.anteil < 1, sz), beantragtAm: h, erfasstVon: user.id, entschiedenVon: user.id }));
     }, `${neu.length} Berufsschultage eingetragen`);
     onClose();
   }
   const tagWahl = (k, label) => <Feld label={label}><select className={inputCls} value={plan[k]} onChange={e => setPlan({ ...plan, [k]: +e.target.value })}>
     {modellVon(db, ma).tage.map((x, i) => +x > 0 ? <option key={i} value={i}>{WT_LANG[i]}</option> : null)}</select></Feld>;
   return <Modal breit titel="Berufsschule planen" onClose={onClose}
-    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!neu.length && !(ersetzen && bestehend.length)}>{neu.length} Tage eintragen</Knopf></>}>
+    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!szFehler || (!neu.length && !(ersetzen && bestehend.length))}>{neu.length} Tage eintragen</Knopf></>}>
     <div className="grid sm:grid-cols-2 gap-4">
-      <Feld label="Lehrling" breit><select className={inputCls} value={maId} onChange={e => { setMaId(e.target.value); const m = db.mitarbeiter.find(x => x.id === e.target.value); setPlan(bsWochentage(db, m)); }}>
+      <Feld label="Lehrling" breit><select className={inputCls} value={maId} onChange={e => { setMaId(e.target.value); const m = db.mitarbeiter.find(x => x.id === e.target.value); setPlan(bsWochentage(db, m)); setSz(bsVorschlag(db, e.target.value)); }}>
         {lehrlinge.map(m => <option key={m.id} value={m.id}>{m.name} · {lehrjahr(m, h) || "–"}. Lehrjahr</option>)}</select></Feld>
       <Feld label="Von"><input type="date" className={inputCls} value={von} onChange={e => setVon(e.target.value)} /></Feld>
       <Feld label="Bis" hilfe="Standard: Ende des Schuljahres"><input type="date" className={inputCls} value={bis} min={von} onChange={e => setBis(e.target.value)} /></Feld>
       {tagWahl("tag1", "Schultag (ganzer Tag)")}
       {tagWahl("tag2", "Zusätzlicher halber Tag (1. Lehrjahr)")}
       <p className="text-xs text-stone-500 sm:col-span-2 -mt-2">Die gewählten Tage werden beim Lehrling als fixe Schultage gespeichert.</p>
+      <Feld label="Ganzer Tag: Unterrichtsstunden" hilfe={`Je ${BS_STUNDE_MIN} min, die Mittagspause zählt nicht.${+sz.stunden > 0 ? ` Angerechnet: ${fmtH(+sz.stunden * BS_STUNDE_MIN)} h.` : " Leer = ganzer Arbeitstag laut Dienstplan."}`}>
+        <input type="number" min="1" max="12" className={inputCls} value={sz.stunden} onChange={e => setSz({ ...sz, stunden: e.target.value })} /></Feld>
+      <Feld label="Halber Tag: Schule von – bis" hilfe={halbMin > 0 ? `Angerechnet: ${fmtH(halbMin)} h, danach Arbeit im Betrieb.` : "Leer = halber Arbeitstag laut Dienstplan."}>
+        <div className="flex gap-2">
+          <input type="time" className={inputCls} value={sz.von} onChange={e => setSz({ ...sz, von: e.target.value })} />
+          <input type="time" className={inputCls} value={sz.bis} onChange={e => setSz({ ...sz, bis: e.target.value })} />
+        </div></Feld>
+      {szFehler && <p className="text-xs text-rose-700 sm:col-span-2 -mt-2">{szFehler}</p>}
       <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ohneSommer} onChange={e => setOhneSommer(e.target.checked)} />Schulferien Wien auslassen (Herbst, Weihnachten, Semester, Ostern, Pfingsten, Sommer, 15.11.)</label>
       {ohneSommer && (() => { const fer = []; tageZw(von, bis > von ? bis : von).forEach(d => { const f = schulferien(d); if (f && !fer.some(x => x.von === f.von)) fer.push(f); });
         return fer.length > 0 && <div className="sm:col-span-2 -mt-2 text-xs text-stone-500">Schulfrei im Zeitraum: {fer.map(f => `${f.name} ${f.von === f.bis ? fmtD(f.von) : fmtZr(f.von, f.bis)}`).join(" · ")}. Schulautonome Tage deiner Berufsschule bitte zusätzlich stornieren.</div>; })()}
@@ -2277,6 +2380,8 @@ function MaDialog({ ctx, ma, onClose }) {
   const vorschlag = vorschlagUrlaubstage(db, f);
   const [planDlg, setPlanDlg] = useState(null);
   const [austrittForm, setAustrittForm] = useState(false);
+  const [bsPlaner, setBsPlaner] = useState(false);
+  const gespeichert = db.mitarbeiter.find(m => m.id === f.id);   // Berufsschule planen erst für gespeicherte Lehrlinge
   const austritt = f.austritt ? austrittsUrlaub(db, f) : null;
   const kontoAustritt = f.austritt ? zeitkonto(db, f, f.austritt < heute() ? f.austritt : heute()) : 0;
   const nachAustritt = f.austritt ? db.abwesenheiten.filter(a => a.maId === f.id && a.von > f.austritt && (wirksam(a) || a.status === "beantragt")) : [];
@@ -2356,7 +2461,8 @@ function MaDialog({ ctx, ma, onClose }) {
         <div className="flex gap-2">
           <select className={inputCls} value={bsWochentage(db, f).tag1} onChange={e => set("bsTag1", +e.target.value)}>{WT_LANG.map((t, i) => <option key={i} value={i}>{t}</option>)}</select>
           <select className={inputCls} value={bsWochentage(db, f).tag2} onChange={e => set("bsTag2", +e.target.value)}>{WT_LANG.map((t, i) => <option key={i} value={i}>{t}</option>)}</select>
-        </div></Feld>}
+        </div>
+        {gespeichert?.lehrbeginn && istLeitung(user) && darfVerwalten(user, gespeichert) && <div className="mt-2"><Knopf art="sekundaer" klein icon="kalender" onClick={() => setBsPlaner(true)}>Berufsschule planen</Knopf></div>}</Feld>}
       <Feld label="Zeitkonto-Übertrag (Minuten)" hilfe="Saldo aus dem alten System beim Start"><input type="number" className={inputCls} value={f.saldoStart} onChange={e => set("saldoStart", e.target.value)} /></Feld>
       <div className="space-y-2 pt-5">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.checked ? (f.eintritt || heute()) : undefined)} />Lehrling</label>
@@ -2398,6 +2504,7 @@ function MaDialog({ ctx, ma, onClose }) {
     </div>}
     {fehler && <p className="mt-3 text-xs text-rose-700">{fehler}</p>}
     {planDlg && <ModellDialog db={db} modell={planDlg.modell} oz={db.einstellungen.oeffnungszeiten} neu={false} onSave={planSpeichern} onClose={() => setPlanDlg(null)} />}
+    {bsPlaner && gespeichert && <BsPlaner ctx={ctx} lehrlinge={[gespeichert]} startMaId={gespeichert.id} onClose={() => setBsPlaner(false)} />}
   </Modal>;
 }
 // ─── IMPORT: Beschäftigungsstand-Liste (Excel) ───────────────────────────────
@@ -3290,7 +3397,7 @@ function Einstellungen({ ctx }) {
           <div className="text-sm font-medium mb-2">Berufsschule – Tage pro Woche</div>
           <div className="grid grid-cols-4 gap-3">{[1, 2, 3, 4].map(lj => <Feld key={lj} label={`${lj}. Lehrjahr`}>
             <input type="number" step="0.5" min="0" max="5" className={inputCls} disabled={!admin} value={e.bsTageJeLehrjahr?.[lj] ?? ""} onChange={ev => setE("bsTageJeLehrjahr", { ...e.bsTageJeLehrjahr, [lj]: +ev.target.value })} /></Feld>)}</div>
-          <p className="mt-2 text-xs text-stone-500">Wien: 1. Lehrjahr 1,5 Tage, 2. und 3. Lehrjahr 1 Tag. Berufsschulzeit wird nach KJBG auf die Arbeitszeit angerechnet. Planen unter „Krankenstand → Berufsschule planen“.</p>
+          <p className="mt-2 text-xs text-stone-500">Wien: 1. Lehrjahr 1,5 Tage, 2. und 3. Lehrjahr 1 Tag. Berufsschulzeit wird nach KJBG auf die Arbeitszeit angerechnet. Planen unter „Zeiterfassung → Berufsschule planen“ oder im Profil des Lehrlings.</p>
         </div>
       </Karte>
       <Karte titel="Urlaub, Zuschläge & Firmenregeln">
@@ -3443,7 +3550,7 @@ function MeineZeiten({ ctx }) {
 
 function EinfachApp({ ctx, logout, toastEl }) {
   const { db, user } = ctx;
-  const [tab, setTab] = useState("heute");
+  const [tab, setTab] = useState(() => START_SEITE === "zeit" ? "zeiten" : START_SEITE === "urlaub" || START_SEITE === "krank" ? "urlaub" : "heute");
   const zuTab = s => { setTab(s === "zeit" ? "zeiten" : s === "urlaub" || s === "krank" ? "urlaub" : "heute"); window.scrollTo(0, 0); };
   const c = { ...ctx, setSeite: zuTab };
   const [dlg, setDlg] = useState(null);
@@ -4030,8 +4137,10 @@ function App() {
 }
 
 // Oberfläche nach dem Anmelden – gleich für Testversion und echten Betrieb (live)
+// Direktsprung, z. B. aus der Team-Übersicht: zeitverwaltung.html?seite=urlaub
+const START_SEITE = (/[?&]seite=([a-z]+)/.exec(location.search) || [])[1] || "dashboard";
 function Rahmen({ db, setDb, user, aendern, logout, login, toastEl, stempeln, live, sb }) {
-  const [seite, setSeiteRoh] = useState("dashboard");
+  const [seite, setSeiteRoh] = useState(() => NAV.some(n => n.id === START_SEITE) ? START_SEITE : "dashboard");
   const [navOffen, setNavOffen] = useState(false);
   const setSeite = s => { setSeiteRoh(NAV.some(n => n.id === s) ? s : "dashboard"); setNavOffen(false); window.scrollTo(0, 0); };
   const ctx = { db, setDb, user, aendern, sichtbar: sichtbareMA(db, user), setSeite, login, stempeln, live: !!live, sb };
@@ -4080,7 +4189,7 @@ function Rahmen({ db, setDb, user, aendern, logout, login, toastEl, stempeln, li
       <Avatar name={user.name} klein />
     </header>
     <main className="lg:ml-60 print-full">
-      {!live && <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-xs px-4 lg:px-8 py-1.5">{db.eigeneDaten ? "Testbetrieb mit deinen Daten – gespeichert nur in diesem Browser auf diesem Gerät, keine Verbindung zur Datenbank." : "Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank."}</div>}
+      {!live && <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-xs px-4 lg:px-8 py-1.5">{db.eigeneDaten ? "Testbetrieb mit deinen Daten – gespeichert nur in diesem Browser auf diesem Gerät, keine Verbindung zur Datenbank." : "Testversion mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank."}</div>}
       <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 print-full"><Seite ctx={ctx} /></div>
     </main>
     {toastEl}

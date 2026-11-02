@@ -1,15 +1,16 @@
 # Zeitverwaltung · Great Hair Day
 
 Zentrale Anwendung für **Arbeitszeit, Urlaub und Krankenstand/Abwesenheiten**.
-Stand: Prototyp (Oberfläche fertig, Datenbank als Entwurf).
+Stand: **echter Betrieb** mit der gemeinsamen Supabase-Datenbank (nach einem erfolgreichen Testmonat).
+Testversion mit erfundenen Beispieldaten, nur im Browser: `zeitverwaltung.html?test`.
 
 | Datei | Inhalt |
 |---|---|
-| `zeitverwaltung.html` | Oberfläche, läuft mit erfundenen Demo-Daten nur im Browser |
-| `zeitverwaltung_schema_entwurf.sql` | Datenbankstruktur inkl. RLS – **noch nicht live ausgeführt** |
+| `zeitverwaltung.html` | Oberfläche im echten Betrieb mit der gemeinsamen Datenbank; mit `?test` die Testversion mit Beispieldaten nur im Browser |
+| `zeitverwaltung_schema_entwurf.sql` | Quelle der Datenbankstruktur inkl. RLS; eingespielt wird über die Skripte in `supabase/` (Teil A–H, siehe 4c–4f) |
 | `abwesenheiten.html` | bestehende Abwesenheiten-App (bleibt unverändert in Betrieb) |
 
-## 1. Was der Prototyp kann
+## 1. Was die Zeitverwaltung kann
 
 Design wie die anderen Great-Hair-Day-Apps (index/Schaltzentrale): Poppins, Creme-Hintergrund, Gold-Akzent #896C32, runde Pill-Buttons, Stempeluhr als goldene Karte.
 
@@ -30,6 +31,7 @@ Navigation: **Dashboard → Zeiterfassung → Urlaub → Krankenstand → Mitarb
 - **Urlaub** – Antrag mit Vorschau (gezählte Urlaubstage laut Arbeitszeitmodell, ausgenommene Feiertage, wer gleichzeitig weg ist, Rest danach), Genehmigen/Ablehnen, Stornieren, Urlaubskonto (Anspruch, Übertrag, verbraucht, geplant, beantragt, Rest).
 - **Krankenstand & Abwesenheiten** – Krankenstand, Arbeitsunfall, Pflegefreistellung, Dienstverhinderung, Berufsschule, Fortbildung, Zeitausgleich, unbezahlter Urlaub; offenes Ende plus „Gesund melden“; AU-Bestätigung; Krankenstandstage pro Person mit Anspruch auf Entgeltfortzahlung.
 - **Lehrlinge & Berufsschule** – Lehrbeginn je Lehrling, das Lehrjahr wird automatisch berechnet. Berufsschultage pro Woche je Lehrjahr (Wien: 1. Lehrjahr 1,5 Tage, 2. und 3. Lehrjahr 1 Tag; unter *Einstellungen* änderbar). „Berufsschule planen“ trägt die Schultage für ein ganzes Schuljahr ein: ganzer Tag plus halber Tag im 1. Lehrjahr, Feiertage und Sommerferien ausgelassen, Wechsel ins nächste Lehrjahr automatisch. Halbe Schultage werden zur Hälfte angerechnet, den Rest arbeitet der Lehrling im Salon.
+- **Schulzeit genau eintragen (Lehrlinge)** – „Berufsschule planen“ liegt in der *Zeiterfassung* und im *Profil des Lehrlings* (nicht mehr unter Krankenstand). Ganzer Schultag: **Unterrichtsstunden × 50 min**, die Mittagspause zählt nicht (z. B. 9 Stunden = 7:30 h). Halber Schultag: **Schule von – bis** (z. B. 8:00–12:30 = 4:30 h), danach Arbeit im Betrieb. Bleiben die Felder leer, gilt wie bisher der ganze bzw. halbe Arbeitstag laut Dienstplan. Im Fenster *Zeit nachtragen / bearbeiten* stehen bei Lehrlingen Schule und Betrieb getrennt, mit Summe und Prüfung nach KJBG (Tagesgrenze, Pause im Betrieb). Gespeichert in den bestehenden Spalten `anteil`, `minuten` und `notiz` von `abw_anfragen` – keine Datenbankänderung. Hinweis: Am Stempel-Tablet erscheint ein ganzer Schultag mit Unterrichtsstunden nicht als „Berufsschule“, weil der Server Einträge mit Minuten als Teil-Tag behandelt; stempeln wird dadurch nicht verhindert.
 - **Mitarbeiter** – Name, Personalnummer, Abteilung, Funktion, Eintritt/Austritt, Arbeitszeitmodell, Urlaubstage (mit Vorschlag nach UrlG, aliquot zu den Arbeitstagen), Vorgesetzte/r, Rolle, KJBG-Kennzeichen, aktiv/inaktiv.
 - **Kalender** – Teamkalender pro Monat mit Abwesenheitsarten, Anträgen, Feiertagen und Schließtagen. Kolleg/innen sehen bei anderen nur „A“ (abwesend), nicht den Grund.
 - **Auswertungen** – Monats- und Jahresübersicht (Soll, Ist, angerechnete Abwesenheit, Saldo, Zeitkonto, Mehrarbeit, Überstunden, Urlaub, Krankenstand, Abschluss-Status). Export als **CSV für Excel** (Semikolon, Dezimalkomma, Umlaute korrekt) und als **PDF** über den Druckdialog.
@@ -105,7 +107,7 @@ Am Tablet: Name antippen → PIN → Kommen / Pause / Gehen. Der Server prüft d
 | **Tablet + Handy im Salon** | nur im Salon-WLAN | stempelt |
 | **Überall** | ohne Einschränkung | stempelt |
 
-Live entscheidet das der Server in `zeit_stempeln()` (Tabelle `zeit_stempel_regel`), die App blendet nur die Knöpfe aus. Für „Handy im Salon“ tippt die Chefin einmal **im Salon, im Salon-WLAN** auf „Salon-WLAN merken“ (`zeit_salon_netz_merken()`); gespeichert wird die öffentliche IP des Salon-Internetanschlusses in `zeit_salon_netze`. Wechselt der Anbieter die IP, im Salon nochmal tippen. Vertraut wird nur dem Header `cf-connecting-ip` (setzt die Supabase-Edge), nicht dem vom Client fälschbaren `X-Forwarded-For`; fehlt er, wird abgelehnt. **Vor Go-live testen:** Stempeln mit Handy-Daten (nicht WLAN) und mit gefälschtem `X-Forwarded-For` muss scheitern. Die GPS-Prüfung im Prototyp ist nur eine Vorschau – ein Handy-Standort lässt sich fälschen.
+Live entscheidet das der Server in `zeit_stempeln()` (Tabelle `zeit_stempel_regel`), die App blendet nur die Knöpfe aus. Für „Handy im Salon“ tippt die Chefin einmal **im Salon, im Salon-WLAN** auf „Salon-WLAN merken“ (`zeit_salon_netz_merken()`); gespeichert wird die öffentliche IP des Salon-Internetanschlusses in `zeit_salon_netze`. Wechselt der Anbieter die IP, im Salon nochmal tippen. Vertraut wird nur dem Header `cf-connecting-ip` (setzt die Supabase-Edge), nicht dem vom Client fälschbaren `X-Forwarded-For`; fehlt er, wird abgelehnt. **Vor Go-live testen:** Stempeln mit Handy-Daten (nicht WLAN) und mit gefälschtem `X-Forwarded-For` muss scheitern. Die GPS-Prüfung in der Testversion (`?test`) ist nur eine Vorschau – ein Handy-Standort lässt sich fälschen.
 
 **Wie TimeMoto eingestellt** (Einstellungen → Automatik):
 - *Automatisch ausstempeln* 15 Minuten nach Dienstende laut Plan.
@@ -186,9 +188,9 @@ Sicherheits-Check (CLAUDE.md): jede neue Tabelle mit RLS; keine anon-Policy; Tab
 
 ## 5. Nächste Schritte
 
-1. Offene Fragen unten klären, Schema anpassen.
-2. Schema im Supabase-Projekt ausführen, vorher `SICHERHEIT-RLS-CHECK.md` durchgehen.
-3. Oberfläche an Supabase anbinden (Login wie in der Abwesenheiten-App, Lesen per REST, Schreiben per RPC).
+1. ✅ Erledigt: Offene Fragen geklärt, Schema angepasst.
+2. ✅ Erledigt: Schema im Supabase-Projekt ausgeführt.
+3. ✅ Erledigt: Oberfläche an Supabase angebunden (Login wie in der Abwesenheiten-App, Lesen per REST, Schreiben per RPC) – ein Monat Testbetrieb ohne Probleme.
 4. Saldo und Monatsabschluss-Snapshot serverseitig berechnen (eigene Funktion bzw. View), damit die Werte für die Lohnverrechnung nicht vom Browser kommen.
 5. Export für die Lohnverrechnung im gewünschten Format (z. B. BMD/RZL-CSV) ergänzen.
 
