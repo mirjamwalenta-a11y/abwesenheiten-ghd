@@ -1606,6 +1606,16 @@ function Zeiterfassung({ ctx }) {
   const [abwDialog, setAbwDialog] = useState(null);
   const [abwBestand, setAbwBestand] = useState(null);   // eingetragene Abwesenheit ändern / löschen
   const [protokollOffen, setProtokollOffen] = useState(false);
+  const [exportOffen, setExportOffen] = useState(false);
+  const [druckListe, setDruckListe] = useState(null);   // Zeitberichte (PDF) für ausgewählte Personen
+  useEffect(() => {
+    if (!druckListe) return;
+    document.body.classList.add("druck-alle");
+    const fertig = () => { document.body.classList.remove("druck-alle"); setDruckListe(null); };
+    window.addEventListener("afterprint", fertig);
+    const t = setTimeout(() => window.print(), 300);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", fertig); document.body.classList.remove("druck-alle"); };
+  }, [druckListe]);
   const ma = db.mitarbeiter.find(m => m.id === maId) || user;
   const tage = tageImMonat(monat);
   const sm = summe(db, ma, tage[0], tage[tage.length - 1]);
@@ -1618,11 +1628,12 @@ function Zeiterfassung({ ctx }) {
   const meineKorr = db.korrekturen.filter(k => k.maId === ma.id && monatKey(k.datum) === monat);
   const protokoll = db.protokoll.filter(p => p.maId === ma.id && monatKey(p.datum) === monat);
 
-  return <div className="space-y-5">
+  return <><div className="space-y-5 seite-inhalt">
     <Seitenkopf titel="Zeiterfassung" sub="Arbeitsbeginn, -ende und Pausen · Aufzeichnungspflicht nach § 26 AZG">
       {sichtbar.length > 1 && <MaWahl liste={sichtbar} wert={maId} setWert={setMaId} />}
       <MonatWahl monat={monat} setMonat={setMonat} />
       <Knopf art="sekundaer" icon="drucker" onClick={() => window.print()}>Nachweis drucken</Knopf>
+      <Knopf art="sekundaer" icon="download" onClick={() => setExportOffen(true)}>Herunterladen</Knopf>
     </Seitenkopf>
     <div className="print-only mb-3">
       <div className="text-lg font-semibold">Arbeitszeitnachweis {fmtMonat(monat)}</div>
@@ -1714,7 +1725,85 @@ function Zeiterfassung({ ctx }) {
     {dialog && <ZeitDialog ctx={ctx} ma={ma} datum={dialog} onClose={() => setDialog(null)} />}
     {abwDialog && <AbwDialog ctx={ctx} modus="alle" vorMa={ma.id} vorDatum={abwDialog} onClose={() => setAbwDialog(null)} />}
     {abwBestand && <AbwDialog ctx={ctx} modus="alle" bestand={abwBestand} onClose={() => setAbwBestand(null)} />}
-  </div>;
+    {exportOffen && <ZeitExportDialog ctx={ctx} monatStart={monat} vorMa={ma.id} onClose={() => setExportOffen(false)} onPdf={(liste, m) => { setExportOffen(false); setMonat(m); setDruckListe({ liste, monat: m }); }} />}
+  </div>
+  {druckListe && <DruckNachweise db={db} liste={druckListe.liste} monat={druckListe.monat} />}
+  </>;
+}
+
+// Zeiterfassung herunterladen: Mitarbeiter/innen anklicken, Monat wählen, als Excel oder PDF speichern
+async function zeitenExcel(db, user, liste, monat) {
+  const X = await ladeXlsx();
+  const tage = tageImMonat(monat), von = tage[0], bis = tage[tage.length - 1], bisKonto = bis < heute() ? bis : heute();
+  const h2 = m => Math.round((m || 0) / 60 * 100) / 100;
+  const wb = X.utils.book_new();
+  const blatt = (rows, name, breiten) => { const ws = X.utils.aoa_to_sheet(rows); ws["!cols"] = breiten.map(w => ({ wch: w })); X.utils.book_append_sheet(wb, ws, name); };
+  const kopf = [[`${db.einstellungen.firmenname} · Zeiterfassung ${fmtMonat(monat)}`], [`Erstellt am ${new Date().toLocaleString("de-AT")} von ${user.name}`], []];
+  if (liste.length > 1) blatt([...kopf, ["Personalnr", "Name", "Dienstplan", "Soll (h)", "Ist (h)", "Abwesenheit angerechnet (h)", "Saldo Monat (h)", "Zeitkonto (h)", "Monatsabschluss"],
+    ...liste.map(m => { const s = summe(db, m, von, bis), ab = abschlussVon(db, m.id, monat);
+      return [m.personalnr, m.name, modellVon(db, m).name, h2(s.soll), h2(s.ist), h2(s.gut), h2(s.saldo), h2(zeitkonto(db, m, bisKonto)), ab?.abgeschlossenAm ? `abgeschlossen am ${fmtD(ab.abgeschlossenAm)}` : ab?.bestaetigtAm ? "bestätigt" : "offen"]; })],
+    "Übersicht", [11, 22, 30, 9, 9, 14, 12, 12, 24]);
+  const namen = new Set();
+  liste.forEach(m => {
+    const s = summe(db, m, von, bis);
+    const rows = [[`${db.einstellungen.firmenname} · Arbeitszeitnachweis ${fmtMonat(monat)}`], [`${m.name}${m.personalnr ? ` (${m.personalnr})` : ""} · ${modellVon(db, m).name}`], [],
+      ["Datum", "Wochentag", "Beginn", "Ende", "Pause (min)", "Ist (h)", "Soll (h)", "Saldo (h)", "Abwesenheit", "Feiertag", "Info", "Hinweise AZG/KJBG"]];
+    tage.forEach(d => {
+      if (!beschaeftigt(m, d)) return;
+      const t = tagInfo(db, m, d);
+      const info = [t.z?.auto?.length ? `auto: ${t.z.auto.map(x => AUTO_TEXT[x]).join(", ")}` : "", t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? "korrigiert" : "",
+        !t.z && !t.a && t.soll > 0 && t.zaehlt && d <= heute() ? "fehlt" : "", t.z?.notiz || ""].filter(Boolean).join(" · ");
+      rows.push([fmtD(d), WT[wd(d)], t.z?.beginn || "", t.z?.ende || "", t.z ? t.z.pause : "", t.z || t.gut ? h2(t.ist + t.gut) : "", t.soll ? h2(t.soll) : "", t.zaehlt && (t.soll || t.ist) ? h2(t.saldo) : "",
+        t.a ? ARTEN[t.a.art].label + (teilTag(t.a) ? ` (${abwZusatz(t.a)})` : "") : "", t.ft?.name || "", info, pruefeTag(db, m, d).map(x => x.text).join(" | ")]);
+    });
+    rows.push([], ["Summe", "", "", "", "", h2(s.ist + s.gut), h2(s.soll), h2(s.saldo)], ["Zeitkonto (kumuliert)", "", "", "", "", "", "", h2(zeitkonto(db, m, bisKonto))]);
+    // Blattname: max. 31 Zeichen, ohne Sonderzeichen, eindeutig
+    let n = (m.name || "Person").replace(/[\\/?*\[\]:]/g, " ").slice(0, 28).trim() || "Person", i = 2;
+    while (namen.has(n)) n = `${n.slice(0, 26)} ${i++}`;
+    namen.add(n);
+    blatt(rows, n, [11, 10, 8, 8, 10, 8, 8, 9, 24, 18, 30, 50]);
+  });
+  const datei = liste.length === 1 ? `Zeiterfassung_${(liste[0].name || "").replace(/[^\wäöüÄÖÜß-]+/g, "_")}_${monat}.xlsx` : `Zeiterfassung_${monat}.xlsx`;
+  X.writeFile(wb, datei);
+}
+function ZeitExportDialog({ ctx, monatStart, vorMa, onClose, onPdf }) {
+  const { db, user, sichtbar } = ctx;
+  const [monat, setMonat] = useState(monatStart);
+  const tage = tageImMonat(monat);
+  const kandidaten = sichtbar.filter(m => tage.some(d => beschaeftigt(m, d)));
+  const [gewaehlt, setGewaehlt] = useState(() => new Set([vorMa]));
+  const [laedt, setLaedt] = useState(false);
+  const auswahl = kandidaten.filter(m => gewaehlt.has(m.id));
+  const umschalten = id => setGewaehlt(g => { const n = new Set(g); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const alle = auswahl.length === kandidaten.length;
+  async function excel() {
+    setLaedt(true);
+    try { await zeitenExcel(db, user, auswahl, monat); onClose(); }
+    catch (e) { alert("Excel konnte nicht erstellt werden (keine Internetverbindung?)."); }
+    setLaedt(false);
+  }
+  return <Modal titel="Zeiterfassung herunterladen" onClose={onClose} fuss={<>
+    <Knopf art="sekundaer" icon="drucker" disabled={!auswahl.length} onClick={() => onPdf(auswahl, monat)}>PDF</Knopf>
+    <Knopf icon="download" disabled={!auswahl.length || laedt} onClick={excel}>{laedt ? "Wird erstellt …" : "Excel"}</Knopf>
+  </>}>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">Monat</span><MonatWahl monat={monat} setMonat={setMonat} /></div>
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm font-medium">Mitarbeiter/innen ({auswahl.length} von {kandidaten.length})</span>
+          {kandidaten.length > 1 && <button className="text-xs text-gold-700 hover:underline" onClick={() => setGewaehlt(alle ? new Set() : new Set(kandidaten.map(m => m.id)))}>{alle ? "Keine" : "Alle auswählen"}</button>}
+        </div>
+        {kandidaten.length === 0 ? <Leer text="In diesem Monat niemand beschäftigt." /> :
+        <ul className="rounded-xl ring-1 ring-inset ring-stone-200 bg-white divide-y divide-stone-100">
+          {kandidaten.map(m => <li key={m.id}><label className="flex items-center gap-3 px-3 py-2.5 cursor-pointer">
+            <input type="checkbox" className="w-4 h-4 accent-[#896C32]" checked={gewaehlt.has(m.id)} onChange={() => umschalten(m.id)} />
+            <Avatar name={m.name} klein /><span className="text-sm">{m.name}{!m.aktiv ? <span className="text-stone-400"> (inaktiv)</span> : ""}</span>
+          </label></li>)}
+        </ul>}
+      </div>
+      <p className="text-xs text-stone-500">Excel: ein Blatt pro Person mit allen Tagen{auswahl.length > 1 ? " plus Übersicht" : ""}. PDF: pro Person ein Zeitbericht – im Druckdialog „Als PDF speichern“ wählen.</p>
+    </div>
+  </Modal>;
 }
 
 // ─── ABWESENHEITS-DIALOG (Urlaub, Krankenstand, sonstige) ────────────────────
