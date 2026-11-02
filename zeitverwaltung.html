@@ -1128,6 +1128,19 @@ function ladeJszip() {
     document.head.appendChild(s);
   });
 }
+// PDF-Bibliothek (jsPDF + Tabellen-Plugin) erst beim ersten PDF-Download laden
+function ladeSkript(src) {
+  return new Promise((ok, fehler) => {
+    const s = document.createElement("script"); s.src = src;
+    s.onload = ok; s.onerror = () => fehler(new Error("PDF-Bibliothek nicht erreichbar"));
+    document.head.appendChild(s);
+  });
+}
+async function ladeJspdf() {
+  if (!window.jspdf) await ladeSkript("https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js");
+  if (!window.jspdf.jsPDF.API.autoTable) await ladeSkript("https://unpkg.com/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js");
+  return window.jspdf.jsPDF;
+}
 function csvExport(dateiname, zeilen) {
   const esc = v => { const s = String(v ?? ""); return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const text = "﻿" + zeilen.map(z => z.map(esc).join(";")).join("\r\n");
@@ -1607,15 +1620,6 @@ function Zeiterfassung({ ctx }) {
   const [abwBestand, setAbwBestand] = useState(null);   // eingetragene Abwesenheit ändern / löschen
   const [protokollOffen, setProtokollOffen] = useState(false);
   const [exportOffen, setExportOffen] = useState(false);
-  const [druckListe, setDruckListe] = useState(null);   // Zeitberichte (PDF) für ausgewählte Personen
-  useEffect(() => {
-    if (!druckListe) return;
-    document.body.classList.add("druck-alle");
-    const fertig = () => { document.body.classList.remove("druck-alle"); setDruckListe(null); };
-    window.addEventListener("afterprint", fertig);
-    const t = setTimeout(() => window.print(), 300);
-    return () => { clearTimeout(t); window.removeEventListener("afterprint", fertig); document.body.classList.remove("druck-alle"); };
-  }, [druckListe]);
   const ma = db.mitarbeiter.find(m => m.id === maId) || user;
   const tage = tageImMonat(monat);
   const sm = summe(db, ma, tage[0], tage[tage.length - 1]);
@@ -1628,7 +1632,7 @@ function Zeiterfassung({ ctx }) {
   const meineKorr = db.korrekturen.filter(k => k.maId === ma.id && monatKey(k.datum) === monat);
   const protokoll = db.protokoll.filter(p => p.maId === ma.id && monatKey(p.datum) === monat);
 
-  return <><div className="space-y-5 seite-inhalt">
+  return <div className="space-y-5">
     <Seitenkopf titel="Zeiterfassung" sub="Arbeitsbeginn, -ende und Pausen · Aufzeichnungspflicht nach § 26 AZG">
       {sichtbar.length > 1 && <MaWahl liste={sichtbar} wert={maId} setWert={setMaId} />}
       <MonatWahl monat={monat} setMonat={setMonat} />
@@ -1652,7 +1656,7 @@ function Zeiterfassung({ ctx }) {
       <Kpi label="Zeitkonto" wert={fmtH(konto, true)} ton={konto >= 0 ? "pos" : "neg"} sub="kumuliert" />
     </div>
 
-    <div className="grid xl:grid-cols-3 gap-5">
+    <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
       <Karte className="xl:col-span-2" innen="p-0" titel={<span className="flex items-center gap-2">{ma.name} · <span className="capitalize">{fmtMonat(monat)}</span>{istGesperrt && <Icon n="schloss" className="w-4 h-4 text-stone-500" />}</span>}
         aktion={<span className="text-xs text-stone-500">{modellVon(db, ma).name}</span>}>
         <Tabelle kopf={["Tag", "Beginn", "Ende", { t: "Pause", cls: "text-right" }, { t: "Ist", cls: "text-right" }, { t: "Soll", cls: "text-right" }, { t: "Saldo", cls: "text-right" }, "Info", { t: "", cls: "no-print" }]}>
@@ -1725,10 +1729,8 @@ function Zeiterfassung({ ctx }) {
     {dialog && <ZeitDialog ctx={ctx} ma={ma} datum={dialog} onClose={() => setDialog(null)} />}
     {abwDialog && <AbwDialog ctx={ctx} modus="alle" vorMa={ma.id} vorDatum={abwDialog} onClose={() => setAbwDialog(null)} />}
     {abwBestand && <AbwDialog ctx={ctx} modus="alle" bestand={abwBestand} onClose={() => setAbwBestand(null)} />}
-    {exportOffen && <ZeitExportDialog ctx={ctx} monatStart={monat} vorMa={ma.id} onClose={() => setExportOffen(false)} onPdf={(liste, m) => { setExportOffen(false); setMonat(m); setDruckListe({ liste, monat: m }); }} />}
-  </div>
-  {druckListe && <DruckNachweise db={db} liste={druckListe.liste} monat={druckListe.monat} />}
-  </>;
+    {exportOffen && <ZeitExportDialog ctx={ctx} monatStart={monat} vorMa={ma.id} onClose={() => setExportOffen(false)} />}
+  </div>;
 }
 
 // Zeiterfassung herunterladen: Mitarbeiter/innen anklicken, Monat wählen, als Excel oder PDF speichern
@@ -1766,7 +1768,7 @@ async function zeitenExcel(db, user, liste, monat) {
   const datei = liste.length === 1 ? `Zeiterfassung_${(liste[0].name || "").replace(/[^\wäöüÄÖÜß-]+/g, "_")}_${monat}.xlsx` : `Zeiterfassung_${monat}.xlsx`;
   X.writeFile(wb, datei);
 }
-function ZeitExportDialog({ ctx, monatStart, vorMa, onClose, onPdf }) {
+function ZeitExportDialog({ ctx, monatStart, vorMa, onClose }) {
   const { db, user, sichtbar } = ctx;
   const [monat, setMonat] = useState(monatStart);
   const tage = tageImMonat(monat);
@@ -1776,6 +1778,12 @@ function ZeitExportDialog({ ctx, monatStart, vorMa, onClose, onPdf }) {
   const auswahl = kandidaten.filter(m => gewaehlt.has(m.id));
   const umschalten = id => setGewaehlt(g => { const n = new Set(g); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const alle = auswahl.length === kandidaten.length;
+  async function pdf() {
+    setLaedt(true);
+    try { await zeitberichtPdf(db, auswahl, monat); onClose(); }
+    catch (e) { alert("PDF konnte nicht erstellt werden (keine Internetverbindung?)."); }
+    setLaedt(false);
+  }
   async function excel() {
     setLaedt(true);
     try { await zeitenExcel(db, user, auswahl, monat); onClose(); }
@@ -1783,7 +1791,7 @@ function ZeitExportDialog({ ctx, monatStart, vorMa, onClose, onPdf }) {
     setLaedt(false);
   }
   return <Modal titel="Zeiterfassung herunterladen" onClose={onClose} fuss={<>
-    <Knopf art="sekundaer" icon="drucker" disabled={!auswahl.length} onClick={() => onPdf(auswahl, monat)}>PDF</Knopf>
+    <Knopf art="sekundaer" icon="download" disabled={!auswahl.length || laedt} onClick={pdf}>PDF</Knopf>
     <Knopf icon="download" disabled={!auswahl.length || laedt} onClick={excel}>{laedt ? "Wird erstellt …" : "Excel"}</Knopf>
   </>}>
     <div className="space-y-4">
@@ -1801,7 +1809,7 @@ function ZeitExportDialog({ ctx, monatStart, vorMa, onClose, onPdf }) {
           </label></li>)}
         </ul>}
       </div>
-      <p className="text-xs text-stone-500">Excel: ein Blatt pro Person mit allen Tagen{auswahl.length > 1 ? " plus Übersicht" : ""}. PDF: pro Person ein Zeitbericht – im Druckdialog „Als PDF speichern“ wählen.</p>
+      <p className="text-xs text-stone-500">Excel: ein Blatt pro Person mit allen Tagen{auswahl.length > 1 ? " plus Übersicht" : ""}. PDF: pro Person ein Zeitbericht, wird direkt als Datei gespeichert.</p>
     </div>
   </Modal>;
 }
@@ -2677,7 +2685,7 @@ function Auswertungen({ ctx }) {
     }));
     csvExport(`arbeitszeiten_${ansicht === "monat" ? monat : jahr}.csv`, zz);
   }
-  const [druck, setDruck] = useState(false); // false | "monat" | "jahr"
+  const [druck, setDruck] = useState(false); // false | "jahr"
   const [laedt, setLaedt] = useState(false);
   useEffect(() => {
     if (!druck) return;
@@ -2698,6 +2706,11 @@ function Auswertungen({ ctx }) {
       if (!x) { x = { maId: z.m.id, monat }; n.abschluesse.push(x); }
       Object.assign(x, { abgeschlossenAm: heute(), abgeschlossenVon: user.id, saldoMonat: z.s.saldo, kontoStand: z.konto });
     }), `${ok.length} abgeschlossen${abschliessbar.length > ok.length ? ` · ${abschliessbar.length - ok.length} offen (Korrektur/fehlendes Gehen)` : ""}`);
+  }
+  async function zeitberichteLaden() {
+    setLaedt(true);
+    try { await zeitberichtPdf(db, liste, monat); } catch (e) { alert("PDF konnte nicht erstellt werden (keine Internetverbindung?)."); }
+    setLaedt(false);
   }
   async function excelHerunterladen() {
     setLaedt(true);
@@ -2838,10 +2851,10 @@ function Auswertungen({ ctx }) {
       <div className="mt-4 flex flex-wrap gap-2">
         {istLeitung(user) && <button disabled={!vorbei || !abschliessbar.length} onClick={alleAbschliessen} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white/15 hover:bg-white/25 disabled:opacity-40">🔒 Alle abschließen{abschliessbar.length ? ` (${abschliessbar.length})` : ""}</button>}
         <button onClick={excelHerunterladen} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">⬇️ Excel herunterladen</button>
-        <button onClick={() => setDruck("monat")} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50">🖨️ Zeitberichte (PDF)</button>
+        <button onClick={zeitberichteLaden} disabled={laedt} className="rounded-full font-bold text-sm px-5 py-2.5 bg-white text-gold-700 hover:bg-stone-50 disabled:opacity-60">⬇️ Zeitberichte (PDF)</button>
       </div>
       {!vorbei && <p className="mt-3 text-xs opacity-80">Abschließen geht ab dem 1. des Folgemonats.</p>}
-      <p className="mt-3 text-xs opacity-80">Excel: Übersicht, alle Arbeitszeiten pro Tag, Abwesenheiten und Änderungsprotokoll. PDF: pro Person ein Arbeitszeitnachweis{db.einstellungen.pdfUnterschrift ? " mit Unterschriftszeilen" : ""} – im Druckdialog „Als PDF speichern“ wählen.</p>
+      <p className="mt-3 text-xs opacity-80">Excel: Übersicht, alle Arbeitszeiten pro Tag, Abwesenheiten und Änderungsprotokoll. PDF: pro Person ein Arbeitszeitnachweis{db.einstellungen.pdfUnterschrift ? " mit Unterschriftszeilen" : ""}, wird direkt als Datei gespeichert.</p>
     </section>}
     <div className="print-only text-lg font-semibold mb-2">{db.einstellungen.firmenname} · Auswertung {ansicht === "monat" ? fmtMonat(monat) : jahr}</div>
 
@@ -2883,7 +2896,6 @@ function Auswertungen({ ctx }) {
       Saldo = Ist + angerechnete Abwesenheit − Soll.{!mitUS && " Überstunden sind laut Einstellungen nicht vorgesehen (fixer Dienstplan) – ein positiver Saldo heißt: länger gearbeitet als geplant, bitte ausgleichen."}{mitUS && <> Mehrarbeit/Überstunden sind vereinfacht aus positiven Wochensalden berechnet: bei Teilzeit bis zur Normalarbeitszeit ({db.einstellungen.vollzeitWoche} h) Mehrarbeit (Zuschlag {db.einstellungen.zuschlagMehrarbeit} %, entfällt bei Ausgleich im Quartal), darüber Überstunden ({db.einstellungen.zuschlagUeberstunden} %). Durchrechnungszeiträume und KV-Sonderregeln müssen mit der Lohnverrechnung abgestimmt werden.</>}
     </p>
   </div>
-  {druck === "monat" && <DruckNachweise db={db} liste={liste} monat={monat} />}
   {druck === "jahr" && <DruckJahr db={db} jd={jahresDaten(db, jahr)} />}
   </>;
 }
@@ -2923,90 +2935,112 @@ function kalenderWoche(d) {
   const w1 = new Date(t.getFullYear(), 0, 4);
   return 1 + Math.round(((t - w1) / 864e5 - 3 + ((w1.getDay() + 6) % 7)) / 7);
 }
-// Monatlicher Zeitbericht je Person (Aufbau wie der bisherige Zeitbericht des Salons):
-// Kopf, Tage nach Wochen mit Zwischensummen, Monatssumme, Urlaub, Zeitkonto, Abwesenheiten
-function DruckNachweise({ db, liste, monat }) {
+// Daten für den Zeitbericht einer Person (für Druckansicht und PDF-Download)
+function zeitberichtDaten(db, m, monat) {
   const tage = tageImMonat(monat), bisD = tage[tage.length - 1] < heute() ? tage[tage.length - 1] : heute();
-  const jetzt = new Date();
-  const th = "py-1 font-semibold", num = "text-right tabular";
-  return <div className="druck-bereich">
-    {liste.map((m, idx) => {
-      const ab = abschlussVon(db, m.id, monat);
-      const zeilen = tage.filter(d => beschaeftigt(m, d)).map(d => tagInfo(db, m, d))
-        .filter(t => t.soll > 0 || t.z || t.a || (t.ft && modellSollMin(db, m, t.d) > 0));
-      const wochen = [];
-      zeilen.forEach(t => { const kw = kalenderWoche(t.d); let w = wochen[wochen.length - 1]; if (!w || w.kw !== kw) wochen.push(w = { kw, tage: [] }); w.tage.push(t); });
-      const sum = ts => ts.reduce((s, t) => { if (t.zaehlt) { s.soll += t.soll; s.erf += t.ist + t.gut; s.saldo += t.saldo; } return s; }, { soll: 0, erf: 0, saldo: 0 });
-      const gesamt = sum(zeilen);
-      // Abwesenheiten im Monat (Arbeitstage laut Dienstplan)
-      const abw = { urlaub: 0, krank: 0, bezahlt: 0, unbezahlt: 0 };
-      zeilen.forEach(t => { if (!t.a || modellSollMin(db, m, t.d) <= 0 || ARTEN[t.a.art].stunden) return;
-        const x = anteil(t.a), art = t.a.art;
-        if (art === "urlaub") abw.urlaub += x; else if (KRANK_ARTEN.includes(art)) abw.krank += x; else if (ARTEN[art].gutschrift) abw.bezahlt += x; else abw.unbezahlt += x; });
-      const arztMin = zeilen.reduce((s, t) => s + (t.a && ARTEN[t.a.art].stunden ? t.gut : 0), 0);
-      const uk = urlaubsKonto(db, m, bisD);
-      const kontoVorher = zeitkonto(db, m, addTage(tage[0], -1)), kontoJetzt = zeitkonto(db, m, bisD);
-      const plan = WT.map((t, i) => { const x = planAusModell(modellVon(db, m), i, tage[0]); return x ? `${t} ${x.b}–${x.e}${x.p ? ` (${pauseTxt(x)})` : ""}` : null; }).filter(Boolean).join(" · ");
-      const code = t => [t.ft && t.ft.name, t.a ? `${ARTEN[t.a.art].kurz} ${ARTEN[t.a.art].label}${teilTag(t.a) ? ` (${abwZusatz(t.a)})` : ""}` : null,
-        t.z?.auto?.length ? `auto: ${t.z.auto.map(x => AUTO_TEXT[x]).join(", ")}` : null,
-        t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? "korrigiert" : null,
-        t.z?.roh ? `gestempelt ${t.z.roh.beginn || t.z.beginn}–${t.z.roh.ende || t.z.ende || ""}, gerundet` : null, t.z?.notiz || null].filter(Boolean).join(" · ");
-      return <div key={m.id} className={idx < liste.length - 1 ? "seitenumbruch" : ""} style={{ fontSize: 9.5 }}>
-        <div className="text-center text-[15px] font-bold tracking-wide">Zeitbericht</div>
-        <div className="flex justify-between border-b border-stone-500 pb-1 mb-2 text-[10px]">
-          <span className="font-semibold">{db.einstellungen.firmenname}</span>
-          <span>{fmtD(tage[0])} – {fmtD(tage[tage.length - 1])}</span>
-        </div>
-        <div className="grid grid-cols-[auto_1fr_auto_1fr] gap-x-3 gap-y-0.5 mb-2 text-[9.5px]">
-          <span className="text-stone-500">Name:</span><b>{m.name}</b>
-          <span className="text-stone-500">Bereich:</span><span>{m.abteilung || "–"}</span>
-          <span className="text-stone-500">Mitarbeiternr.:</span><span>{m.personalnr || "–"}</span>
-          <span className="text-stone-500">Funktion:</span><span>{m.funktion || "–"}</span>
-          <span className="text-stone-500">Dienstplan:</span><span className="col-span-3">{modellVon(db, m).name}{plan ? ` – ${plan}` : ""}</span>
-        </div>
-        <table className="w-full" style={{ fontSize: 9 }}>
-          <thead><tr className="text-left border-y border-stone-500"><th className={th}>Datum</th><th className={th}>Tag</th><th className={th}>Hinein</th><th className={th}>Hinaus</th><th className={`${th} text-right`}>Pause</th>
-            <th className={`${th} text-right`}>Geplant</th><th className={`${th} text-right`}>Erfüllt</th><th className={`${th} text-right`}>Saldo</th><th className={`${th} pl-3`}>Kommentar / Code</th></tr></thead>
-          {wochen.map(w => { const s = sum(w.tage); return <tbody key={w.kw}>
-            <tr><td colSpan={9} className="pt-1.5 font-semibold text-stone-600">Woche {w.kw}</td></tr>
-            {w.tage.map(t => <tr key={t.d} className="border-b border-stone-100">
-              <td className="py-[1px] tabular">{t.d.slice(8)}.{t.d.slice(5, 7)}.</td><td>{WT[wd(t.d)]}</td><td className="tabular">{t.z?.beginn || ""}</td><td className="tabular">{t.z?.ende || ""}</td>
-              <td className={num}>{t.z ? `${t.z.pause}′` : ""}</td><td className={num}>{t.soll ? fmtH(t.soll) : ""}</td>
-              <td className={num}>{t.z || t.gut ? fmtH(t.ist + t.gut) : ""}</td><td className={num}>{t.zaehlt && (t.soll || t.ist || t.gut) ? fmtH(t.saldo, true) : ""}</td>
-              <td className="pl-3">{code(t)}</td></tr>)}
-            <tr className="font-semibold"><td colSpan={5} /><td className={`${num} border-t border-stone-400`}>{fmtH(s.soll)}</td><td className={`${num} border-t border-stone-400`}>{fmtH(s.erf)}</td><td className={`${num} border-t border-stone-400`}>{fmtH(s.saldo, true)}</td><td /></tr>
-          </tbody>; })}
-          <tbody><tr className="font-bold text-[10px]"><td colSpan={5} className="pt-2">Summe {fmtMonat(monat)}</td><td className={`${num} pt-2 border-t-2 border-stone-600`}>{fmtH(gesamt.soll)}</td><td className={`${num} pt-2 border-t-2 border-stone-600`}>{fmtH(gesamt.erf)}</td><td className={`${num} pt-2 border-t-2 border-stone-600`}>{fmtH(gesamt.saldo, true)}</td><td /></tr></tbody>
-        </table>
-        <div className="mt-3 grid grid-cols-3 gap-3 text-[9.5px]">
-          <div className="border border-stone-300 rounded p-2"><div className="font-bold mb-1">Urlaub (Tage)</div>
-            <div className="text-stone-500 mb-0.5">Urlaubsjahr {fmtD(uk.von)} – {fmtD(uk.bis)}</div>
-            {uk.imStart ? <div className="flex justify-between"><span>Offen am {fmtD(uk.ab)} (Startbestand)</span><b>{fmtTage(uk.uebertrag)}</b></div> : <>
-              <div className="flex justify-between"><span>Anspruch{uk.anteilig ? " (anteilig)" : ""}</span><b>{fmtTage(uk.anspruch)}</b></div>
-              {uk.uebertrag ? <div className="flex justify-between"><span>Rest aus Vorjahr</span><span>{fmtTage(uk.uebertrag)}</span></div> : null}</>}
-            <div className="flex justify-between"><span>Verbraucht bis heute</span><span>{fmtTage(uk.konsumiert)}</span></div>
-            <div className="flex justify-between"><span>Dieser Monat</span><span>{fmtTage(abw.urlaub)}</span></div>
-            {uk.geplant ? <div className="flex justify-between"><span>Schon eingeplant</span><span>{fmtTage(uk.geplant)}</span></div> : null}
-            <div className="flex justify-between border-t border-stone-300 mt-0.5 pt-0.5"><span>Offen</span><b>{fmtTage(uk.rest)}</b></div></div>
-          <div className="border border-stone-300 rounded p-2"><div className="font-bold mb-1">Zeitkonto (Stunden)</div>
-            <div className="flex justify-between"><span>Stand vorher</span><span>{fmtH(kontoVorher, true)}</span></div>
-            <div className="flex justify-between"><span>Dieser Monat</span><span>{fmtH(gesamt.saldo, true)}</span></div>
-            <div className="flex justify-between border-t border-stone-300 mt-0.5 pt-0.5"><span>Gesamtsaldo</span><b>{fmtH(kontoJetzt, true)}</b></div></div>
-          <div className="border border-stone-300 rounded p-2"><div className="font-bold mb-1">Abwesenheiten (Arbeitstage)</div>
-            <div className="flex justify-between"><span>Urlaub</span><span>{fmtTage(abw.urlaub)}</span></div>
-            <div className="flex justify-between"><span>Krankenstand / Unfall</span><span>{fmtTage(abw.krank)}</span></div>
-            <div className="flex justify-between"><span>Sonstige bezahlt</span><span>{fmtTage(abw.bezahlt)}</span></div>
-            <div className="flex justify-between"><span>Unbezahlt</span><span>{fmtTage(abw.unbezahlt)}</span></div>
-            {arztMin > 0 && <div className="flex justify-between"><span>Arztbesuche</span><span>{fmtH(arztMin)} h</span></div>}</div>
-        </div>
-        <div className="mt-2 text-stone-600 text-[9px]">{ab?.bestaetigtAm ? `Von Mitarbeiter/in bestätigt am ${fmtD(ab.bestaetigtAm)}. ` : ""}{ab?.abgeschlossenAm ? `Abgeschlossen am ${fmtD(ab.abgeschlossenAm)} von ${nameVon(db, ab.abgeschlossenVon)}.` : "Monat noch nicht abgeschlossen."} Arbeitszeitaufzeichnung gem. § 26 AZG{jugendlich(m, tage[0]) ? " · unter 18: KJBG" : ""}.</div>
-        {db.einstellungen.pdfUnterschrift && <div className="flex justify-between gap-10 mt-10">
-          <div className="flex-1 border-t border-stone-500 pt-1">Datum, Unterschrift Mitarbeiter/in</div>
-          <div className="flex-1 border-t border-stone-500 pt-1">Datum, Unterschrift Arbeitgeber/in</div>
-        </div>}
-        <div className="mt-3 flex justify-between text-[8.5px] text-stone-500"><span>Erstellt am {fmtD(heute())} um {pad(jetzt.getHours())}:{pad(jetzt.getMinutes())}</span><span>Blatt {idx + 1} / {liste.length}</span></div>
-      </div>; })}
-  </div>;
+  const ab = abschlussVon(db, m.id, monat);
+  const zeilen = tage.filter(d => beschaeftigt(m, d)).map(d => tagInfo(db, m, d))
+    .filter(t => t.soll > 0 || t.z || t.a || (t.ft && modellSollMin(db, m, t.d) > 0));
+  const wochen = [];
+  zeilen.forEach(t => { const kw = kalenderWoche(t.d); let w = wochen[wochen.length - 1]; if (!w || w.kw !== kw) wochen.push(w = { kw, tage: [] }); w.tage.push(t); });
+  const sum = ts => ts.reduce((s, t) => { if (t.zaehlt) { s.soll += t.soll; s.erf += t.ist + t.gut; s.saldo += t.saldo; } return s; }, { soll: 0, erf: 0, saldo: 0 });
+  const gesamt = sum(zeilen);
+  // Abwesenheiten im Monat (Arbeitstage laut Dienstplan)
+  const abw = { urlaub: 0, krank: 0, bezahlt: 0, unbezahlt: 0 };
+  zeilen.forEach(t => { if (!t.a || modellSollMin(db, m, t.d) <= 0 || ARTEN[t.a.art].stunden) return;
+    const x = anteil(t.a), art = t.a.art;
+    if (art === "urlaub") abw.urlaub += x; else if (KRANK_ARTEN.includes(art)) abw.krank += x; else if (ARTEN[art].gutschrift) abw.bezahlt += x; else abw.unbezahlt += x; });
+  const arztMin = zeilen.reduce((s, t) => s + (t.a && ARTEN[t.a.art].stunden ? t.gut : 0), 0);
+  const uk = urlaubsKonto(db, m, bisD);
+  const kontoVorher = zeitkonto(db, m, addTage(tage[0], -1)), kontoJetzt = zeitkonto(db, m, bisD);
+  const plan = WT.map((t, i) => { const x = planAusModell(modellVon(db, m), i, tage[0]); return x ? `${t} ${x.b}–${x.e}${x.p ? ` (${pauseTxt(x)})` : ""}` : null; }).filter(Boolean).join(" · ");
+  const code = t => [t.ft && t.ft.name, t.a ? `${ARTEN[t.a.art].kurz} ${ARTEN[t.a.art].label}${teilTag(t.a) ? ` (${abwZusatz(t.a)})` : ""}` : null,
+    t.z?.auto?.length ? `auto: ${t.z.auto.map(x => AUTO_TEXT[x]).join(", ")}` : null,
+    t.z?.quelle === "korrektur" || t.z?.quelle === "manuell" ? "korrigiert" : null,
+    t.z?.roh ? `gestempelt ${t.z.roh.beginn || t.z.beginn}–${t.z.roh.ende || t.z.ende || ""}, gerundet` : null, t.z?.notiz || null].filter(Boolean).join(" · ");
+  return { ab, wochen, sum, gesamt, abw, arztMin, uk, kontoVorher, kontoJetzt, plan, code };
+}
+// Zeitberichte als echte PDF-Datei herunterladen (ohne Druckdialog – funktioniert auch am Handy)
+async function zeitberichtPdf(db, liste, monat) {
+  const JsPDF = await ladeJspdf();
+  const doc = new JsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  // Standardschrift kennt nur Westeuropäisch – Sonderzeichen ersetzen
+  const tx = v => String(v ?? "").replace(/−/g, "-").replace(/′/g, "'").replace(/[^\x00-\xFF–—‘’“”„…•€]/g, "");
+  const tage = tageImMonat(monat), jetzt = new Date(), B = 210, R = 12;
+  const grau = [120, 113, 108], linie = [168, 162, 158];
+  liste.forEach((m, idx) => {
+    if (idx) doc.addPage();
+    const { ab, wochen, sum, gesamt, abw, arztMin, uk, kontoVorher, kontoJetzt, plan, code } = zeitberichtDaten(db, m, monat);
+    let y = 16;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(14); doc.text("Zeitbericht", B / 2, y, { align: "center" });
+    y += 7; doc.setFontSize(9.5); doc.text(tx(db.einstellungen.firmenname), R, y);
+    doc.setFont("helvetica", "normal"); doc.text(`${fmtD(tage[0])} – ${fmtD(tage[tage.length - 1])}`, B - R, y, { align: "right" });
+    y += 1.8; doc.setDrawColor(...linie); doc.line(R, y, B - R, y);
+    const feld = (lab, wert, x, yy, fett) => { doc.setTextColor(...grau); doc.text(lab, x, yy); doc.setTextColor(0); doc.setFont("helvetica", fett ? "bold" : "normal"); doc.text(tx(wert), x + 24, yy); doc.setFont("helvetica", "normal"); };
+    doc.setFontSize(8.5); y += 5;
+    feld("Name:", m.name, R, y, true); feld("Bereich:", m.abteilung || "–", B / 2, y);
+    y += 4.2; feld("Mitarbeiternr.:", m.personalnr || "–", R, y); feld("Funktion:", m.funktion || "–", B / 2, y);
+    y += 4.2; doc.setTextColor(...grau); doc.text("Dienstplan:", R, y); doc.setTextColor(0);
+    const dp = doc.splitTextToSize(tx(`${modellVon(db, m).name}${plan ? ` – ${plan}` : ""}`), B - 2 * R - 24); doc.text(dp, R + 24, y); y += 4.2 * dp.length;
+
+    const body = [];
+    wochen.forEach(w => {
+      const s = sum(w.tage);
+      body.push([{ content: `Woche ${w.kw}`, colSpan: 9, styles: { fontStyle: "bold", textColor: grau, cellPadding: { top: 1.6, bottom: 0.4, left: 1, right: 1 } } }]);
+      w.tage.forEach(t => body.push([`${t.d.slice(8)}.${t.d.slice(5, 7)}.`, WT[wd(t.d)], t.z?.beginn || "", t.z?.ende || "", t.z ? `${t.z.pause}'` : "",
+        t.soll ? fmtH(t.soll) : "", t.z || t.gut ? fmtH(t.ist + t.gut) : "", t.zaehlt && (t.soll || t.ist || t.gut) ? tx(fmtH(t.saldo, true)) : "", tx(code(t))]));
+      body.push(["", "", "", "", "", fmtH(s.soll), fmtH(s.erf), tx(fmtH(s.saldo, true)), ""].map((c, i) => ({ content: c, styles: { fontStyle: "bold", lineWidth: i >= 5 && i <= 7 ? { top: 0.2 } : 0 } })));
+    });
+    body.push([{ content: `Summe ${fmtMonat(monat)}`, colSpan: 5 }, fmtH(gesamt.soll), fmtH(gesamt.erf), tx(fmtH(gesamt.saldo, true)), ""].map((c, i) =>
+      ({ ...(typeof c === "object" ? c : { content: c }), styles: { fontStyle: "bold", fontSize: 8.5, cellPadding: { top: 2, bottom: 1, left: 1, right: 1 }, lineWidth: i >= 1 && i <= 3 ? { top: 0.4 } : 0 } })));
+    doc.autoTable({
+      startY: y + 1, margin: { left: R, right: R },
+      head: [["Datum", "Tag", "Hinein", "Hinaus", "Pause", "Geplant", "Erfüllt", "Saldo", "Kommentar / Code"]],
+      body, theme: "plain",
+      styles: { font: "helvetica", fontSize: 7.8, cellPadding: { top: 0.5, bottom: 0.5, left: 1, right: 1 }, textColor: 20, lineColor: linie },
+      headStyles: { fontStyle: "bold", lineWidth: { top: 0.3, bottom: 0.3 } },
+      columnStyles: { 0: { cellWidth: 13 }, 1: { cellWidth: 9 }, 2: { cellWidth: 13 }, 3: { cellWidth: 13 }, 4: { cellWidth: 11, halign: "right" }, 5: { cellWidth: 15, halign: "right" }, 6: { cellWidth: 15, halign: "right" }, 7: { cellWidth: 15, halign: "right" } },
+      didParseCell: d => { if (d.section === "head" && d.column.index >= 4 && d.column.index <= 7) d.cell.styles.halign = "right"; },
+    });
+    y = doc.lastAutoTable.finalY + 5;
+
+    // drei Kästen: Urlaub, Zeitkonto, Abwesenheiten
+    const kaesten = [
+      ["Urlaub (Tage)", [[`Urlaubsjahr ${fmtD(uk.von)} – ${fmtD(uk.bis)}`, ""],
+        ...(uk.imStart ? [[`Offen am ${fmtD(uk.ab)} (Startbestand)`, fmtTage(uk.uebertrag)]] : [[`Anspruch${uk.anteilig ? " (anteilig)" : ""}`, fmtTage(uk.anspruch)], ...(uk.uebertrag ? [["Rest aus Vorjahr", fmtTage(uk.uebertrag)]] : [])]),
+        ["Verbraucht bis heute", fmtTage(uk.konsumiert)], ["Dieser Monat", fmtTage(abw.urlaub)], ...(uk.geplant ? [["Schon eingeplant", fmtTage(uk.geplant)]] : []), ["Offen", fmtTage(uk.rest), true]]],
+      ["Zeitkonto (Stunden)", [["Stand vorher", fmtH(kontoVorher, true)], ["Dieser Monat", fmtH(gesamt.saldo, true)], ["Gesamtsaldo", fmtH(kontoJetzt, true), true]]],
+      ["Abwesenheiten (Arbeitstage)", [["Urlaub", fmtTage(abw.urlaub)], ["Krankenstand / Unfall", fmtTage(abw.krank)], ["Sonstige bezahlt", fmtTage(abw.bezahlt)], ["Unbezahlt", fmtTage(abw.unbezahlt)], ...(arztMin > 0 ? [["Arztbesuche", `${fmtH(arztMin)} h`]] : [])]],
+    ];
+    const hoehe = 7 + Math.max(...kaesten.map(k => k[1].length)) * 3.8;
+    if (y + hoehe + 30 > 297 - R) { doc.addPage(); y = 16; }
+    const kb = (B - 2 * R - 2 * 4) / 3;
+    kaesten.forEach(([titel, zeilen], i) => {
+      const x = R + i * (kb + 4);
+      doc.setDrawColor(...linie); doc.roundedRect(x, y, kb, hoehe, 1, 1);
+      doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.text(titel, x + 2, y + 4.5);
+      zeilen.forEach(([l, w, fett], j) => { const yy = y + 8.6 + j * 3.8;
+        doc.setFont("helvetica", fett ? "bold" : "normal"); doc.setFontSize(7.6);
+        if (fett) doc.line(x + 2, yy - 2.8, x + kb - 2, yy - 2.8);
+        doc.text(tx(l), x + 2, yy); if (w !== "") doc.text(tx(w), x + kb - 2, yy, { align: "right" }); });
+    });
+    y += hoehe + 5;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...grau);
+    const fuss = doc.splitTextToSize(tx(`${ab?.bestaetigtAm ? `Von Mitarbeiter/in bestätigt am ${fmtD(ab.bestaetigtAm)}. ` : ""}${ab?.abgeschlossenAm ? `Abgeschlossen am ${fmtD(ab.abgeschlossenAm)} von ${nameVon(db, ab.abgeschlossenVon)}.` : "Monat noch nicht abgeschlossen."} Arbeitszeitaufzeichnung gem. § 26 AZG${jugendlich(m, tage[0]) ? " · unter 18: KJBG" : ""}.`), B - 2 * R);
+    doc.text(fuss, R, y); y += 3.4 * fuss.length;
+    doc.setTextColor(0);
+    if (db.einstellungen.pdfUnterschrift) {
+      y += 14; const ub = (B - 2 * R - 12) / 2;
+      doc.setDrawColor(90); doc.line(R, y, R + ub, y); doc.line(B - R - ub, y, B - R, y);
+      doc.setFontSize(7.5); doc.text("Datum, Unterschrift Mitarbeiter/in", R, y + 3.5); doc.text("Datum, Unterschrift Arbeitgeber/in", B - R - ub, y + 3.5);
+    }
+    doc.setFontSize(7); doc.setTextColor(...grau);
+    doc.text(`Erstellt am ${fmtD(heute())} um ${pad(jetzt.getHours())}:${pad(jetzt.getMinutes())}`, R, 297 - 8);
+    doc.text(`Blatt ${idx + 1} / ${liste.length}`, B - R, 297 - 8, { align: "right" });
+    doc.setTextColor(0);
+  });
+  const name = liste.length === 1 ? `Zeitbericht_${(liste[0].name || "").replace(/[^\wäöüÄÖÜß-]+/g, "_")}_${monat}.pdf` : `Zeitberichte_${monat}.pdf`;
+  doc.save(name);
 }
 
 // ─── EINSTELLUNGEN ────────────────────────────────────────────────────────────
