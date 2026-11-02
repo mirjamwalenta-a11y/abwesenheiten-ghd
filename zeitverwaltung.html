@@ -2,8 +2,8 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8"/>
-  <!-- Prototyp: verbindet sich bewusst mit KEINER Datenbank (connect-src 'self').
-       Erst wenn zeitverwaltung_schema_entwurf.sql inkl. RLS steht, wird Supabase angebunden. -->
+  <!-- Echter Betrieb: verbindet sich nur mit der gemeinsamen Supabase-Datenbank (connect-src).
+       zeitverwaltung.html?test = Testversion mit Beispieldaten, nur im Browser. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; connect-src 'self' https://wrxlaltgtgkdomklgrlj.supabase.co wss://wrxlaltgtgkdomklgrlj.supabase.co; font-src 'self' data: https://fonts.gstatic.com; base-uri 'self'; form-action 'self'"/>
   <script src="ghd-sitzung.js"></script>  <!-- automatisch abmelden nach 15 min ohne Bedienung -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
@@ -67,10 +67,12 @@
 const { useState, useEffect, useMemo, useRef } = React;
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  ZEITVERWALTUNG · PROTOTYP
-//  Alle Daten sind erfundene Demo-Daten und liegen nur im Browser (localStorage).
+//  ZEITVERWALTUNG
+//  Echter Betrieb (zeitverwaltung.html): LiveApp mit der gemeinsamen Datenbank.
+//  Testversion (zeitverwaltung.html?test): App mit erfundenen Beispieldaten, die
+//  nur im Browser liegen (localStorage).
 //  Die Rollenprüfungen hier blenden nur Oberfläche ein/aus — die echte Absicherung
-//  passiert später serverseitig (RLS / SECURITY DEFINER, siehe
+//  passiert serverseitig (RLS / SECURITY DEFINER, siehe
 //  zeitverwaltung_schema_entwurf.sql). Siehe CLAUDE.md, Regel 3.
 // ═════════════════════════════════════════════════════════════════════════════
 const LS_KEY = "ghd-zeitverwaltung-demo-v9";
@@ -1030,8 +1032,8 @@ function Tabelle({ kopf, children, fuss }) {
 }
 
 // ─── BELEGE (Krankenstands-/Arztbestätigungen) ────────────────────────────────
-// Prototyp: Dateien liegen in IndexedDB dieses Browsers. Live: privater Storage-Bucket,
-// lesbar nur für die Person selbst und die Leitung (siehe Schema-Entwurf).
+// Testversion: Dateien liegen in IndexedDB dieses Browsers. Echter Betrieb: privater
+// Storage-Bucket, lesbar nur für die Person selbst und die Leitung (siehe Schema-Entwurf).
 const BelegSpeicher = {
   _db: null,
   oeffnen() {
@@ -1150,7 +1152,7 @@ function csvExport(dateiname, zeilen) {
 }
 
 // ─── PIN-EINGABE (wie Abwesenheiten-App) ─────────────────────────────────────
-// Prototyp: jede 4-stellige PIN wird angenommen. Live prüft ausschließlich der
+// Testversion: jede 4-stellige PIN wird angenommen. Im echten Betrieb prüft ausschließlich der
 // Server (Supabase-Login bzw. zeit_terminal_stempeln) – nie der Browser.
 function PinFeld({ onFertig, dunkel }) {
   const [pin, setPin] = useState("");
@@ -4080,7 +4082,7 @@ function Rahmen({ db, setDb, user, aendern, logout, login, toastEl, stempeln, li
       <Avatar name={user.name} klein />
     </header>
     <main className="lg:ml-60 print-full">
-      {!live && <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-xs px-4 lg:px-8 py-1.5">{db.eigeneDaten ? "Testbetrieb mit deinen Daten – gespeichert nur in diesem Browser auf diesem Gerät, keine Verbindung zur Datenbank." : "Prototyp mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank."}</div>}
+      {!live && <div className="no-print bg-amber-100 border-b border-amber-200 text-amber-800 text-xs px-4 lg:px-8 py-1.5">{db.eigeneDaten ? "Testbetrieb mit deinen Daten – gespeichert nur in diesem Browser auf diesem Gerät, keine Verbindung zur Datenbank." : "Testversion mit erfundenen Beispieldaten – gespeichert nur in diesem Browser, keine Verbindung zur Datenbank."}</div>}
       <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 print-full"><Seite ctx={ctx} /></div>
     </main>
     {toastEl}
