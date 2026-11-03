@@ -567,16 +567,20 @@ function abwZusatz(a) { return a.minuten ? `${anteil(a) < 1 ? "½ Tag · " : ""}
 // halber Tag = Schulzeit von–bis. Ohne Angabe gilt wie bisher die Pauschale (ganzer bzw. halber Tag laut Dienstplan).
 // Gespeichert in den bestehenden Spalten anteil / minuten / notiz von abw_anfragen – keine neue Spalte.
 const BS_STUNDE_MIN = 50;
+// Halber Tag zusätzlich mit der Arbeit danach im Betrieb (von–bis, Pause) – steht in der Notiz des Eintrags
 function bsSchulzeit(a) {
   if (!a || a.art !== "berufsschule") return {};
-  const zr = /(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})/.exec(a.notiz || ""), st = /(\d+)\s*Unterrichtsstunden/.exec(a.notiz || "");
-  if (anteil(a) < 1) return zr ? { von: zr[1].padStart(5, "0"), bis: zr[2].padStart(5, "0") } : {};
+  const t = a.notiz || "", hm = x => x.padStart(5, "0");
+  const zr = /Schultag\s+(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})/.exec(t), st = /(\d+)\s*Unterrichtsstunden/.exec(t);
+  const be = /Betrieb\s+(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})/.exec(t), pa = /Pause\s+(\d+)\s*min/.exec(t);
+  if (anteil(a) < 1) return { ...(zr ? { von: hm(zr[1]), bis: hm(zr[2]) } : {}), ...(be ? { bv: hm(be[1]), bb: hm(be[2]), bp: pa ? +pa[1] : 0 } : {}) };
   return st ? { stunden: +st[1] } : a.minuten ? { stunden: Math.round(a.minuten / BS_STUNDE_MIN) } : {};
 }
 function bsEintragFelder(halb, sz) {
   if (halb) {
     const min = sz.von && sz.bis ? hm2min(sz.bis) - hm2min(sz.von) : 0;
-    return { anteil: 0.5, minuten: min > 0 ? min : undefined, notiz: min > 0 ? `halber Schultag ${sz.von}–${sz.bis}` : "halber Schultag" };
+    const betrieb = sz.bv && sz.bb ? ` · Betrieb ${sz.bv}–${sz.bb} · Pause ${+sz.bp || 0} min` : "";
+    return { anteil: 0.5, minuten: min > 0 ? min : undefined, notiz: (min > 0 ? `halber Schultag ${sz.von}–${sz.bis}` : "halber Schultag") + betrieb };
   }
   const st = +sz.stunden || 0;
   return { anteil: undefined, minuten: st > 0 ? st * BS_STUNDE_MIN : undefined, notiz: st > 0 ? `ganzer Schultag · ${st} Unterrichtsstunden à ${BS_STUNDE_MIN} min` : "" };
@@ -586,7 +590,26 @@ function bsVorschlag(db, maId) {
   const letzte = halb => db.abwesenheiten.filter(a => a.maId === maId && a.art === "berufsschule" && a.status !== "storniert" && (anteil(a) < 1) === halb)
     .sort((x, y) => y.von.localeCompare(x.von)).map(bsSchulzeit).find(z => z.stunden || z.von) || {};
   const g = letzte(false), h = letzte(true);
-  return { stunden: g.stunden || "", von: h.von || "", bis: h.bis || "" };
+  return { stunden: g.stunden || "", von: h.von || "", bis: h.bis || "", bv: h.bv || "", bb: h.bb || "", bp: h.bp ?? "" };
+}
+// Prüfung für den halben Schultag: Eingaben und Summe Schule + Betrieb (KJBG/AZG)
+function bsHalbPruefung(db, ma, sz, d) {
+  const e = db.einstellungen, kj = ma ? jugendlich(ma, d || heute()) : false;
+  const schule = sz.von && sz.bis ? hm2min(sz.bis) - hm2min(sz.von) : 0;
+  const betrieb = sz.bv && sz.bb ? hm2min(sz.bb) - hm2min(sz.bv) - (+sz.bp || 0) : 0;
+  const fehler = (!!sz.von !== !!sz.bis) ? "Halber Tag: Beginn und Ende der Schule angeben – oder beide leer lassen."
+    : sz.von && schule <= 0 ? "Halber Tag: Schulende muss nach Schulbeginn liegen."
+    : (!!sz.bv !== !!sz.bb) ? "Betrieb: Beginn und Ende angeben – oder beide leer lassen."
+    : sz.bv && hm2min(sz.bb) <= hm2min(sz.bv) ? "Betrieb: Ende muss nach Beginn liegen."
+    : sz.bv && sz.bis && hm2min(sz.bv) < hm2min(sz.bis) ? "Betrieb beginnt vor Schulende."
+    : sz.bv && betrieb < 0 ? "Pause länger als die Zeit im Betrieb." : null;
+  const warn = [];
+  if (sz.bv && sz.bb) {
+    const block = hm2min(sz.bb) - hm2min(sz.bv) - (+sz.bp || 0);
+    if (block > (kj ? e.kjbgPauseAbMin : e.pauseAbMin) && (+sz.bp || 0) < e.pauseMin) warn.push(`Pause im Betrieb zu kurz: mind. ${e.pauseMin} min (${kj ? "§ 15 KJBG" : "§ 11 AZG"})`);
+    if (schule + betrieb > (kj ? e.kjbgTagMaxMin : e.tagMaxMin)) warn.push(`Schule + Betrieb ${fmtH(schule + betrieb)} h – über der Tagesgrenze von ${fmtH(kj ? e.kjbgTagMaxMin : e.tagMaxMin)} h`);
+  }
+  return { fehler, warn, schule, betrieb };
 }
 function lehrjahr(ma, d) {
   if (!ma.lehrbeginn) return null;
@@ -712,8 +735,9 @@ function automatik(n) {
         const rest = modellSollMin(n, ma, d) - (a ? gutMin(a, modellSollMin(n, ma, d)) : 0);
         // Restarbeitszeit nach Schule/Arzt: Pause laut Plan nur, wenn der Rest sie gesetzlich braucht
         const restPause = a ? (rest > (jugendlich(ma, d) ? e.kjbgPauseAbMin : e.pauseAbMin) ? Math.max(+plan.p || 0, e.pauseMin) : 0) : (+plan.p || 0);
-        const beginn = a ? min2hm(hm2min(plan.e) - rest - restPause) : plan.b;
-        z = { id: uid(), maId: ma.id, datum: d, beginn, ende: plan.e, pause: restPause, quelle: "auto", auto: ["tag"] };
+        const bsp = a ? bsSchulzeit(a) : {};
+        const beginn = bsp.bv || (a ? min2hm(hm2min(plan.e) - rest - restPause) : plan.b);
+        z = { id: uid(), maId: ma.id, datum: d, beginn, ende: bsp.bb || plan.e, pause: bsp.bv ? (+bsp.bp || 0) : restPause, quelle: "auto", auto: ["tag"] };
         n.zeiten.push(z); log(ma, d, "ganzer Tag", null, { beginn: z.beginn, ende: z.ende, pause: z.pause });
         continue;
       }
@@ -1533,7 +1557,9 @@ function ZeitDialog({ ctx, ma, datum, onClose }) {
   const pauseVor = z ? (autoP && (z.pause || 0) < planPause ? planPause : (z.pause || 0)) : schulTag ? 0 : (plan ? planPause : 30);
   // Ende vorbelegen nur, wenn der Dienst laut Plan schon vorbei ist – sonst würde „Speichern“ einen laufenden Tag versehentlich beenden
   const planVorbei = !plan || datum < heute() || hm2min(nowHM()) >= hm2min(plan.e);
-  const [f, setF] = useState({ beginn: z?.beginn || (schulTag ? "" : plan?.b || "09:00"), ende: z?.ende || (schulTag || !planVorbei ? "" : plan?.e || ""), pause: pauseVor, notiz: z?.notiz || "", grund: "" });
+  // Halber Schultag mit geplanter Arbeit danach: Betriebszeiten aus dem Berufsschul-Plan vorschlagen
+  const bp = schulStart.art === "halb" && schulStart.bv ? schulStart : null;
+  const [f, setF] = useState({ beginn: z?.beginn || (bp ? bp.bv : schulTag ? "" : plan?.b || "09:00"), ende: z?.ende || (bp && datum < heute() ? bp.bb : schulTag || !planVorbei ? "" : plan?.e || ""), pause: z ? pauseVor : bp ? (+bp.bp || 0) : pauseVor, notiz: z?.notiz || "", grund: "" });
   const [loeschen, setLoeschen] = useState(false);
   const netto = f.beginn && f.ende ? hm2min(f.ende) - hm2min(f.beginn) - (+f.pause || 0) : 0;
   // Ganzer Schultag ohne Arbeit im Betrieb: nur die Schulzeit speichern, kein Zeiteintrag nötig
@@ -2275,8 +2301,7 @@ function BsPlaner({ ctx, lehrlinge, startMaId, onClose }) {
   const [plan, setPlan] = useState(() => ma ? bsWochentage(db, ma) : { tag1: 1, tag2: 2 });
   const [sz, setSz] = useState(() => bsVorschlag(db, maId));   // Unterrichtsstunden (ganzer Tag), Schule von–bis (halber Tag)
   const halbMin = sz.von && sz.bis ? hm2min(sz.bis) - hm2min(sz.von) : 0;
-  const szFehler = (!!sz.von !== !!sz.bis) ? "Beim halben Tag bitte Beginn und Ende der Schule angeben – oder beide leer lassen."
-    : sz.von && halbMin <= 0 ? "Halber Tag: Schulende muss nach Schulbeginn liegen." : null;
+  const hp = bsHalbPruefung(db, ma, sz, h), szFehler = hp.fehler;
   const [von, setVon] = useState(h);
   const [bis, setBis] = useState(schuljahrEnde);
   const [ohneSommer, setOhneSommer] = useState(true); // = alle Wiener Schulferien auslassen
@@ -2309,11 +2334,20 @@ function BsPlaner({ ctx, lehrlinge, startMaId, onClose }) {
       <p className="text-xs text-stone-500 sm:col-span-2 -mt-2">Die gewählten Tage werden beim Lehrling als fixe Schultage gespeichert.</p>
       <Feld label="Ganzer Tag: Unterrichtsstunden" hilfe={`Je ${BS_STUNDE_MIN} min, die Mittagspause zählt nicht.${+sz.stunden > 0 ? ` Angerechnet: ${fmtH(+sz.stunden * BS_STUNDE_MIN)} h.` : " Leer = ganzer Arbeitstag laut Dienstplan."}`}>
         <input type="number" min="1" max="12" className={inputCls} value={sz.stunden} onChange={e => setSz({ ...sz, stunden: e.target.value })} /></Feld>
-      <Feld label="Halber Tag: Schule von – bis" hilfe={halbMin > 0 ? `Angerechnet: ${fmtH(halbMin)} h, danach Arbeit im Betrieb.` : "Leer = halber Arbeitstag laut Dienstplan."}>
+      <Feld label="Halber Tag: Schule von – bis" hilfe={halbMin > 0 ? `Angerechnet: ${fmtH(halbMin)} h.` : "Leer = halber Arbeitstag laut Dienstplan."}>
         <div className="flex gap-2">
           <input type="time" className={inputCls} value={sz.von} onChange={e => setSz({ ...sz, von: e.target.value })} />
           <input type="time" className={inputCls} value={sz.bis} onChange={e => setSz({ ...sz, bis: e.target.value })} />
         </div></Feld>
+      <Feld label="Halber Tag: danach im Betrieb von – bis">
+        <div className="flex gap-2">
+          <input type="time" className={inputCls} value={sz.bv} onChange={e => setSz({ ...sz, bv: e.target.value })} />
+          <input type="time" className={inputCls} value={sz.bb} onChange={e => setSz({ ...sz, bb: e.target.value })} />
+        </div></Feld>
+      <Feld label="Pause im Betrieb (min)" hilfe="Wird beim Nachtragen eines Tages vorgeschlagen.">
+        <input type="number" min="0" step="5" className={inputCls} value={sz.bp} onChange={e => setSz({ ...sz, bp: e.target.value })} /></Feld>
+      {(halbMin > 0 || hp.betrieb > 0) && <div className="sm:col-span-2 -mt-1 text-sm">Halber Tag: Schule <b className="tabular">{fmtH(hp.schule)} h</b> + Betrieb <b className="tabular">{fmtH(Math.max(0, hp.betrieb))} h</b> = <b className="tabular">{fmtH(hp.schule + Math.max(0, hp.betrieb))} h</b></div>}
+      {hp.warn.map(w => <p key={w} className="text-xs text-amber-700 sm:col-span-2 -mt-2">{w}</p>)}
       {szFehler && <p className="text-xs text-rose-700 sm:col-span-2 -mt-2">{szFehler}</p>}
       <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ohneSommer} onChange={e => setOhneSommer(e.target.checked)} />Schulferien Wien auslassen (Herbst, Weihnachten, Semester, Ostern, Pfingsten, Sommer, 15.11.)</label>
       {ohneSommer && (() => { const fer = []; tageZw(von, bis > von ? bis : von).forEach(d => { const f = schulferien(d); if (f && !fer.some(x => x.von === f.von)) fer.push(f); });
@@ -2393,9 +2427,11 @@ function MaDialog({ ctx, ma, onClose }) {
     if (planDlg.kopie) set("modellId", m.id);
     setPlanDlg(null);
   }
-  const fehler = !f.name.trim() ? "Name fehlt." : db.mitarbeiter.some(m => m.id !== f.id && m.personalnr === f.personalnr) ? "Personalnummer bereits vergeben."
+  const fehler = !f.name.trim() ? "Name fehlt." : (f.personalnr || "").trim() && db.mitarbeiter.some(m => m.id !== f.id && (m.personalnr || "").trim() === f.personalnr.trim()) ? "Personalnummer bereits vergeben."
     : f.austritt && f.eintritt && f.austritt < f.eintritt ? "Austritt liegt vor dem Eintritt." : f.austritt && !f.austrittArt ? "Bitte die Art der Beendigung wählen." : null;
-  function speichern() {
+  function speichern() { uebernehmen(); onClose(); }
+  // Profil speichern, ohne das Fenster zu schließen (z. B. direkt vor „Berufsschule planen“)
+  function uebernehmen() {
     aendern(n => {
       const i = n.mitarbeiter.findIndex(m => m.id === f.id), alt = i >= 0 ? n.mitarbeiter[i] : null;
       const d = { ...f, urlaubstage: +f.urlaubstage || 0, urlaubStart: f.urlaubStart === "" || f.urlaubStart == null ? undefined : +f.urlaubStart, saldoStart: +f.saldoStart || 0, aktiv: !f.austritt || f.austritt >= heute() };
@@ -2414,7 +2450,6 @@ function MaDialog({ ctx, ma, onClose }) {
       const geaendert = Object.keys(STAMM_FELDER).filter(k => String(alt[k] ?? "") !== String(d[k] ?? ""));
       if (geaendert.length) log("Stammdaten geändert", geaendert.map(k => k === "geburtsdatum" ? "Geburtsdatum geändert" : `${STAMM_FELDER[k]}: ${stammWert(n, k, alt[k])} → ${stammWert(n, k, d[k])}`).join(" · "));
     }, neu ? "Mitarbeiter/in angelegt" : f.austritt && !ma?.austritt ? "Austritt eingetragen und dokumentiert" : "Änderungen gespeichert");
-    onClose();
   }
   return <Modal breit titel={neu ? "Neue/r Mitarbeiter/in" : f.name} onClose={onClose}
     fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!fehler}>Speichern</Knopf></>}>
@@ -2464,10 +2499,10 @@ function MaDialog({ ctx, ma, onClose }) {
           <select className={inputCls} value={bsWochentage(db, f).tag1} onChange={e => set("bsTag1", +e.target.value)}>{WT_LANG.map((t, i) => <option key={i} value={i}>{t}</option>)}</select>
           <select className={inputCls} value={bsWochentage(db, f).tag2} onChange={e => set("bsTag2", +e.target.value)}>{WT_LANG.map((t, i) => <option key={i} value={i}>{t}</option>)}</select>
         </div>
-        {gespeichert?.lehrbeginn && istLeitung(user) && darfVerwalten(user, gespeichert)
-          ? <div className="mt-2"><Knopf art="sekundaer" klein icon="kalender" onClick={() => setBsPlaner(true)}>Berufsschule planen</Knopf>
-              <p className="mt-1 text-xs text-stone-500">Hier trägst du die Schulzeiten ein: Unterrichtsstunden am ganzen Tag, Schule von – bis am halben Tag.</p></div>
-          : <p className="mt-2 text-xs text-amber-700">Erst „Speichern“, dann diese Person wieder öffnen – hier erscheint „Berufsschule planen“ für die Schulzeiten.</p>}</Feld>}
+        {gespeichert && istLeitung(user) && darfVerwalten(user, gespeichert)
+          ? <div className="mt-2"><Knopf art="sekundaer" klein icon="kalender" disabled={!!fehler} onClick={() => { uebernehmen(); setBsPlaner(true); }}>Berufsschule planen</Knopf>
+              <p className="mt-1 text-xs text-stone-500">Speichert das Profil und öffnet den Plan: Unterrichtsstunden am ganzen Tag, am halben Tag Schule von – bis und die Arbeit danach im Betrieb.</p></div>
+          : <p className="mt-2 text-xs text-amber-700">Erst „Speichern“, dann diese Person wieder öffnen – hier erscheint „Berufsschule planen“.</p>}</Feld>}
       <Feld label="Zeitkonto-Übertrag (Minuten)" hilfe="Saldo aus dem alten System beim Start"><input type="number" className={inputCls} value={f.saldoStart} onChange={e => set("saldoStart", e.target.value)} /></Feld>
       <div className="space-y-2 pt-5">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!f.lehrbeginn} onChange={e => set("lehrbeginn", e.target.checked ? (f.eintritt || heute()) : undefined)} />Lehrling</label>
@@ -2509,7 +2544,7 @@ function MaDialog({ ctx, ma, onClose }) {
     </div>}
     {fehler && <p className="mt-3 text-xs text-rose-700">{fehler}</p>}
     {planDlg && <ModellDialog db={db} modell={planDlg.modell} oz={db.einstellungen.oeffnungszeiten} neu={false} onSave={planSpeichern} onClose={() => setPlanDlg(null)} />}
-    {bsPlaner && gespeichert && <BsPlaner ctx={ctx} lehrlinge={[gespeichert]} startMaId={gespeichert.id} onClose={() => setBsPlaner(false)} />}
+    {bsPlaner && gespeichert?.lehrbeginn && <BsPlaner ctx={ctx} lehrlinge={[gespeichert]} startMaId={gespeichert.id} onClose={() => setBsPlaner(false)} />}
   </Modal>;
 }
 // ─── IMPORT: Beschäftigungsstand-Liste (Excel) ───────────────────────────────
