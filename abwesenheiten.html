@@ -258,6 +258,17 @@ function Login({team, onLogin}) {
   const [sel, setSel] = useState(null);
   const [pin, setPin] = useState("");
   const [err, setErr] = useState(false);
+  // Die Inhaberin steht nicht in der „Wer bist du?“-Liste – sie kommt über den
+  // unauffälligen Link „Inhaberin“ ganz unten hinein (PIN bleibt die Absicherung).
+  const [chefinWahl, setChefinWahl] = useState(false);
+  const aktive = team.filter(istAktiv);
+  const mitarbeitende = aktive.filter(p=>p.role!=="owner");
+  const inhaberinnen = aktive.filter(p=>p.role==="owner");
+  function waehle(p) { setSel(p); setPin(""); setErr(false); }
+  function inhaberinLink() {
+    if (inhaberinnen.length===1) waehle(inhaberinnen[0]);
+    else setChefinWahl(true);
+  }
 
   async function tapPin(v) {
     if (v==="del") { setPin(p=>p.slice(0,-1)); setErr(false); return; }
@@ -281,11 +292,11 @@ function Login({team, onLogin}) {
       <div className="mb-10">
         <p className="text-xs text-stone-400 uppercase tracking-widest mb-1">Great Hair Day</p>
         <h1 className="text-2xl font-bold text-stone-900">Abwesenheiten</h1>
-        <p className="text-stone-500 text-sm mt-1">Wer bist du?</p>
+        <p className="text-stone-500 text-sm mt-1">{chefinWahl?"Inhaberin":"Wer bist du?"}</p>
       </div>
       <div className="flex flex-col gap-3">
-        {team.filter(istAktiv).map(p=>(
-          <button key={p.id} onClick={()=>{setSel(p);setPin("");setErr(false);}}
+        {(chefinWahl?inhaberinnen:mitarbeitende).map(p=>(
+          <button key={p.id} onClick={()=>waehle(p)}
             className="flex items-center gap-4 bg-white border border-stone-200 rounded-xl px-4 py-3.5 text-left hover:border-stone-400 hover:shadow-sm transition-all">
             <span className="w-9 h-9 rounded-full bg-stone-900 text-white text-sm font-bold flex items-center justify-center">{p.name[0]}</span>
             <div><p className="font-semibold text-stone-900 text-sm">{p.name}</p>
@@ -295,12 +306,15 @@ function Login({team, onLogin}) {
         ))}
       </div>
       <p className="text-center text-xs text-stone-300 mt-8">Great Hair Day Wien</p>
+      {chefinWahl
+        ? <button onClick={()=>setChefinWahl(false)} className="text-center text-xs text-stone-300 mt-3 self-center">‹ Zurück</button>
+        : inhaberinnen.length>0 && <button onClick={inhaberinLink} className="text-center text-xs text-stone-300 mt-3 self-center">Inhaberin</button>}
     </div></Shell>
   );
 
   return (
     <Shell><div className="flex flex-col justify-center min-h-screen px-6 py-12">
-      <button onClick={()=>setSel(null)} className="text-stone-400 text-sm mb-8 self-start">‹ Zurück</button>
+      <button onClick={()=>{setSel(null);setChefinWahl(false);}} className="text-stone-400 text-sm mb-8 self-start">‹ Zurück</button>
       <div className="flex flex-col items-center mb-10">
         <span className="w-16 h-16 rounded-full bg-stone-900 text-white text-2xl font-bold flex items-center justify-center mb-4">{sel.name[0]}</span>
         <p className="text-xl font-bold text-stone-900">{sel.name}</p>
