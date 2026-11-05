@@ -2324,13 +2324,20 @@ function BsPlaner({ ctx, lehrlinge, startMaId, onClose }) {
     }, `${neu.length} Berufsschultage eingetragen`);
     onClose();
   }
+  // z. B. Schule beginnt erst später: alle Berufsschultage im Zeitraum löschen
+  function entfernen() {
+    if (!confirm(`${bestehend.length} Berufsschultage von ${ma.name} zwischen ${fmtD(von)} und ${fmtD(bis)} löschen?`)) return;
+    const ids = new Set(bestehend.map(a => a.id));
+    aendern(n => { n.abwesenheiten = n.abwesenheiten.filter(a => !ids.has(a.id)); }, `${ids.size} Berufsschultage gelöscht`);
+    onClose();
+  }
   const tagWahl = (k, label, ohne) => <Feld label={label}><select className={inputCls} value={plan[k]} onChange={e => setPlan({ ...plan, [k]: +e.target.value })}>
     {ohne && <option value={-1}>kein halber Tag</option>}
     {modellVon(db, ma).tage.map((x, i) => +x > 0 && (i !== +plan[k === "tag1" ? "tag2" : "tag1"]) ? <option key={i} value={i}>{WT_LANG[i]}</option> : null)}</select></Feld>;
   const kasten = "sm:col-span-2 rounded-[14px] bg-white ring-1 ring-inset ring-stone-200 p-4 space-y-3";
   const zwei = "grid grid-cols-2 gap-3";
   return <Modal breit titel="Berufsschule planen" onClose={onClose}
-    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf><Knopf onClick={speichern} disabled={!!szFehler || (!neu.length && !(ersetzen && bestehend.length))}>{neu.length} Tage eintragen</Knopf></>}>
+    fuss={<><Knopf art="sekundaer" onClick={onClose}>Abbrechen</Knopf>{bestehend.length > 0 && <Knopf art="rot" onClick={entfernen}>{bestehend.length} Tage löschen</Knopf>}<Knopf onClick={speichern} disabled={!!szFehler || (!neu.length && !(ersetzen && bestehend.length))}>{neu.length} Tage eintragen</Knopf></>}>
     <div className="grid sm:grid-cols-2 gap-4">
       <Feld label="Lehrling" breit><select className={inputCls} value={maId} onChange={e => { setMaId(e.target.value); const m = db.mitarbeiter.find(x => x.id === e.target.value); setPlan(planStart(m)); setSz(bsVorschlag(db, e.target.value)); }}>
         {lehrlinge.map(m => <option key={m.id} value={m.id}>{m.name} · {lehrjahr(m, h) || "–"}. Lehrjahr</option>)}</select></Feld>
@@ -2371,6 +2378,7 @@ function BsPlaner({ ctx, lehrlinge, startMaId, onClose }) {
       {ohneSommer && (() => { const fer = []; tageZw(von, bis > von ? bis : von).forEach(d => { const f = schulferien(d); if (f && !fer.some(x => x.von === f.von)) fer.push(f); });
         return fer.length > 0 && <div className="sm:col-span-2 -mt-2 text-xs text-stone-500">Schulfrei im Zeitraum: {fer.map(f => `${f.name} ${f.von === f.bis ? fmtD(f.von) : fmtZr(f.von, f.bis)}`).join(" · ")}. Schulautonome Tage deiner Berufsschule bitte zusätzlich stornieren.</div>; })()}
       <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={ersetzen} onChange={e => setErsetzen(e.target.checked)} />Bereits geplante Berufsschultage in diesem Zeitraum ersetzen ({bestehend.length})</label>
+      {bestehend.length > 0 && <p className="text-xs text-stone-500 sm:col-span-2 -mt-2">Schule beginnt erst später? Zeitraum bis vor Schulbeginn wählen und unten „{bestehend.length} Tage löschen“ tippen.</p>}
     </div>
     <div className="mt-4 space-y-2">
       <div className="rounded-[14px] bg-white ring-1 ring-inset ring-stone-200 p-3 text-sm">
