@@ -37,6 +37,8 @@
 //    (/rest/v1/rpc/…). RPCs prüfen serverseitig Rechte, Zeit oder Ort
 //    (z. B. Stempeln nur im Salon-Netz) — ein späteres Nachschicken würde
 //    diese Prüfungen verfälschen. Sie brauchen weiterhin Netz.
+//  - Lohnzettel-Dateien (Storage-Bucket „lohnzettel“, Team-App): Gehaltsdaten
+//    sollen nie im Handy liegen bleiben, auch nicht in der Warteschlange.
 // ============================================================
 (function () {
   'use strict';
@@ -743,6 +745,8 @@
         if (req.method === 'DELETE') { event.respondWith(datenSchreiben(req, 'loeschen', event)); return; }
         return;
       }
+      // Lohnzettel (Team-App): nie im Handy zwischenspeichern oder in die Warteschlange legen
+      if (url.pathname.indexOf('/storage/v1/object/lohnzettel/') === 0) return;
       if (/^\/storage\/v1\/object\/(?!public\/|sign\/|authenticated\/|info\/|list\/|move$|copy$)/.test(url.pathname)
           && (req.method === 'POST' || req.method === 'PUT')) {
         event.respondWith(datenSchreiben(req, 'datei', event));
